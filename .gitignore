@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+
+# Bolt internal config
+.bolt/
+.v3/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Baba AI YouTube Agent</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#10121c;color:white}
+header{background:#191d2d;padding:22px 15px;text-align:center;border-bottom:2px solid #8055ff}
+header h1{margin:0;color:#b9a1ff;font-size:25px}
+header p{color:#ccc;font-size:13px}
+.container{padding:16px;max-width:700px;margin:auto}
+.card{background:#1b2031;border:1px solid #343a51;border-radius:14px;padding:17px;margin-bottom:15px}
+h2{font-size:19px;margin-top:0}
+label{display:block;margin:12px 0 6px}
+input,textarea,select{width:100%;padding:12px;border-radius:8px;border:1px solid #454b63;background:#101522;color:white;font-size:15px}
+textarea{min-height:100px;resize:vertical}
+button{width:100%;padding:13px;margin-top:10px;border:0;border-radius:9px;background:#7950f2;color:white;font-weight:bold;font-size:15px;cursor:pointer;transition:opacity .2s}
+button:hover{opacity:.85}
+button:active{transform:scale(.98)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.secondary{background:#303950}
+.green{background:#18865d}
+.status{background:#111725;padding:12px;border-radius:8px;color:#8fffc1;overflow-wrap:anywhere}
+.error-status{background:#2a1115;color:#ff8a8a}
+.small{font-size:12px;color:#b9bfd0;line-height:1.6}
+#result{white-space:pre-wrap;line-height:1.7;overflow-wrap:anywhere}
+#seoResult{white-space:pre-wrap;line-height:1.7;overflow-wrap:anywhere}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid button{margin:0}
+.spinner{display:inline-block;width:16px;height:16px;border:3px solid #555;border-top-color:#b9a1ff;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:bold}
+.badge-demo{background:#4a3a1a;color:#ffc870}
+.badge-ai{background:#1a3a2a;color:#8fffc1}
+#loadingOverlay{display:none;text-align:center;padding:20px}
+.info-box{background:#111725;border:1px solid #2a3050;border-radius:10px;padding:14px;margin-top:10px;font-size:13px;line-height:1.7;color:#b9bfd0}
+.info-box b{color:#b9a1ff}
+</style>
+  <meta property="og:image" content="https://bolt.new/static/og_default.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:image" content="https://bolt.new/static/og_default.png">
+</head>
+<body>
+<header>
+<h1>🤖 BABA AI</h1>
+<p>आपका अपना YouTube Automation Agent</p>
+</header>
+<div class="container">
+
+<div class="card">
+<h2>📺 YouTube Channel</h2>
+<p id="channelStatus" class="status">अभी चैनल कनेक्ट नहीं है।</p>
+<button onclick="connectYouTube()">🔗 YouTube Connect की जानकारी</button>
+<p class="small">वास्तविक चैनल कनेक्शन के लिए Google OAuth और YouTube API सेटअप जरूरी है।</p>
+</div>
+
+<div class="card">
+<h2>🔎 वीडियो का विषय</h2>
+<label>अपना विषय लिखें</label>
+<input id="topic" placeholder="जैसे: ताजमहल के रहस्य">
+<label>वीडियो की भाषा</label>
+<select id="language">
+<option>हिंदी</option>
+<option>English</option>
+</select>
+<label>वीडियो की अवधि</label>
+<select id="duration">
+<option value="5">5 मिनट</option>
+<option value="10">10 मिनट</option>
+<option value="15">15 मिनट</option>
+<option value="30" selected>30 मिनट</option>
+</select>
+<button onclick="makeOutline()">📝 वीडियो की रूपरेखा बनाएँ</button>
+<button class="green" onclick="generateFullScript()" id="btnGenerateScript">🤖 पूरी AI स्क्रिप्ट बनाएँ</button>
+<button class="secondary" onclick="saveProject()">💾 प्रोजेक्ट सेव करें</button>
+</div>
+
+<div class="card">
+<h2>✍️ AI Script Studio</h2>
+<p id="scriptBadge" class="small"></p>
+<div id="scriptLoading" style="display:none;padding:14px;text-align:center">
+<span class="spinner"></span> AI स्क्रिप्ट लिख रहा है... कृपया प्रतीक्षा करें।
+</div>
+<textarea id="script" placeholder="यहाँ आपकी वीडियो स्क्रिप्ट दिखाई देगी..."></textarea>
+<div class="grid">
+<button onclick="copyScript()">📋 कॉपी</button>
+<button class="secondary" onclick="downloadScript()">⬇️ डाउनलोड</button>
+</div>
+</div>
+
+<div class="card">
+<h2>📈 YouTube SEO</h2>
+<p class="small">शीर्षक, विवरण, कीवर्ड्स, हैशटैग्स और थंबनेल टेक्स्ट — AI से तैयार।</p>
+<button onclick="generateSEO()" id="btnGenerateSEO">🤖 AI से SEO बनाएँ</button>
+<div id="seoLoading" style="display:none;padding:14px;text-align:center">
+<span class="spinner"></span> AI SEO तैयार कर रहा है... कृपया प्रतीक्षा करें।
+</div>
+<div id="seoResult" style="display:none"></div>
+<div class="grid" style="margin-top:10px">
+<button onclick="copySEO()" class="secondary">📋 SEO कॉपी</button>
+<button class="secondary" onclick="downloadSEO()">⬇️ SEO डाउनलोड</button>
+</div>
+</div>
+
+<div class="card">
+<h2>🎬 वीडियो निर्माण</h2>
+<button onclick="showFeature('voice')">🎙️ हिंदी आवाज बनाएँ</button>
+<button onclick="showFeature('images')">🖼️ वीडियो की तस्वीरें बनाएँ</button>
+<button onclick="showFeature('video')">🎞️ पूरा वीडियो बनाएँ</button>
+<button onclick="showFeature('thumbnail')">🖼️ थंबनेल बनाएँ</button>
+<button class="green" onclick="showFeature('upload')">📤 YouTube पर अपलोड करें</button>
+<p id="featureStatus" class="status">आपका एजेंट शुरुआत होने के लिए तैयार है।</p>
+<div id="featureInfo" style="display:none"></div>
+</div>
+
+<div class="card">
+<h2>📦 प्रोजेक्ट डाउनलोड</h2>
+<p class="small">पूरा प्रोजेक्ट ZIP फ़ाइल के रूप में डाउनलोड करें (बिना API keys या secrets के)।</p>
+<a href="/baba-ai-youtube-agent.zip" download="baba-ai-youtube-agent.zip" style="display:block;width:100%;padding:13px;margin-top:10px;border:0;border-radius:9px;background:#18865d;color:white;font-weight:bold;font-size:15px;cursor:pointer;text-align:center;text-decoration:none;transition:opacity .2s">⬇️ प्रोजेक्ट ZIP डाउनलोड करें</a>
+</div>
+
+<div class="card">
+<h2>📋 एजेंट आउटपुट</h2>
+<div id="result">नमस्ते! Baba AI YouTube Agent में आपका स्वागत है।</div>
+</div>
+
+</div>
+
+<script>
+var currentSEO = "";
+
+function setBadge(text, isAI) {
+  var el = document.getElementById('scriptBadge');
+  if (!text) { el.innerHTML = ''; return; }
+  var cls = isAI ? 'badge badge-ai' : 'badge badge-demo';
+  var label = isAI ? 'AI जनरेटेड' : 'डेमो रूपरेखा';
+  el.innerHTML = '<span class="' + cls + '">' + label + '</span>';
+}
+
+function connectYouTube() {
+  document.getElementById('channelStatus').textContent =
+    'कनेक्शन अभी सेटअप नहीं है। YouTube Data API v3 और Google OAuth की जरूरत है।';
+  document.getElementById('result').textContent =
+    'YouTube चैनल कनेक्ट करने के लिए:\n\n' +
+    '1. Google Cloud Console (console.cloud.google.com) पर जाएँ।\n' +
+    '2. नया प्रोजेक्ट बनाएँ।\n' +
+    '3. YouTube Data API v3 को Enable करें।\n' +
+    '4. OAuth 2.0 Credentials बनाएँ।\n' +
+    '5. Client ID और Client Secret को सर्वर के .env में सेट करें।\n\n' +
+    'बिना अनुमति के कुछ भी अपलोड नहीं होगा।';
+}
+
+function makeOutline() {
+  var topic = document.getElementById('topic').value.trim();
+  var duration = document.getElementById('duration').value;
+  var lang = document.getElementById('language').value;
+  if (!topic) { alert('पहले वीडियो का विषय लिखें।'); return; }
+  var outline =
+    'BABA AI — VIDEO PLAN\n\n' +
+    'विषय: ' + topic + '\n' +
+    'भाषा: ' + lang + '\n' +
+    'अवधि: ' + duration + ' मिनट\n\n' +
+    '1. शुरुआत: दर्शकों के लिए दिलचस्प सवाल\n' +
+    '2. विषय का परिचय और पृष्ठभूमि\n' +
+    '3. मुख्य जानकारी — भाग 1\n' +
+    '4. मुख्य जानकारी — भाग 2\n' +
+    '5. उदाहरण और तथ्य-जाँच\n' +
+    '6. रोचक निष्कर्ष\n' +
+    '7. दर्शकों से लाइक और सब्स्क्राइब करने का अनुरोध\n\n' +
+    'नोट: यह डेमो रूपरेखा है। पूरी AI स्क्रिप्ट बनाने के लिए "पूरी AI स्क्रिप्ट बनाएँ" बटन दबाएँ।';
+  document.getElementById('script').value = outline;
+  setBadge(true, false);
+  document.getElementById('result').textContent = '✅ वीडियो की रूपरेखा तैयार हो गई! अब "पूरी AI स्क्रिप्ट बनाएँ" बटन से पूरी स्क्रिप्ट ले सकते हैं।';
+}
+
+async function generateFullScript() {
+  var topic = document.getElementById('topic').value.trim();
+  var duration = document.getElementById('duration').value;
+  var lang = document.getElementById('language').value;
+  if (!topic) { alert('पहले वीडियो का विषय लिखें।'); return; }
+
+  var btn = document.getElementById('btnGenerateScript');
+  var loading = document.getElementById('scriptLoading');
+  var textarea = document.getElementById('script');
+  var result = document.getElementById('result');
+
+  btn.disabled = true;
+  loading.style.display = 'block';
+  textarea.value = '';
+  setBadge('', false);
+  result.textContent = 'AI स्क्रिप्ट लिख रहा है...';
+
+  try {
+    var resp = await fetch('/api/script', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: topic, duration: duration, language: lang })
+    });
+    var data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.error || 'स्क्रिप्ट बनाने में समस्या हुई।');
+    }
+    textarea.value = data.script;
+    setBadge(true, true);
+    result.textContent = '✅ पूरी AI स्क्रिप्ट तैयार हो गई! नीचे स्क्रिप्ट देखें।';
+  } catch (err) {
+    result.textContent = '❌ ' + (err.message || 'स्क्रिप्ट नहीं बन सकी।');
+    setBadge('', false);
+  } finally {
+    btn.disabled = false;
+    loading.style.display = 'none';
+  }
+}
+
+async function generateSEO() {
+  var topic = document.getElementById('topic').value.trim();
+  var lang = document.getElementById('language').value;
+  if (!topic) { alert('पहले वीडियो का विषय लिखें।'); return; }
+
+  var btn = document.getElementById('btnGenerateSEO');
+  var loading = document.getElementById('seoLoading');
+  var seoDiv = document.getElementById('seoResult');
+
+  btn.disabled = true;
+  loading.style.display = 'block';
+  seoDiv.style.display = 'none';
+
+  try {
+    var resp = await fetch('/api/seo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: topic, language: lang })
+    });
+    var data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.error || 'SEO बनाने में समस्या हुई।');
+    }
+    currentSEO = data.seo;
+    seoDiv.textContent = data.seo;
+    seoDiv.style.display = 'block';
+    document.getElementById('result').textContent = '✅ YouTube SEO तैयार हो गया!';
+  } catch (err) {
+    seoDiv.textContent = '❌ ' + (err.message || 'SEO नहीं बन सका।');
+    seoDiv.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    loading.style.display = 'none';
+  }
+}
+
+function copyScript() {
+  var text = document.getElementById('script').value;
+  if (!text) { alert('पहले स्क्रिप्ट बनाएँ।'); return; }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(function() { alert('स्क्रिप्ट कॉपी हो गई!'); })
+      .catch(function() { fallbackCopy(text); });
+  } else { fallbackCopy(text); }
+}
+
+function fallbackCopy(text) {
+  var area = document.getElementById('script');
+  area.focus(); area.select();
+  try { document.execCommand('copy'); alert('कॉपी करने की कोशिश पूरी हुई।'); }
+  catch (e) { alert('टेक्स्ट चुनकर Copy दबाएँ।'); }
+}
+
+function copySEO() {
+  if (!currentSEO) { alert('पहले SEO बनाएँ।'); return; }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(currentSEO)
+      .then(function() { alert('SEO कॉपी हो गई!'); })
+      .catch(function() { fallbackCopySEO(); });
+  } else { fallbackCopySEO(); }
+}
+
+function fallbackCopySEO() {
+  var temp = document.createElement('textarea');
+  temp.value = currentSEO;
+  document.body.appendChild(temp);
+  temp.select();
+  try { document.execCommand('copy'); alert('SEO कॉपी करने की कोशिश पूरी हुई।'); }
+  catch (e) { alert('टेक्स्ट चुनकर Copy दबाएँ।'); }
+  document.body.removeChild(temp);
+}
+
+function downloadScript() {
+  var text = document.getElementById('script').value;
+  if (!text) { alert('पहले स्क्रिप्ट बनाएँ।'); return; }
+  var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'Baba-AI-Script.txt'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadSEO() {
+  if (!currentSEO) { alert('पहले SEO बनाएँ।'); return; }
+  var blob = new Blob([currentSEO], { type: 'text/plain;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'Baba-AI-SEO.txt'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function saveProject() {
+  var data = {
+    topic: document.getElementById('topic').value,
+    duration: document.getElementById('duration').value,
+    language: document.getElementById('language').value,
+    script: document.getElementById('script').value,
+    seo: currentSEO
+  };
+  try {
+    localStorage.setItem('babaAIProject', JSON.stringify(data));
+    alert('प्रोजेक्ट इस ब्राउज़र में सेव हो गया!');
+  } catch (e) {
+    alert('सेव नहीं हो पाया। ब्राउज़र स्टोरेज की अनुमति जाँचें।');
+  }
+}
+
+var featureDetails = {
+  voice: {
+    msg: '🎙️ हिंदी आवाज बनाने के लिए Text-to-Speech (TTS) API कनेक्ट करना होगा।',
+    info: '<b>आवश्यक सेवाएँ:</b><br>' +
+      '• Google Cloud Text-to-Speech API, या<br>' +
+      '• Azure Cognitive Services TTS, या<br>' +
+      '• ElevenLabs API<br><br>' +
+      '<b>क्या करना होगा:</b><br>' +
+      '1. उपरोक्त में से किसी एक सेवा का खाता बनाएँ।<br>' +
+      '2. API Key प्राप्त करें।<br>' +
+      '3. सर्वर के .env में API Key सेट करें।<br>' +
+      '4. सर्वर में TTS endpoint बनाएँ जो स्क्रिप्ट को आवाज में बदले।<br><br>' +
+      '<b>ध्यान दें:</b> अभी कोई ऑडियो फ़ाइल नहीं बनती। यह एक इंटीग्रेशन पॉइंट है।'
+  },
+  images: {
+    msg: '🖼️ वीडियो की तस्वीरें बनाने के लिए Image Generation API कनेक्ट करनी होगी।',
+    info: '<b>आवश्यक सेवाएँ:</b><br>' +
+      '• Google Gemini Image Generation, या<br>' +
+      '• OpenAI DALL-E API, या<br>' +
+      '• Stable Diffusion API<br><br>' +
+      '<b>क्या करना होगा:</b><br>' +
+      '1. स्क्रिप्ट के दृश्य निर्देशों से image prompts बनाएँ।<br>' +
+      '2. Image API को कॉल करके तस्वीरें जनरेट करें।<br>' +
+      '3. सर्वर में endpoint बनाएँ।<br><br>' +
+      '<b>ध्यान दें:</b> अभी कोई तस्वीर नहीं बनती। यह एक इंटीग्रेशन पॉइंट है।'
+  },
+  video: {
+    msg: '🎞️ पूरा वीडियो बनाने के लिए आवाज, दृश्य, और वीडियो रेंडरिंग सेवाएँ जोड़नी होंगी।',
+    info: '<b>आवश्यक सेवाएँ:</b><br>' +
+      '• TTS API (आवाज के लिए)<br>' +
+      '• Image Generation API (दृश्यों के लिए)<br>' +
+      '• FFmpeg या वीडियो रेंडरिंग सेवा (तस्वीर + आवाज = वीडियो)<br><br>' +
+      '<b>क्या करना होगा:</b><br>' +
+      '1. स्क्रिप्ट से आवाज जनरेट करें (TTS)।<br>' +
+      '2. दृश्यों के अनुसार तस्वीरें जनरेट करें।<br>' +
+      '3. FFmpeg से आवाज + तस्वीरों को जोड़कर वीडियो बनाएँ।<br>' +
+      '4. सर्वर में रेंडरिंग endpoint बनाएँ।<br><br>' +
+      '<b>ध्यान दें:</b> अभी कोई वीडियो फ़ाइल नहीं बनती। यह एक इंटीग्रेशन पॉइंट है।'
+  },
+  thumbnail: {
+    msg: '🖼️ थंबनेल बनाने के लिए Image Generation या डिजाइन API कनेक्ट करना होगा।',
+    info: '<b>आवश्यक सेवाएँ:</b><br>' +
+      '• Image Generation API (Gemini, DALL-E, या Stable Diffusion)<br>' +
+      '• या Canva API / डिजाइन टूल<br><br>' +
+      '<b>क्या करना होगा:</b><br>' +
+      '1. विषय और SEO से थंबनेल आइडिया बनाएँ।<br>' +
+      '2. Image API से थंबनेल बैकग्राउंड जनरेट करें।<br>' +
+      '3. टेक्स्ट ओवरले जोड़ें (Canvas API या डिजाइन टूल से)।<br><br>' +
+      '<b>ध्यान दें:</b> अभी कोई थंबनेल नहीं बनता। यह एक इंटीग्रेशन पॉइंट है।'
+  },
+  upload: {
+    msg: '📤 YouTube पर अपलोड के लिए Google OAuth 2.0 और YouTube Data API v3 सेटअप करना होगा।',
+    info: '<b>क्या करना होगा:</b><br>' +
+      '1. Google Cloud Console (console.cloud.google.com) पर जाएँ।<br>' +
+      '2. नया प्रोजेक्ट बनाएँ।<br>' +
+      '3. YouTube Data API v3 को Enable करें।<br>' +
+      '4. OAuth 2.0 Client ID बनाएँ (Web application type)।<br>' +
+      '5. Client ID और Client Secret को सर्वर के .env में सेट करें:<br>' +
+      '&nbsp;&nbsp;YOUTUBE_CLIENT_ID=...<br>' +
+      '&nbsp;&nbsp;YOUTUBE_CLIENT_SECRET=...<br>' +
+      '6. सर्वर में OAuth flow बनाएँ।<br>' +
+      '7. उपयोगकर्ता की स्पष्ट अनुमति के बिना कुछ भी अपलोड न करें।<br><br>' +
+      '<b>सुरक्षा:</b> OAuth secrets कभी भी frontend में न रखें। सिर्फ सर्वर पर रखें।'
+  }
+};
+
+function showFeature(feature) {
+  var detail = featureDetails[feature];
+  if (!detail) {
+    document.getElementById('featureStatus').textContent = 'अगला चरण तैयार करें।';
+    document.getElementById('featureInfo').style.display = 'none';
+    return;
+  }
+  document.getElementById('featureStatus').textContent = detail.msg;
+  var info = document.getElementById('featureInfo');
+  info.innerHTML = '<div class="info-box">' + detail.info + '</div>';
+  info.style.display = 'block';
+}
+
+try {
+  var saved = JSON.parse(localStorage.getItem('babaAIProject') || 'null');
+  if (saved) {
+    document.getElementById('topic').value = saved.topic || '';
+    document.getElementById('duration').value = saved.duration || '30';
+    document.getElementById('language').value = saved.language || 'हिंदी';
+    document.getElementById('script').value = saved.script || '';
+    if (saved.seo) {
+      currentSEO = saved.seo;
+      var seoDiv = document.getElementById('seoResult');
+      seoDiv.textContent = saved.seo;
+      seoDiv.style.display = 'block';
+    }
+  }
+} catch (e) {}
+</script>
+</body>
+</html>
