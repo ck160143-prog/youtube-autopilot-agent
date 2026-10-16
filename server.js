@@ -61,7 +61,7 @@ app.post("/api/script", async (req, res) => {
 8. ${duration || 30} मिनट के लिए उपयुक्त मात्रा में सामग्री दें।`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.8-flash",
       contents: prompt,
     });
 
