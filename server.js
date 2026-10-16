@@ -119,7 +119,7 @@ app.post("/api/seo", async (req, res) => {
 सब कुछ ${language || "हिंदी"} में लिखें (कीवर्ड्स और हैशटैग्स अंग्रेजी में भी हो सकते हैं)।`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.8-flash",
       contents: prompt,
     });
 
