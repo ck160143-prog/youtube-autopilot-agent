@@ -99,4 +99,3 @@ function sendError(res, error, feature) {
         "GEMINI_API_KEY सेट नहीं है। Render के Environment में API Key जाँचें।",
     });
   }
-
