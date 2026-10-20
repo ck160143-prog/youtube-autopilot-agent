@@ -387,18 +387,95 @@ var featureDetails = {
   }
 };
 
+
 function showFeature(feature) {
   var detail = featureDetails[feature];
+  var status = document.getElementById('featureStatus');
+  var info = document.getElementById('featureInfo');
+
   if (!detail) {
-    document.getElementById('featureStatus').textContent = 'अगला चरण तैयार करें।';
-    document.getElementById('featureInfo').style.display = 'none';
+    status.textContent = 'यह फीचर उपलब्ध नहीं है।';
+    info.style.display = 'none';
     return;
   }
-  document.getElementById('featureStatus').textContent = detail.msg;
-  var info = document.getElementById('featureInfo');
+
+  if (feature === 'voice') {
+    var script = document.getElementById('script').value.trim();
+
+    if (!script) {
+      status.textContent = 'पहले स्क्रिप्ट बनाएँ।';
+      info.textContent = 'AI Script Studio में पहले हिंदी स्क्रिप्ट लिखें।';
+      info.style.display = 'block';
+      return;
+    }
+
+    status.textContent = 'हिंदी आवाज़ बनाई जा रही है...';
+    info.textContent = 'कृपया प्रतीक्षा करें।';
+    info.style.display = 'block';
+
+    fetch('/api/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: script })
+    })
+    .then(async function(response) {
+      var data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'आवाज़ नहीं बन सकी।');
+      }
+      if (!data.audioBase64) {
+        throw new Error('ऑडियो नहीं मिला।');
+      }
+      return data;
+    })
+    .then(function(data) {
+      var binary = atob(data.audioBase64);
+      var bytes = new Uint8Array(binary.length);
+
+      for (var i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+
+      var blob = new Blob([bytes], {
+        type: data.mimeType || 'audio/wav'
+      });
+      var url = URL.createObjectURL(blob);
+
+      info.replaceChildren();
+
+      var message = document.createElement('p');
+      message.textContent = 'ऑडियो तैयार है। नीचे सुनें।';
+      info.appendChild(message);
+
+      var audio = document.createElement('audio');
+      audio.controls = true;
+      audio.src = url;
+      audio.style.width = '100%';
+      info.appendChild(audio);
+
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = 'BABA-AI-Voice.wav';
+      link.textContent = 'हिंदी आवाज़ डाउनलोड करें';
+      link.style.display = 'block';
+      link.style.padding = '12px';
+      info.appendChild(link);
+
+      status.textContent = 'आवाज़ तैयार हो गई।';
+    })
+    .catch(function(error) {
+      status.textContent = 'आवाज़ बनाने में समस्या हुई।';
+      info.textContent = error.message;
+    });
+
+    return;
+  }
+
+  status.textContent = detail.msg;
   info.innerHTML = '<div class="info-box">' + detail.info + '</div>';
   info.style.display = 'block';
 }
+
 
 try {
   var saved = JSON.parse(localStorage.getItem('babaAIProject') || 'null');
