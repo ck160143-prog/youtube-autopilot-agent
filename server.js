@@ -14,6 +14,8 @@ const crypto = require("crypto");
 // Bounded in-memory LRU: max 12 successful audio responses; cleared on restart.
 const ttsCache = new Map();
 const TTS_CACHE_MAX = 12;
+const TTS_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+let ttsCacheBytes = 0;
 
 function getStatus(error) {
   const raw = error?.status ?? error?.statusCode ?? error?.code;
@@ -124,7 +126,8 @@ app.post("/api/voice", async (req, res) => {
       const cached = ttsCache.get(cacheKey);
       ttsCache.delete(cacheKey);
       ttsCache.set(cacheKey, cached);
-      return res.json({ success: true, ...cached, cached: true });
+      const { _cacheBytes, ...cachedAudio } = cached;
+      return res.json({ success: true, ...cachedAudio, cached: true });
     }
 
     const ai = getAIClient();
@@ -147,9 +150,17 @@ app.post("/api/voice", async (req, res) => {
       mimeType: audioPart.inlineData.mimeType || "audio/L16",
       audioBase64: audioPart.inlineData.data,
     };
-    ttsCache.set(cacheKey, audioResult);
-    while (ttsCache.size > TTS_CACHE_MAX) {
-      ttsCache.delete(ttsCache.keys().next().value);
+    const audioBytes = Math.floor(audioResult.audioBase64.length * 0.75);
+    // Skip caching unusually large clips; cache must stay within a bounded memory budget.
+    if (audioBytes <= TTS_CACHE_MAX_BYTES) {
+      ttsCache.set(cacheKey, { ...audioResult, _cacheBytes: audioBytes });
+      ttsCacheBytes += audioBytes;
+      while (ttsCache.size > TTS_CACHE_MAX || ttsCacheBytes > TTS_CACHE_MAX_BYTES) {
+        const oldestKey = ttsCache.keys().next().value;
+        const oldest = ttsCache.get(oldestKey);
+        ttsCacheBytes -= oldest?._cacheBytes || 0;
+        ttsCache.delete(oldestKey);
+      }
     }
     return res.json({ success: true, ...audioResult, cached: false });
   } catch (error) {
