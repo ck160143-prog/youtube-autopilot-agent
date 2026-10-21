@@ -501,6 +501,9 @@ function showFeature(feature) {
       note.textContent = 'स्क्रिप्ट को ' + chunks.length + ' छोटे ऑडियो हिस्सों में बनाया जाएगा।';
       info.appendChild(note);
 
+      var rawAudioParts = [];
+      var allPartsArePcm = true;
+      var firstMimeType = '';
       for (var index = 0; index < chunks.length; index++) {
         status.textContent = 'हिंदी आवाज़ बनाई जा रही है: ' + (index + 1) + '/' + chunks.length;
         note.textContent = 'ऑडियो क्लिप ' + (index + 1) + '/' + chunks.length + ' तैयार हो रही है…';
@@ -515,6 +518,9 @@ function showFeature(feature) {
         if (!data.audioBase64) throw new Error('क्लिप ' + (index + 1) + ' में ऑडियो नहीं मिला।');
 
         var audioBytes = decodeAudioBase64(data.audioBase64);
+        if (index === 0) firstMimeType = data.mimeType || '';
+        if (!/^audio\\/l16/i.test(data.mimeType || '')) allPartsArePcm = false;
+        rawAudioParts.push(audioBytes);
         var playableBytes = pcmToWav(audioBytes, data.mimeType);
         var blob = new Blob([playableBytes], { type: 'audio/wav' });
         var url = URL.createObjectURL(blob);
@@ -541,6 +547,32 @@ function showFeature(feature) {
         info.appendChild(clip);
       }
 
+      if (allPartsArePcm && rawAudioParts.length) {
+        var totalBytes = rawAudioParts.reduce(function(total, part) { return total + part.length; }, 0);
+        var mergedPcm = new Uint8Array(totalBytes);
+        var cursor = 0;
+        rawAudioParts.forEach(function(part) { mergedPcm.set(part, cursor); cursor += part.length; });
+        var mergedWav = pcmToWav(mergedPcm, firstMimeType);
+        var mergedUrl = URL.createObjectURL(new Blob([mergedWav], { type: 'audio/wav' }));
+        var finalSection = document.createElement('section');
+        finalSection.style.marginTop = '18px';
+        var finalHeading = document.createElement('h3');
+        finalHeading.textContent = '✅ पूरी आवाज़ (सभी हिस्से जुड़े हुए)';
+        finalSection.appendChild(finalHeading);
+        var finalAudio = document.createElement('audio');
+        finalAudio.controls = true;
+        finalAudio.src = mergedUrl;
+        finalAudio.style.width = '100%';
+        finalSection.appendChild(finalAudio);
+        var finalLink = document.createElement('a');
+        finalLink.href = mergedUrl;
+        finalLink.download = 'BABA-AI-Voice-Full.wav';
+        finalLink.textContent = 'पूरी हिंदी आवाज़ डाउनलोड करें';
+        finalLink.style.display = 'block';
+        finalLink.style.padding = '12px 0';
+        finalSection.appendChild(finalLink);
+        info.insertBefore(finalSection, info.children[1] || null);
+      }
       note.textContent = 'सभी ' + chunks.length + ' आवाज़ के हिस्से तैयार हैं। इन्हें क्रम से सुनें/डाउनलोड करें।';
       status.textContent = 'हिंदी आवाज़ तैयार है (' + chunks.length + ' क्लिप)।';
     })().catch(function(error) {
