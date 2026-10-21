@@ -67,9 +67,9 @@ function extractRetryHint(error) {
   }
   if (typeof error?.retryDelay === "string") detailStrings.push("retryDelay: " + error.retryDelay);
   const detailText = detailStrings.join(" ");
-  const retry = detailText.match(/(?:please\\s+)?retry(?:\\s+in)?\\s*["']?\\s*[:=]?\\s*["']?([0-9]+(?:\\.[0-9]+)?\\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\\s*[0-9]+(?:\\.[0-9]+)?\\s*(?:s|m|h))?)/i);
+  const retry = detailText.match(/(?:please\s+)?retry(?:\s+in)?\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\\.[0-9]+)?\s*(?:s|m|h))?)/i);
   if (retry) return retry[1].trim();
-  const reset = detailText.match(/(?:reset(?:s|\\s+at)?|retry\\s+after)\\s*[:=]?\\s*["']?([^"'\\n,;]{3,60})/i);
+  const reset = detailText.match(/(?:reset(?:s|\s+at)?|retry\s+after)\s*[:=]?\s*["']?([^"'\n,;]{3,60})/i);
   return reset ? reset[1].trim() : null;
 }
 
@@ -315,6 +315,7 @@ app.post("/api/seo", async (req, res) => {
 
 // 5. स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें बनाना (Gemini Image)
 app.post("/api/images", async (req, res) => {
+  let quotaModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
   try {
     const script = req.body?.script;
     if (typeof script !== "string" || !script.trim()) {
@@ -327,7 +328,7 @@ app.post("/api/images", async (req, res) => {
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
     const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
-    let quotaModel = scriptModel;
+    quotaModel = scriptModel;
     const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
       model: scriptModel,
       contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
@@ -379,7 +380,7 @@ ${script.slice(0, 18000)}
         if (quotaHit) imageQuota = quotaInfo(sceneError, imageModel);
         failedScenes.push({ scene: i + 1, title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
           error: quotaHit
-            ? imageQuota.message
+            ? "Gemini quota exhausted; आगे image requests रोक दी गईं।"
             : "इस दृश्य की तस्वीर नहीं बन सकी; अस्थायी Gemini त्रुटि पर सीमित retry के बाद रुक गए।" });
         if (quotaHit) break;
       }
