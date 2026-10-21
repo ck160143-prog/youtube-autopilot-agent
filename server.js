@@ -67,7 +67,7 @@ function extractRetryHint(error) {
   }
   if (typeof error?.retryDelay === "string") detailStrings.push("retryDelay: " + error.retryDelay);
   const detailText = detailStrings.join(" ");
-  const retry = detailText.match(/(?:please\s+)?(?:(?:retry(?:\s+in)?|retryDelay|retry_after)|retryDelay|retry_after)\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\.[0-9]+)?\s*(?:s|m|h))?)/i);
+  const retry = detailText.match(/(?:please\s+)?(?:retry(?:\s+in)?|retryDelay|retry_after)\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\.[0-9]+)?\s*(?:s|m|h))?)/i);
   if (retry) return retry[1].trim();
   const reset = detailText.match(/(?:reset(?:s|\s+at)?|retry\s+after)\s*[:=]?\s*["']?([^"'\n,;]{3,60})/i);
   return reset ? reset[1].trim() : null;
