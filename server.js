@@ -9,6 +9,54 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static("dist"));
 
+const crypto = require("crypto");
+
+// Bounded in-memory LRU: max 12 successful audio responses; cleared on restart.
+const ttsCache = new Map();
+const TTS_CACHE_MAX = 12;
+
+function getStatus(error) {
+  const raw = error?.status ?? error?.statusCode ?? error?.code;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n >= 100 && n <= 599) return n;
+  const match = String(error?.message || "").match(/\b(429|500|502|503|504)\b/);
+  return match ? Number(match[1]) : 0;
+}
+
+function isQuotaError(error) {
+  return getStatus(error) === 429 ||
+    /RESOURCE_EXHAUSTED|quota|rate.?limit|billing|payment/i.test(String(error?.message || ""));
+}
+
+function safeLog(label, error) {
+  // Do not log request bodies, API keys, or raw provider payloads.
+  console.error(label, { status: getStatus(error), code: String(error?.code || "").slice(0, 80) });
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function withTemporaryRetries(operation, maxRetries = 2) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      const status = getStatus(error);
+      if (status === 429 || isQuotaError(error)) throw error;
+      if (![500, 502, 503, 504].includes(status) || attempt >= maxRetries) throw error;
+      // 300ms, then 600ms; keep retry budget small.
+      await wait(300 * (2 ** attempt));
+    }
+  }
+}
+
+function quotaMessage(kind) {
+  return kind === "voice"
+    ? "Gemini TTS quota खत्म हो गई है (429)। quota reset होने तक प्रतीक्षा करें या Google AI Studio में usage, quota और billing जाँचें।"
+    : "Gemini API quota खत्म/सीमित है (429)। आगे image requests रोक दी गईं। Google AI Studio में usage, quota और billing जाँचें।";
+}
+
 function getAIClient() {
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -21,18 +69,20 @@ function getAIClient() {
   return new GoogleGenAI({ apiKey });
 }
 
-function sendAPIError(res, error, fallbackMessage) {
-  console.error(fallbackMessage, error);
+function sendAPIError(res, error, fallbackMessage, kind) {
+  safeLog(fallbackMessage, error);
 
   if (error.code === "NO_API_KEY") {
-    return res.status(500).json({
-      error: "Render Environment में GEMINI_API_KEY सेट करें।",
-    });
+    return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
   }
-
-  return res.status(500).json({
-    error: fallbackMessage,
-  });
+  if (isQuotaError(error)) {
+    return res.status(429).json({ error: quotaMessage(kind) });
+  }
+  const status = getStatus(error);
+  if ([500, 502, 503, 504].includes(status)) {
+    return res.status(503).json({ error: "Gemini सेवा अभी अस्थायी रूप से उपलब्ध नहीं है। कुछ देर बाद पुनः प्रयास करें।" });
+  }
+  return res.status(500).json({ error: fallbackMessage });
 }
 
 // 1. सर्वर की स्थिति
@@ -63,62 +113,50 @@ app.post("/api/voice", async (req, res) => {
       });
     }
 
-    const ai = getAIClient();
+    const model = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
+    const voiceName = "Kore";
+    const cacheKey = crypto.createHash("sha256")
+      .update(JSON.stringify([model, voiceName, text]))
+      .digest("hex");
 
-    const response = await ai.models.generateContent({
-      model:
-        process.env.GEMINI_TTS_MODEL ||
-        "gemini-2.5-flash-preview-tts",
-      contents: [
-        {
-          parts: [
-            {
-              text:
-                "नैचुरल और स्पष्ट हिंदी में यह टेक्स्ट बोलें: " +
-                text,
-            },
-          ],
-        },
-      ],
-      config: {
-        responseModalities: ["AUDIO"],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: {
-              voiceName: "Kore",
-            },
-          },
-        },
-      },
-    });
-
-    const parts =
-      response.candidates?.[0]?.content?.parts || [];
-
-    const audioPart = parts.find(
-      (part) => part.inlineData?.data
-    );
-
-    if (!audioPart) {
-      console.error(
-        "TTS response did not contain audio data."
-      );
-
-      return res.status(502).json({
-        error: "Gemini से ऑडियो नहीं मिला। Render Logs जाँचें।",
-      });
+    // LRU hit: refresh recency and reuse only a previously successful audio result.
+    if (ttsCache.has(cacheKey)) {
+      const cached = ttsCache.get(cacheKey);
+      ttsCache.delete(cacheKey);
+      ttsCache.set(cacheKey, cached);
+      return res.json({ success: true, ...cached, cached: true });
     }
 
-    return res.json({
-      success: true,
+    const ai = getAIClient();
+    const response = await withTemporaryRetries(() => ai.models.generateContent({
+      model,
+      contents: [{ parts: [{ text: "नैचुरल और स्पष्ट हिंदी में यह टेक्स्ट बोलें: " + text }] }],
+      config: {
+        responseModalities: ["AUDIO"],
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+      },
+    }));
+
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    const audioPart = parts.find(part => part.inlineData?.data);
+    if (!audioPart) {
+      return res.status(502).json({ error: "Gemini ने audio payload नहीं लौटाया। बाद में पुनः प्रयास करें।" });
+    }
+
+    const audioResult = {
       mimeType: audioPart.inlineData.mimeType || "audio/L16",
       audioBase64: audioPart.inlineData.data,
-    });
+    };
+    ttsCache.set(cacheKey, audioResult);
+    while (ttsCache.size > TTS_CACHE_MAX) {
+      ttsCache.delete(ttsCache.keys().next().value);
+    }
+    return res.json({ success: true, ...audioResult, cached: false });
   } catch (error) {
     return sendAPIError(
       res,
       error,
-      "आवाज़ नहीं बन सकी। Render Logs में AI Voice Error देखें।"
+      "आवाज़ नहीं बन सकी।", "voice"
     );
   }
 });
@@ -244,7 +282,7 @@ app.post("/api/images", async (req, res) => {
     }
 
     const ai = getAIClient();
-    const planResponse = await ai.models.generateContent({
+    const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
       model: process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
       contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
 सभी दृश्य एक ही visual style में हों: cinematic, polished, YouTube-friendly, 16:9 landscape, कोई लिखावट/टेक्स्ट/वॉटरमार्क नहीं।
@@ -255,7 +293,7 @@ ${script.slice(0, 18000)}
 {"scenes":[{"title":"दृश्य का छोटा शीर्षक","prompt":"English image prompt"}]}
 3 से अधिक दृश्य न दें।`,
       config: { responseMimeType: "application/json" }
-    });
+    }));
 
     let planText = planResponse.text || "";
     planText = planText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -267,41 +305,58 @@ ${script.slice(0, 18000)}
     if (!scenes.length) return res.status(502).json({ error: "स्क्रिप्ट से कोई दृश्य नहीं निकला।" });
 
     const images = [];
+    const failedScenes = [];
     const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       if (!scene || typeof scene.prompt !== "string" || !scene.prompt.trim()) continue;
 
-      const imageResponse = await ai.models.generateContent({
-        model: imageModel,
-        contents: scene.prompt,
-        config: { responseModalities: ["IMAGE"] }
-      });
-      const parts = imageResponse.candidates?.[0]?.content?.parts || [];
-      const imagePart = parts.find(part => part.inlineData?.data && (part.inlineData.mimeType || "").startsWith("image/"));
-      if (!imagePart) {
-        console.error("Gemini image response missing image payload for scene", i + 1);
-        return res.status(502).json({ error: `दृश्य ${i + 1} की तस्वीर नहीं मिली। Render Logs और Gemini मॉडल/क्वोटा जाँचें।` });
+      try {
+        const imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
+          model: imageModel,
+          contents: scene.prompt,
+          config: { responseModalities: ["IMAGE"] }
+        }));
+        const parts = imageResponse.candidates?.[0]?.content?.parts || [];
+        const imagePart = parts.find(part => part.inlineData?.data && (part.inlineData.mimeType || "").startsWith("image/"));
+        if (!imagePart) throw new Error("Image payload missing");
+        images.push({
+          scene: i + 1,
+          title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
+          mimeType: imagePart.inlineData.mimeType || "image/png",
+          imageBase64: imagePart.inlineData.data
+        });
+      } catch (sceneError) {
+        safeLog("Gemini image scene failed", sceneError);
+        failedScenes.push({ scene: i + 1, title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
+          error: isQuotaError(sceneError)
+            ? "Gemini quota खत्म/सीमित है; आगे के scenes रोक दिए गए।"
+            : "इस दृश्य की तस्वीर नहीं बन सकी; बाद में पुनः प्रयास करें।" });
+        if (isQuotaError(sceneError)) break;
       }
-      images.push({
-        title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
-        mimeType: imagePart.inlineData.mimeType || "image/png",
-        imageBase64: imagePart.inlineData.data
-      });
     }
 
-    if (!images.length) return res.status(502).json({ error: "कोई तस्वीर जनरेट नहीं हुई।" });
-    return res.json({ success: true, images, model: imageModel });
+    if (!images.length) {
+      const quotaHit = failedScenes.some(item => /quota/.test(item.error));
+      return res.status(quotaHit ? 429 : 502).json({
+        success: false,
+        error: quotaHit ? quotaMessage("images") : "कोई तस्वीर सफलतापूर्वक जनरेट नहीं हुई।",
+        images: [],
+        failedScenes,
+        model: imageModel
+      });
+    }
+    return res.json({ success: true, images, failedScenes, model: imageModel });
   } catch (error) {
-    console.error("Gemini scene image generation failed:", error);
-    const message = String(error?.message || "");
+    safeLog("Gemini scene image plan failed", error);
     if (error.code === "NO_API_KEY") {
-      return res.status(500).json({ error: "Render Environment में GEMINI_API_KEY सेट करें।" });
+      return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
     }
-    if (/quota|billing|payment|rate.?limit/i.test(message)) {
-      return res.status(429).json({ error: "Gemini API की quota/billing सीमा आई है। AI Studio में usage और billing जाँचें।" });
+    if (isQuotaError(error)) return res.status(429).json({ error: quotaMessage("images") });
+    if ([500, 502, 503, 504].includes(getStatus(error))) {
+      return res.status(503).json({ error: "Gemini अभी व्यस्त/अस्थायी रूप से अनुपलब्ध है। थोड़ी देर बाद पुनः प्रयास करें।" });
     }
-    return res.status(502).json({ error: "तस्वीरें नहीं बन सकीं। Render Logs में Gemini Image Error देखें; मॉडल उपलब्धता/क्वोटा जाँचें।" });
+    return res.status(502).json({ error: "Image generation request विफल हुई। बाद में पुनः प्रयास करें।" });
   }
 });
 
