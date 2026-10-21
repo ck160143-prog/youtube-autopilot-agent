@@ -451,6 +451,21 @@ async function generateSceneImages() {
       info.appendChild(card);
     });
 
+    // If quota was hit after some scenes succeeded, keep those images visible
+    // and show the provider's model/retry hint alongside them.
+    if (data.quotaInfo && data.quotaInfo.message) {
+      var quotaNotice = document.createElement('section');
+      quotaNotice.style.marginTop = '16px';
+      quotaNotice.style.padding = '12px';
+      quotaNotice.style.border = '1px solid #8b5a22';
+      quotaNotice.style.borderRadius = '10px';
+      quotaNotice.style.background = '#2a2115';
+      quotaNotice.style.color = '#ffd18a';
+      quotaNotice.setAttribute('role', 'alert');
+      quotaNotice.textContent = data.quotaInfo.message;
+      info.appendChild(quotaNotice);
+    }
+
     if (Array.isArray(data.failedScenes) && data.failedScenes.length) {
       var failures = document.createElement('section');
       failures.style.marginTop = '16px';
@@ -466,7 +481,8 @@ async function generateSceneImages() {
       info.appendChild(failures);
     }
     status.textContent = '✅ ' + data.images.length + ' दृश्य-तस्वीरें तैयार हैं।' +
-      (Array.isArray(data.failedScenes) && data.failedScenes.length ? ' कुछ दृश्य असफल रहे—विवरण नीचे है।' : '');
+      (data.quotaInfo ? ' Gemini image quota खत्म हुई; पहले से बनी तस्वीरें सुरक्षित हैं।' :
+       (Array.isArray(data.failedScenes) && data.failedScenes.length ? ' कुछ दृश्य असफल रहे—विवरण नीचे है।' : ''));
   } catch (error) {
     status.textContent = 'तस्वीरें बनाने में समस्या हुई।';
     info.replaceChildren();
