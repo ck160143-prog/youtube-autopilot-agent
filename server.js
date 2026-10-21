@@ -91,6 +91,16 @@ function quotaMessage(kind, model, error) {
   return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image").message;
 }
 
+let aiClientFactory = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+function setAIClientFactoryForTests(factory) {
+  aiClientFactory = factory;
+}
+
+function resetAIClientFactory() {
+  aiClientFactory = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+}
+
 function getAIClient() {
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -100,7 +110,7 @@ function getAIClient() {
     throw error;
   }
 
-  return new GoogleGenAI({ apiKey });
+  return aiClientFactory();
 }
 
 function sendAPIError(res, error, fallbackMessage, kind) {
@@ -434,4 +444,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries };
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, setAIClientFactoryForTests, resetAIClientFactory };
