@@ -316,6 +316,7 @@ app.post("/api/seo", async (req, res) => {
 // 5. स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें बनाना (Gemini Image)
 app.post("/api/images", async (req, res) => {
   let quotaModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
+  let quotaOperation = "script/scene planning";
   try {
     const script = req.body?.script;
     if (typeof script !== "string" || !script.trim()) {
@@ -354,6 +355,7 @@ ${script.slice(0, 18000)}
     const images = [];
     const failedScenes = [];
     quotaModel = imageModel;
+    quotaOperation = "image generation";
     let imageQuota = null;
     let temporaryImageFailure = false;
     for (let i = 0; i < scenes.length; i++) {
@@ -410,9 +412,8 @@ ${script.slice(0, 18000)}
       return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
     }
     if (isQuotaError(error)) {
-      const fallbackImageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
-      const failedModel = quotaModel || fallbackImageModel;
-      const info = quotaInfo(error, failedModel, failedModel === fallbackImageModel ? "image generation" : "script/scene planning");
+      const failedModel = quotaModel || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+      const info = quotaInfo(error, failedModel, quotaOperation);
       return res.status(429).json({ error: info.message, model: info.model, quotaInfo: info, images: [], failedScenes: [] });
     }
     if ([500, 502, 503, 504].includes(getStatus(error))) {
