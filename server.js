@@ -232,7 +232,81 @@ app.post("/api/seo", async (req, res) => {
   }
 });
 
-// 5. सर्वर शुरू करना
+// 5. स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें बनाना (Gemini Image)
+app.post("/api/images", async (req, res) => {
+  try {
+    const script = req.body?.script;
+    if (typeof script !== "string" || !script.trim()) {
+      return res.status(400).json({ error: "पहले AI Script Studio में स्क्रिप्ट तैयार करें।" });
+    }
+    if (script.length > 30000) {
+      return res.status(413).json({ error: "स्क्रिप्ट बहुत लंबी है। पहले छोटा भाग चुनें (30,000 अक्षरों तक)।" });
+    }
+
+    const ai = getAIClient();
+    const planResponse = await ai.models.generateContent({
+      model: process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
+      contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
+सभी दृश्य एक ही visual style में हों: cinematic, polished, YouTube-friendly, 16:9 landscape, कोई लिखावट/टेक्स्ट/वॉटरमार्क नहीं।
+स्क्रिप्ट:
+${script.slice(0, 18000)}
+
+केवल वैध JSON लौटाएँ, इस schema में:
+{"scenes":[{"title":"दृश्य का छोटा शीर्षक","prompt":"English image prompt"}]}
+3 से अधिक दृश्य न दें।`,
+      config: { responseMimeType: "application/json" }
+    });
+
+    let planText = planResponse.text || "";
+    planText = planText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    let plan;
+    try { plan = JSON.parse(planText); }
+    catch (_) { return res.status(502).json({ error: "AI से दृश्य योजना सही JSON में नहीं मिली। दोबारा प्रयास करें।" }); }
+
+    const scenes = Array.isArray(plan.scenes) ? plan.scenes.slice(0, 3) : [];
+    if (!scenes.length) return res.status(502).json({ error: "स्क्रिप्ट से कोई दृश्य नहीं निकला।" });
+
+    const images = [];
+    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      if (!scene || typeof scene.prompt !== "string" || !scene.prompt.trim()) continue;
+
+      const imageResponse = await ai.models.generateContent({
+        model: imageModel,
+        contents: scene.prompt,
+        config: { responseModalities: ["IMAGE"] }
+      });
+      const parts = imageResponse.candidates?.[0]?.content?.parts || [];
+      const imagePart = parts.find(part => part.inlineData?.data && (part.inlineData.mimeType || "").startsWith("image/"));
+      if (!imagePart) {
+        console.error("Gemini image response missing image payload for scene", i + 1);
+        return res.status(502).json({ error: `दृश्य ${i + 1} की तस्वीर नहीं मिली। Render Logs और Gemini मॉडल/क्वोटा जाँचें।` });
+      }
+      images.push({
+        title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
+        mimeType: imagePart.inlineData.mimeType || "image/png",
+        imageBase64: imagePart.inlineData.data
+      });
+    }
+
+    if (!images.length) return res.status(502).json({ error: "कोई तस्वीर जनरेट नहीं हुई।" });
+    return res.json({ success: true, images, model: imageModel });
+  } catch (error) {
+    console.error("Gemini scene image generation failed:", error);
+    const message = String(error?.message || "");
+    if (error.code === "NO_API_KEY") {
+      return res.status(500).json({ error: "Render Environment में GEMINI_API_KEY सेट करें।" });
+    }
+    if (/quota|billing|payment|rate.?limit/i.test(message)) {
+      return res.status(429).json({ error: "Gemini API की quota/billing सीमा आई है। AI Studio में usage और billing जाँचें।" });
+    }
+    return res.status(502).json({ error: "तस्वीरें नहीं बन सकीं। Render Logs में Gemini Image Error देखें; मॉडल उपलब्धता/क्वोटा जाँचें।" });
+  }
+});
+
+// 6. सर्वर शुरू करना
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
