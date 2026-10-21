@@ -67,7 +67,7 @@ function extractRetryHint(error) {
   }
   if (typeof error?.retryDelay === "string") detailStrings.push("retryDelay: " + error.retryDelay);
   const detailText = detailStrings.join(" ");
-  const retry = detailText.match(/(?:please\s+)?(?:retry(?:\s+in)?|retryDelay|retry_after)\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\.[0-9]+)?\s*(?:s|m|h))?)/i);
+  const retry = detailText.match(/(?:please\s+)?(?:(?:retry(?:\s+in)?|retryDelay|retry_after)|retryDelay|retry_after)\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\.[0-9]+)?\s*(?:s|m|h))?)/i);
   if (retry) return retry[1].trim();
   const reset = detailText.match(/(?:reset(?:s|\s+at)?|retry\s+after)\s*[:=]?\s*["']?([^"'\n,;]{3,60})/i);
   return reset ? reset[1].trim() : null;
@@ -355,6 +355,7 @@ ${script.slice(0, 18000)}
     const failedScenes = [];
     quotaModel = imageModel;
     let imageQuota = null;
+    let temporaryImageFailure = false;
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       if (!scene || typeof scene.prompt !== "string" || !scene.prompt.trim()) continue;
@@ -377,6 +378,8 @@ ${script.slice(0, 18000)}
       } catch (sceneError) {
         safeLog("Gemini image scene failed", sceneError);
         const quotaHit = isQuotaError(sceneError);
+        const temporaryHit = [500, 502, 503, 504].includes(getStatus(sceneError));
+        if (temporaryHit) temporaryImageFailure = true;
         if (quotaHit) imageQuota = quotaInfo(sceneError, imageModel);
         failedScenes.push({ scene: i + 1, title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
           error: quotaHit
@@ -388,9 +391,12 @@ ${script.slice(0, 18000)}
 
     if (!images.length) {
       const quotaHit = failedScenes.some(item => /quota/.test(item.error));
-      return res.status(quotaHit ? 429 : 502).json({
+      return res.status(quotaHit ? 429 : (temporaryImageFailure ? 503 : 502)).json({
         success: false,
-        error: quotaHit ? imageQuota?.message : "कोई तस्वीर सफलतापूर्वक जनरेट नहीं हुई।",
+        error: quotaHit ? imageQuota?.message :
+          (temporaryImageFailure
+            ? "Gemini image service अभी अस्थायी रूप से अनुपलब्ध है। सीमित retry किए गए; कुछ देर बाद फिर कोशिश करें।"
+            : "कोई तस्वीर सफलतापूर्वक जनरेट नहीं हुई।"),
         images: [],
         failedScenes,
         model: imageModel,
