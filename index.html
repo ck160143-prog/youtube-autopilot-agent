@@ -465,7 +465,8 @@ async function generateSceneImages() {
       });
       info.appendChild(failures);
     }
-    status.textContent = '✅ ' + data.images.length + ' दृश्य-तस्वीरें तैयार हैं।' +\n      (Array.isArray(data.failedScenes) && data.failedScenes.length ? ' कुछ दृश्य असफल रहे—विवरण नीचे है।' : '');
+    status.textContent = '✅ ' + data.images.length + ' दृश्य-तस्वीरें तैयार हैं।' +
+      (Array.isArray(data.failedScenes) && data.failedScenes.length ? ' कुछ दृश्य असफल रहे—विवरण नीचे है।' : '');
   } catch (error) {
     status.textContent = 'तस्वीरें बनाने में समस्या हुई।';
     info.replaceChildren();
