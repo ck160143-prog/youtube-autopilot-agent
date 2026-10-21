@@ -413,59 +413,141 @@ function showFeature(feature) {
     info.textContent = 'कृपया प्रतीक्षा करें।';
     info.style.display = 'block';
 
-    fetch('/api/voice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: script })
-    })
-    .then(async function(response) {
-      var data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'आवाज़ नहीं बन सकी।');
-      }
-      if (!data.audioBase64) {
-        throw new Error('ऑडियो नहीं मिला।');
-      }
-      return data;
-    })
-    .then(function(data) {
-      var binary = atob(data.audioBase64);
-      var bytes = new Uint8Array(binary.length);
+    // Gemini TTS endpoint पर हर अनुरोध 5,000 अक्षरों से छोटा रखें।
+    // वाक्य-सीमाओं पर बाँटें ताकि बोले जाने वाले क्लिप स्वाभाविक रहें।
+    function splitVoiceText(value, maxLength) {
+      var sentences = value.match(/[^।.!?\\n]+[।.!?\\n]*/g) || [value];
+      var chunks = [];
+      var current = '';
 
-      for (var i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
+      sentences.forEach(function(sentence) {
+        sentence = sentence.trim();
+        if (!sentence) return;
 
-      var blob = new Blob([bytes], {
-        type: data.mimeType || 'audio/wav'
+        // बहुत लंबा वाक्य हो तो शब्दों के बीच में बाँटें।
+        if (sentence.length > maxLength) {
+          if (current) { chunks.push(current); current = ''; }
+          var words = sentence.split(/\\s+/);
+          var piece = '';
+          words.forEach(function(word) {
+            if (piece && (piece + ' ' + word).length > maxLength) {
+              chunks.push(piece);
+              piece = word;
+            } else {
+              piece = piece ? piece + ' ' + word : word;
+            }
+          });
+          if (piece) chunks.push(piece);
+          return;
+        }
+
+        if (current && (current + ' ' + sentence).length > maxLength) {
+          chunks.push(current);
+          current = sentence;
+        } else {
+          current = current ? current + ' ' + sentence : sentence;
+        }
       });
-      var url = URL.createObjectURL(blob);
 
+      if (current) chunks.push(current);
+      return chunks;
+    }
+
+    function decodeAudioBase64(base64) {
+      var binary = atob(base64);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    // Gemini अक्सर raw 16-bit PCM (audio/L16) देता है। WAV header जोड़ने
+    // से ब्राउज़र में क्लिप चलाना आसान होता है।
+    function pcmToWav(pcm, mimeType) {
+      if (!/^audio\\/l16/i.test(mimeType || '')) return pcm;
+
+      var rateMatch = (mimeType || '').match(/rate=(\\d+)/i);
+      var sampleRate = rateMatch ? Number(rateMatch[1]) : 24000;
+      var channels = 1;
+      var header = new ArrayBuffer(44);
+      var view = new DataView(header);
+      function writeText(offset, value) {
+        for (var i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+      }
+      writeText(0, 'RIFF');
+      view.setUint32(4, 36 + pcm.length, true);
+      writeText(8, 'WAVE');
+      writeText(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, channels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * channels * 2, true);
+      view.setUint16(32, channels * 2, true);
+      view.setUint16(34, 16, true);
+      writeText(36, 'data');
+      view.setUint32(40, pcm.length, true);
+      return new Uint8Array([new Uint8Array(header), pcm].reduce(function(acc, part) {
+        var joined = new Uint8Array(acc.length + part.length);
+        joined.set(acc, 0);
+        joined.set(part, acc.length);
+        return joined;
+      }, new Uint8Array(0)));
+    }
+
+    (async function() {
+      var chunks = splitVoiceText(script, 4200);
       info.replaceChildren();
+      var note = document.createElement('p');
+      note.textContent = 'स्क्रिप्ट को ' + chunks.length + ' छोटे ऑडियो हिस्सों में बनाया जाएगा।';
+      info.appendChild(note);
 
-      var message = document.createElement('p');
-      message.textContent = 'ऑडियो तैयार है। नीचे सुनें।';
-      info.appendChild(message);
+      for (var index = 0; index < chunks.length; index++) {
+        status.textContent = 'हिंदी आवाज़ बनाई जा रही है: ' + (index + 1) + '/' + chunks.length;
+        note.textContent = 'ऑडियो क्लिप ' + (index + 1) + '/' + chunks.length + ' तैयार हो रही है…';
 
-      var audio = document.createElement('audio');
-      audio.controls = true;
-      audio.src = url;
-      audio.style.width = '100%';
-      info.appendChild(audio);
+        var response = await fetch('/api/voice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: chunks[index] })
+        });
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || ('क्लिप ' + (index + 1) + ' नहीं बन सकी।'));
+        if (!data.audioBase64) throw new Error('क्लिप ' + (index + 1) + ' में ऑडियो नहीं मिला।');
 
-      var link = document.createElement('a');
-      link.href = url;
-      link.download = 'BABA-AI-Voice.wav';
-      link.textContent = 'हिंदी आवाज़ डाउनलोड करें';
-      link.style.display = 'block';
-      link.style.padding = '12px';
-      info.appendChild(link);
+        var audioBytes = decodeAudioBase64(data.audioBase64);
+        var playableBytes = pcmToWav(audioBytes, data.mimeType);
+        var blob = new Blob([playableBytes], { type: 'audio/wav' });
+        var url = URL.createObjectURL(blob);
 
-      status.textContent = 'आवाज़ तैयार हो गई।';
-    })
-    .catch(function(error) {
+        var clip = document.createElement('section');
+        clip.style.marginTop = '14px';
+        var heading = document.createElement('p');
+        heading.textContent = '🎙️ आवाज़ का हिस्सा ' + (index + 1);
+        clip.appendChild(heading);
+
+        var audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = url;
+        audio.style.width = '100%';
+        clip.appendChild(audio);
+
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = 'BABA-AI-Voice-Part-' + (index + 1) + '.wav';
+        link.textContent = 'यह ऑडियो हिस्सा डाउनलोड करें';
+        link.style.display = 'block';
+        link.style.padding = '10px 0';
+        clip.appendChild(link);
+        info.appendChild(clip);
+      }
+
+      note.textContent = 'सभी ' + chunks.length + ' आवाज़ के हिस्से तैयार हैं। इन्हें क्रम से सुनें/डाउनलोड करें।';
+      status.textContent = 'हिंदी आवाज़ तैयार है (' + chunks.length + ' क्लिप)।';
+    })().catch(function(error) {
       status.textContent = 'आवाज़ बनाने में समस्या हुई।';
-      info.textContent = error.message;
+      var errorNote = document.createElement('p');
+      errorNote.textContent = error.message || 'आवाज़ नहीं बन सकी।';
+      info.appendChild(errorNote);
     });
 
     return;
