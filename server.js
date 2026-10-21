@@ -53,10 +53,42 @@ async function withTemporaryRetries(operation, maxRetries = 2) {
   }
 }
 
-function quotaMessage(kind) {
-  return kind === "voice"
-    ? "Gemini TTS quota खत्म हो गई है (429)। quota reset होने तक प्रतीक्षा करें या Google AI Studio में usage, quota और billing जाँचें।"
-    : "Gemini API quota खत्म/सीमित है (429)। आगे image requests रोक दी गईं। Google AI Studio में usage, quota और billing जाँचें।";
+function extractRetryHint(error) {
+  // Google SDK errors may carry retryDelay in message/details. Return only a short hint,
+  // never the raw provider payload.
+  const detailStrings = [];
+  if (typeof error?.message === "string") detailStrings.push(error.message);
+  if (Array.isArray(error?.details)) {
+    for (const detail of error.details) {
+      if (typeof detail === "string") detailStrings.push(detail);
+      else if (typeof detail?.retryDelay === "string") detailStrings.push("retryDelay: " + detail.retryDelay);
+      else if (typeof detail?.metadata?.retryDelay === "string") detailStrings.push("retryDelay: " + detail.metadata.retryDelay);
+    }
+  }
+  if (typeof error?.retryDelay === "string") detailStrings.push("retryDelay: " + error.retryDelay);
+  const detailText = detailStrings.join(" ");
+  const retry = detailText.match(/(?:please\s+)?(?:retry(?:\s+in)?|retryDelay|retry_after)\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\.[0-9]+)?\s*(?:s|m|h))?)/i);
+  if (retry) return retry[1].trim();
+  const reset = detailText.match(/(?:reset(?:s|\s+at)?|retry\s+after)\s*[:=]?\s*["']?([^"'\n,;]{3,60})/i);
+  return reset ? reset[1].trim() : null;
+}
+
+function quotaInfo(error, model, operation = "image generation") {
+  const retryHint = extractRetryHint(error);
+  const message = "Gemini " + operation + " quota समाप्त/सीमित है (429 RESOURCE_EXHAUSTED)। आगे की संबंधित requests रोक दी गईं। मॉडल: " + model +
+    (retryHint ? " Google का retry/reset संकेत: " + retryHint + "." : " Google ने इस error में retry/reset समय नहीं दिया।") +
+    " Google AI Studio में इसी API key/project का usage, quota और billing देखें।";
+  return { model, retryHint, message };
+}
+
+function quotaMessage(kind, model, error) {
+  if (kind === "voice") {
+    const hint = extractRetryHint(error);
+    return "Gemini TTS quota खत्म हो गई है (429)।" + (model ? " मॉडल: " + model + "." : "") +
+      (hint ? " Google का retry/reset संकेत: " + hint + "." : "") +
+      " Google AI Studio में usage, quota और billing जाँचें।";
+  }
+  return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image").message;
 }
 
 function getAIClient() {
@@ -78,7 +110,7 @@ function sendAPIError(res, error, fallbackMessage, kind) {
     return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
   }
   if (isQuotaError(error)) {
-    return res.status(429).json({ error: quotaMessage(kind) });
+    return res.status(429).json({ error: quotaMessage(kind, process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts", error) });
   }
   const status = getStatus(error);
   if ([500, 502, 503, 504].includes(status)) {
@@ -283,6 +315,8 @@ app.post("/api/seo", async (req, res) => {
 
 // 5. स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें बनाना (Gemini Image)
 app.post("/api/images", async (req, res) => {
+  let quotaModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
+  let quotaOperation = "script/scene planning";
   try {
     const script = req.body?.script;
     if (typeof script !== "string" || !script.trim()) {
@@ -293,8 +327,11 @@ app.post("/api/images", async (req, res) => {
     }
 
     const ai = getAIClient();
+    const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
+    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+    quotaModel = scriptModel;
     const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
-      model: process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
+      model: scriptModel,
       contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
 सभी दृश्य एक ही visual style में हों: cinematic, polished, YouTube-friendly, 16:9 landscape, कोई लिखावट/टेक्स्ट/वॉटरमार्क नहीं।
 स्क्रिप्ट:
@@ -317,7 +354,10 @@ ${script.slice(0, 18000)}
 
     const images = [];
     const failedScenes = [];
-    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
+    quotaModel = imageModel;
+    quotaOperation = "image generation";
+    let imageQuota = null;
+    let temporaryImageFailure = false;
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       if (!scene || typeof scene.prompt !== "string" || !scene.prompt.trim()) continue;
@@ -339,31 +379,43 @@ ${script.slice(0, 18000)}
         });
       } catch (sceneError) {
         safeLog("Gemini image scene failed", sceneError);
+        const quotaHit = isQuotaError(sceneError);
+        const temporaryHit = [500, 502, 503, 504].includes(getStatus(sceneError));
+        if (temporaryHit) temporaryImageFailure = true;
+        if (quotaHit) imageQuota = quotaInfo(sceneError, imageModel, "image generation");
         failedScenes.push({ scene: i + 1, title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
-          error: isQuotaError(sceneError)
-            ? "Gemini quota खत्म/सीमित है; आगे के scenes रोक दिए गए।"
-            : "इस दृश्य की तस्वीर नहीं बन सकी; बाद में पुनः प्रयास करें।" });
-        if (isQuotaError(sceneError)) break;
+          error: quotaHit
+            ? "Gemini quota exhausted; आगे image requests रोक दी गईं।"
+            : "इस दृश्य की तस्वीर नहीं बन सकी; अस्थायी Gemini त्रुटि पर सीमित retry के बाद रुक गए।" });
+        if (quotaHit) break;
       }
     }
 
     if (!images.length) {
       const quotaHit = failedScenes.some(item => /quota/.test(item.error));
-      return res.status(quotaHit ? 429 : 502).json({
+      return res.status(quotaHit ? 429 : (temporaryImageFailure ? 503 : 502)).json({
         success: false,
-        error: quotaHit ? quotaMessage("images") : "कोई तस्वीर सफलतापूर्वक जनरेट नहीं हुई।",
+        error: quotaHit ? imageQuota?.message :
+          (temporaryImageFailure
+            ? "Gemini image service अभी अस्थायी रूप से अनुपलब्ध है। सीमित retry किए गए; कुछ देर बाद फिर कोशिश करें।"
+            : "कोई तस्वीर सफलतापूर्वक जनरेट नहीं हुई।"),
         images: [],
         failedScenes,
-        model: imageModel
+        model: imageModel,
+        quotaInfo: imageQuota
       });
     }
-    return res.json({ success: true, images, failedScenes, model: imageModel });
+    return res.json({ success: true, images, failedScenes, model: imageModel, quotaInfo: imageQuota });
   } catch (error) {
     safeLog("Gemini scene image plan failed", error);
     if (error.code === "NO_API_KEY") {
       return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
     }
-    if (isQuotaError(error)) return res.status(429).json({ error: quotaMessage("images") });
+    if (isQuotaError(error)) {
+      const failedModel = quotaModel || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+      const info = quotaInfo(error, failedModel, quotaOperation);
+      return res.status(429).json({ error: info.message, model: info.model, quotaInfo: info, images: [], failedScenes: [] });
+    }
     if ([500, 502, 503, 504].includes(getStatus(error))) {
       return res.status(503).json({ error: "Gemini अभी व्यस्त/अस्थायी रूप से अनुपलब्ध है। थोड़ी देर बाद पुनः प्रयास करें।" });
     }
@@ -375,6 +427,11 @@ ${script.slice(0, 18000)}
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("BABA AI Server running on port " + PORT);
-});
+// Allow node:test to import retry/quota helpers without binding a server port.
+if (require.main === module) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log("BABA AI Server running on port " + PORT);
+  });
+}
+
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries };
