@@ -73,9 +73,9 @@ function extractRetryHint(error) {
   return reset ? reset[1].trim() : null;
 }
 
-function quotaInfo(error, model) {
+function quotaInfo(error, model, operation = "image generation") {
   const retryHint = extractRetryHint(error);
-  const message = "Gemini image quota समाप्त/सीमित है (429 RESOURCE_EXHAUSTED)। आगे की image requests रोक दी गईं। मॉडल: " + model +
+  const message = "Gemini " + operation + " quota समाप्त/सीमित है (429 RESOURCE_EXHAUSTED)। आगे की संबंधित requests रोक दी गईं। मॉडल: " + model +
     (retryHint ? " Google का retry/reset संकेत: " + retryHint + "." : " Google ने इस error में retry/reset समय नहीं दिया।") +
     " Google AI Studio में इसी API key/project का usage, quota और billing देखें।";
   return { model, retryHint, message };
@@ -380,7 +380,7 @@ ${script.slice(0, 18000)}
         const quotaHit = isQuotaError(sceneError);
         const temporaryHit = [500, 502, 503, 504].includes(getStatus(sceneError));
         if (temporaryHit) temporaryImageFailure = true;
-        if (quotaHit) imageQuota = quotaInfo(sceneError, imageModel);
+        if (quotaHit) imageQuota = quotaInfo(sceneError, imageModel, "image generation");
         failedScenes.push({ scene: i + 1, title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
           error: quotaHit
             ? "Gemini quota exhausted; आगे image requests रोक दी गईं।"
@@ -410,7 +410,9 @@ ${script.slice(0, 18000)}
       return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
     }
     if (isQuotaError(error)) {
-      const info = quotaInfo(error, quotaModel || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image");
+      const fallbackImageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+      const failedModel = quotaModel || fallbackImageModel;
+      const info = quotaInfo(error, failedModel, failedModel === fallbackImageModel ? "image generation" : "script/scene planning");
       return res.status(429).json({ error: info.message, model: info.model, quotaInfo: info, images: [], failedScenes: [] });
     }
     if ([500, 502, 503, 504].includes(getStatus(error))) {
