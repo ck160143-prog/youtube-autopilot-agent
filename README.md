@@ -78,6 +78,7 @@ hashtags, thumbnail text) in Hindi or English.
 |---------------------|----------|--------------------------------------|
 | `GEMINI_API_KEY`    | Yes      | Google Gemini API key for AI features|
 | `PORT`              | No       | Server port (default: 3000)          |
+| `GEMINI_IMAGE_MODEL` | No       | Image model (default: `gemini-3.1-flash-image`); verify project access/quota in AI Studio |
 
 See [`.env.example`](.env.example) for optional future integrations
 (YouTube upload, TTS, image generation).
