@@ -388,6 +388,79 @@ var featureDetails = {
 };
 
 
+async function generateSceneImages() {
+  var script = document.getElementById('script').value.trim();
+  var status = document.getElementById('featureStatus');
+  var info = document.getElementById('featureInfo');
+  var button = document.getElementById('btnGenerateSceneImages');
+
+  if (!script) {
+    status.textContent = 'पहले AI Script Studio में स्क्रिप्ट बनाएँ।';
+    return;
+  }
+
+  button.disabled = true;
+  status.textContent = 'स्क्रिप्ट के दृश्य और तस्वीरें बनाई जा रही हैं…';
+  info.replaceChildren();
+  var progress = document.createElement('p');
+  progress.textContent = 'Gemini अधिकतम 3 दृश्य-तस्वीरें बना रहा है। इसमें समय लग सकता है।';
+  info.appendChild(progress);
+
+  try {
+    var response = await fetch('/api/images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script: script })
+    });
+    var data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'तस्वीरें नहीं बन सकीं।');
+    if (!Array.isArray(data.images) || !data.images.length) {
+      throw new Error('API से तस्वीरें नहीं मिलीं।');
+    }
+
+    info.replaceChildren();
+    data.images.forEach(function(item, index) {
+      var card = document.createElement('section');
+      card.style.marginTop = '16px';
+      card.style.padding = '12px';
+      card.style.border = '1px solid #343a51';
+      card.style.borderRadius = '10px';
+
+      var title = document.createElement('h3');
+      title.textContent = 'दृश्य ' + (index + 1) + ': ' + (item.title || 'वीडियो दृश्य');
+      card.appendChild(title);
+
+      var image = document.createElement('img');
+      image.alt = title.textContent;
+      image.src = 'data:' + (item.mimeType || 'image/png') + ';base64,' + item.imageBase64;
+      image.style.width = '100%';
+      image.style.height = 'auto';
+      image.style.borderRadius = '8px';
+      image.style.display = 'block';
+      card.appendChild(image);
+
+      var download = document.createElement('a');
+      download.href = image.src;
+      download.download = 'BABA-AI-Scene-' + (index + 1) + '.png';
+      download.textContent = '⬇️ यह तस्वीर डाउनलोड करें';
+      download.style.display = 'block';
+      download.style.padding = '12px 0';
+      download.style.color = '#b9a1ff';
+      card.appendChild(download);
+      info.appendChild(card);
+    });
+    status.textContent = '✅ ' + data.images.length + ' दृश्य-तस्वीरें तैयार हैं।';
+  } catch (error) {
+    status.textContent = 'तस्वीरें बनाने में समस्या हुई।';
+    info.replaceChildren();
+    var errorText = document.createElement('p');
+    errorText.textContent = error.message || 'कृपया दोबारा प्रयास करें।';
+    info.appendChild(errorText);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function showFeature(feature) {
   var detail = featureDetails[feature];
   var status = document.getElementById('featureStatus');
@@ -396,6 +469,30 @@ function showFeature(feature) {
   if (!detail) {
     status.textContent = 'यह फीचर उपलब्ध नहीं है।';
     info.style.display = 'none';
+    return;
+  }
+
+  if (feature === 'images') {
+    var script = document.getElementById('script').value.trim();
+    if (!script) {
+      status.textContent = 'पहले AI Script Studio में स्क्रिप्ट बनाएँ।';
+      info.textContent = 'ऊपर स्क्रिप्ट तैयार करें, फिर तस्वीरें बनाएँ।';
+      info.style.display = 'block';
+      return;
+    }
+
+    status.textContent = 'तस्वीरें बनाने के लिए तैयार।';
+    info.replaceChildren();
+    var intro = document.createElement('p');
+    intro.textContent = 'स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें Gemini से जनरेट होंगी। API usage/quota या billing लागू हो सकती है।';
+    info.appendChild(intro);
+
+    var generateButton = document.createElement('button');
+    generateButton.id = 'btnGenerateSceneImages';
+    generateButton.textContent = '🖼️ 3 दृश्य-तस्वीरें जनरेट करें';
+    generateButton.addEventListener('click', generateSceneImages);
+    info.appendChild(generateButton);
+    info.style.display = 'block';
     return;
   }
 
