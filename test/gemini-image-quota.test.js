@@ -31,8 +31,8 @@ test("temporary 503 gets only two bounded retries (three total attempts)", async
 test("quota notice includes configured model and Google's retry hint", () => {
   const error = Object.assign(new Error('429 RESOURCE_EXHAUSTED; retryDelay: "20s"'), { status: 429 });
   assert.equal(extractRetryHint(error), "20s");
-  const info = quotaInfo(error, "gemini-2.5-flash-image");
-  assert.equal(info.model, "gemini-2.5-flash-image");
+  const info = quotaInfo(error, "gemini-3.1-flash-image");
+  assert.equal(info.model, "gemini-3.1-flash-image");
   assert.match(info.message, /gemini-2\.5-flash-image/);
   assert.match(info.message, /20s/);
   assert.match(info.message, /RESOURCE_EXHAUSTED/);
