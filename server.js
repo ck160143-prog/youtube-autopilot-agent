@@ -67,7 +67,7 @@ function extractRetryHint(error) {
   }
   if (typeof error?.retryDelay === "string") detailStrings.push("retryDelay: " + error.retryDelay);
   const detailText = detailStrings.join(" ");
-  const retry = detailText.match(/(?:please\s+)?retry(?:\s+in)?\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\\.[0-9]+)?\s*(?:s|m|h))?)/i);
+  const retry = detailText.match(/(?:please\s+)?retry(?:\s+in)?\s*["']?\s*[:=]?\s*["']?([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|seconds?|m|minutes?|h|hours?)(?:\s*[0-9]+(?:\.[0-9]+)?\s*(?:s|m|h))?)/i);
   if (retry) return retry[1].trim();
   const reset = detailText.match(/(?:reset(?:s|\s+at)?|retry\s+after)\s*[:=]?\s*["']?([^"'\n,;]{3,60})/i);
   return reset ? reset[1].trim() : null;
@@ -88,7 +88,7 @@ function quotaMessage(kind, model, error) {
       (hint ? " Google का retry/reset संकेत: " + hint + "." : "") +
       " Google AI Studio में usage, quota और billing जाँचें।";
   }
-  return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image").message;
+  return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image").message;
 }
 
 function getAIClient() {
@@ -327,7 +327,7 @@ app.post("/api/images", async (req, res) => {
 
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
-    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
+    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
     quotaModel = scriptModel;
     const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
       model: scriptModel,
@@ -404,7 +404,7 @@ ${script.slice(0, 18000)}
       return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
     }
     if (isQuotaError(error)) {
-      const info = quotaInfo(error, quotaModel || process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image");
+      const info = quotaInfo(error, quotaModel || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image");
       return res.status(429).json({ error: info.message, model: info.model, quotaInfo: info, images: [], failedScenes: [] });
     }
     if ([500, 502, 503, 504].includes(getStatus(error))) {
