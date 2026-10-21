@@ -426,8 +426,9 @@ async function generateSceneImages() {
       card.style.border = '1px solid #343a51';
       card.style.borderRadius = '10px';
 
+      var sceneNumber = Number(item.scene) || (index + 1);
       var title = document.createElement('h3');
-      title.textContent = 'दृश्य ' + (index + 1) + ': ' + (item.title || 'वीडियो दृश्य');
+      title.textContent = 'दृश्य ' + sceneNumber + ': ' + (item.title || 'वीडियो दृश्य');
       card.appendChild(title);
 
       var image = document.createElement('img');
@@ -441,7 +442,7 @@ async function generateSceneImages() {
 
       var download = document.createElement('a');
       download.href = image.src;
-      download.download = 'BABA-AI-Scene-' + (index + 1) + '.png';
+      download.download = 'BABA-AI-Scene-' + sceneNumber + '.png';
       download.textContent = '⬇️ यह तस्वीर डाउनलोड करें';
       download.style.display = 'block';
       download.style.padding = '12px 0';
@@ -449,7 +450,22 @@ async function generateSceneImages() {
       card.appendChild(download);
       info.appendChild(card);
     });
-    status.textContent = '✅ ' + data.images.length + ' दृश्य-तस्वीरें तैयार हैं।';
+
+    if (Array.isArray(data.failedScenes) && data.failedScenes.length) {
+      var failures = document.createElement('section');
+      failures.style.marginTop = '16px';
+      var failuresTitle = document.createElement('h3');
+      failuresTitle.textContent = 'कुछ दृश्य नहीं बन पाए';
+      failures.appendChild(failuresTitle);
+      data.failedScenes.forEach(function(item) {
+        var failure = document.createElement('p');
+        failure.textContent = 'दृश्य ' + (item.scene || '?') + ': ' +
+          (item.title || 'वीडियो दृश्य') + ' — ' + (item.error || 'अस्थायी त्रुटि');
+        failures.appendChild(failure);
+      });
+      info.appendChild(failures);
+    }
+    status.textContent = '✅ ' + data.images.length + ' दृश्य-तस्वीरें तैयार हैं।' +\n      (Array.isArray(data.failedScenes) && data.failedScenes.length ? ' कुछ दृश्य असफल रहे—विवरण नीचे है।' : '');
   } catch (error) {
     status.textContent = 'तस्वीरें बनाने में समस्या हुई।';
     info.replaceChildren();
