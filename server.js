@@ -418,6 +418,11 @@ ${script.slice(0, 18000)}
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("BABA AI Server running on port " + PORT);
-});
+// Allow node:test to import retry/quota helpers without binding a server port.
+if (require.main === module) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log("BABA AI Server running on port " + PORT);
+  });
+}
+
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries };
