@@ -416,7 +416,7 @@ function showFeature(feature) {
     // Gemini TTS endpoint पर हर अनुरोध 5,000 अक्षरों से छोटा रखें।
     // वाक्य-सीमाओं पर बाँटें ताकि बोले जाने वाले क्लिप स्वाभाविक रहें।
     function splitVoiceText(value, maxLength) {
-      var sentences = value.match(/[^।.!?\\n]+[।.!?\\n]*/g) || [value];
+      var sentences = value.match(/[^।.!?\n]+[।.!?\n]*/g) || [value];
       var chunks = [];
       var current = '';
 
@@ -427,7 +427,7 @@ function showFeature(feature) {
         // बहुत लंबा वाक्य हो तो शब्दों के बीच में बाँटें।
         if (sentence.length > maxLength) {
           if (current) { chunks.push(current); current = ''; }
-          var words = sentence.split(/\\s+/);
+          var words = sentence.split(/\s+/);
           var piece = '';
           words.forEach(function(word) {
             if (piece && (piece + ' ' + word).length > maxLength) {
@@ -463,9 +463,9 @@ function showFeature(feature) {
     // Gemini अक्सर raw 16-bit PCM (audio/L16) देता है। WAV header जोड़ने
     // से ब्राउज़र में क्लिप चलाना आसान होता है।
     function pcmToWav(pcm, mimeType) {
-      if (!/^audio\\/l16/i.test(mimeType || '')) return pcm;
+      if (!/^audio\/l16/i.test(mimeType || '')) return pcm;
 
-      var rateMatch = (mimeType || '').match(/rate=(\\d+)/i);
+      var rateMatch = (mimeType || '').match(/rate=(\d+)/i);
       var sampleRate = rateMatch ? Number(rateMatch[1]) : 24000;
       var channels = 1;
       var header = new ArrayBuffer(44);
@@ -519,7 +519,7 @@ function showFeature(feature) {
 
         var audioBytes = decodeAudioBase64(data.audioBase64);
         if (index === 0) firstMimeType = data.mimeType || '';
-        if (!/^audio\\/l16/i.test(data.mimeType || '')) allPartsArePcm = false;
+        if (!/^audio\/l16/i.test(data.mimeType || '')) allPartsArePcm = false;
         rawAudioParts.push(audioBytes);
         var playableBytes = pcmToWav(audioBytes, data.mimeType);
         var blob = new Blob([playableBytes], { type: 'audio/wav' });
