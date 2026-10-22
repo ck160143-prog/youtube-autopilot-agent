@@ -132,6 +132,23 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <script>
 var currentSEO = "";
 
+// Parse API responses safely. Express/Render can return an HTML error page
+// (which begins with "<!DOCTYPE") instead of JSON; show a useful diagnostic.
+async function readApiJson(response) {
+  var raw = await response.text();
+  try {
+    return JSON.parse(raw);
+  } catch (_) {
+    var endpoint = response.url || "API endpoint";
+    var preview = raw.slice(0, 160).replace(/\s+/g, " ").trim();
+    if (/^\s*<!doctype\s+html|^\s*<html/i.test(raw)) {
+      throw new Error("API से JSON के बजाय HTML पेज मिला (HTTP " + response.status + ", " + endpoint + ")। संभव है Render पर पुराना deploy हो, route गलत हो, या server/proxy error दे रहा हो। Render Logs और deployment status जाँचें।");
+    }
+    throw new Error("API response JSON नहीं है (HTTP " + response.status + ", " + endpoint + "): " + preview);
+  }
+}
+
+
 function setBadge(text, isAI) {
   var el = document.getElementById('scriptBadge');
   if (!text) { el.innerHTML = ''; return; }
@@ -144,7 +161,7 @@ function connectYouTube() { window.location.href = '/api/youtube/connect'; }
 async function refreshYouTubeStatus() {
   var status = document.getElementById('channelStatus');
   try {
-    var response = await fetch('/api/youtube/status'); var data = await response.json();
+    var response = await fetch('/api/youtube/status'); var data = await readApiJson(response);
     status.textContent = !data.configured ? 'OAuth credentials Render में सेट नहीं हैं। README के setup steps करें।' :
       data.connected ? '✅ Connected: ' + (data.channel?.title || 'YouTube चैनल') + ' (' + (data.channel?.id || '') + ')' :
       'अभी चैनल Connect नहीं है। Connect बटन दबाएँ।';
@@ -259,7 +276,7 @@ async function generateFullScript() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ topic: topic, duration: duration, language: lang })
     });
-    var data = await resp.json();
+    var data = await readApiJson(resp);
     if (!resp.ok) {
       throw new Error(data.error || 'स्क्रिप्ट बनाने में समस्या हुई।');
     }
@@ -589,7 +606,7 @@ async function generateAutoVideo() {
   info.appendChild(progress);
   try {
     var imageResp = await fetch('/api/images', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({script:renderScriptText}) });
-    var imageData = await imageResp.json();
+    var imageData = await readApiJson(imageResp);
     if (!imageResp.ok || !imageData.images || !imageData.images.length) throw new Error(imageData.error || 'Scene images नहीं बनीं।');
     progress.textContent = 'Step 2/3: हिंदी narration बना रहा है…';
     var sentences = renderScriptText.match(/[^।.!?\n]+[।.!?\n]*/g) || [renderScriptText];
@@ -606,7 +623,7 @@ async function generateAutoVideo() {
     for(var i=0;i<chunks.length;i++){
       progress.textContent='Step 2/3: Voice clip '+(i+1)+'/'+chunks.length+'…';
       var voiceResp=await fetch('/api/voice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:chunks[i]})});
-      var voiceData=await voiceResp.json();
+      var voiceData=await readApiJson(voiceResp);
       if(!voiceResp.ok || !voiceData.audioBase64) throw new Error(voiceData.error || 'Voice generate नहीं हुई।');
       if(!/^audio\/l16/i.test(voiceData.mimeType||'')) throw new Error('Auto render के लिए raw PCM (audio/L16) output चाहिए।');
       mime=voiceData.mimeType||mime;
@@ -625,7 +642,7 @@ async function generateAutoVideo() {
       scenes:imageData.images.map(function(x){return {mimeType:x.mimeType,imageBase64:x.imageBase64};}),
       audioBase64:audioBase64,audioMime:mime
     })});
-    if(!renderResp.ok){var err=await renderResp.json().catch(function(){return {};});throw new Error(err.error||'MP4 render नहीं हुआ।');}
+    if(!renderResp.ok){var err=await readApiJson(renderResp).catch(function(error){return {error:error.message};});throw new Error(err.error||'MP4 render नहीं हुआ।');}
     lastRenderedVideoBlob=await renderResp.blob();
     if(lastRenderedVideoUrl)URL.revokeObjectURL(lastRenderedVideoUrl);
     lastRenderedVideoUrl=URL.createObjectURL(lastRenderedVideoBlob);
