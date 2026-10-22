@@ -433,6 +433,189 @@ ${script.slice(0, 18000)}
   }
 });
 
+
+/* ---- Real YouTube OAuth + resumable upload (single-user browser session) ---- */
+function youtubeConfigReady() {
+  return Boolean(process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET &&
+    process.env.YOUTUBE_REDIRECT_URI && process.env.APP_SESSION_SECRET &&
+    process.env.APP_SESSION_SECRET.length >= 32);
+}
+function cookieOptions() {
+  return "Path=/; HttpOnly; SameSite=Lax; Max-Age=86400" +
+    (process.env.NODE_ENV === "production" ? "; Secure" : "");
+}
+function encryptSession(payload) {
+  const key = crypto.createHash("sha256").update(process.env.APP_SESSION_SECRET || "").digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString("base64url");
+}
+function decryptSession(req) {
+  try {
+    const cookie = (req.headers.cookie || "").split(";").map(v => v.trim()).find(v => v.startsWith("baba_youtube_session="));
+    if (!cookie || !process.env.APP_SESSION_SECRET) return {};
+    const packed = Buffer.from(cookie.split("=").slice(1).join("="), "base64url");
+    if (packed.length < 29) return {};
+    const key = crypto.createHash("sha256").update(process.env.APP_SESSION_SECRET).digest();
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, packed.subarray(0, 12));
+    decipher.setAuthTag(packed.subarray(12, 28));
+    return JSON.parse(Buffer.concat([decipher.update(packed.subarray(28)), decipher.final()]).toString("utf8"));
+  } catch (_) { return {}; }
+}
+function setYoutubeSession(res, payload) {
+  res.setHeader("Set-Cookie", "baba_youtube_session=" + encryptSession(payload) + "; " + cookieOptions());
+}
+function clearYoutubeSession(res) {
+  res.setHeader("Set-Cookie", "baba_youtube_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" +
+    (process.env.NODE_ENV === "production" ? "; Secure" : ""));
+}
+function youtubeNotConfigured(res) {
+  return res.status(503).json({ error: "YouTube OAuth configure नहीं है। Render Environment में YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI और कम-से-कम 32 अक्षरों का APP_SESSION_SECRET सेट करें।" });
+}
+async function getYoutubeAccessToken(req, res) {
+  const session = decryptSession(req);
+  if (!session.refresh_token && !session.access_token) {
+    res.status(401).json({ error: "पहले YouTube चैनल Connect करें।" });
+    return null;
+  }
+  if (session.access_token && session.expires_at && Date.now() < session.expires_at - 60000) return session.access_token;
+  if (!session.refresh_token) {
+    clearYoutubeSession(res);
+    res.status(401).json({ error: "YouTube login expire हो गया। चैनल फिर Connect करें।" });
+    return null;
+  }
+  const form = new URLSearchParams({
+    client_id: process.env.YOUTUBE_CLIENT_ID,
+    client_secret: process.env.YOUTUBE_CLIENT_SECRET,
+    refresh_token: session.refresh_token,
+    grant_type: "refresh_token"
+  });
+  const refreshed = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form
+  });
+  const tokenData = await refreshed.json().catch(() => ({}));
+  if (!refreshed.ok || !tokenData.access_token) {
+    clearYoutubeSession(res);
+    res.status(401).json({ error: "Google token refresh विफल हुआ। YouTube चैनल फिर Connect करें।" });
+    return null;
+  }
+  const next = { ...session, access_token: tokenData.access_token,
+    expires_at: Date.now() + (Number(tokenData.expires_in) || 3600) * 1000 };
+  setYoutubeSession(res, next);
+  return next.access_token;
+}
+app.get("/api/youtube/status", async (req, res) => {
+  if (!youtubeConfigReady()) return res.json({ configured: false, connected: false });
+  const session = decryptSession(req);
+  if (!session.access_token && !session.refresh_token) return res.json({ configured: true, connected: false });
+  const token = await getYoutubeAccessToken(req, res);
+  if (!token) return;
+  const response = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+    headers: { Authorization: "Bearer " + token }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return res.status(502).json({ configured: true, connected: false, error: "YouTube चैनल की जानकारी नहीं मिल सकी।" });
+  const channel = data.items?.[0];
+  return res.json({ configured: true, connected: Boolean(channel),
+    channel: channel ? { title: channel.snippet?.title, id: channel.id } : null });
+});
+app.get("/api/youtube/connect", (req, res) => {
+  if (!youtubeConfigReady()) return youtubeNotConfigured(res);
+  const state = crypto.randomBytes(24).toString("hex");
+  setYoutubeSession(res, { oauth_state: state });
+  const params = new URLSearchParams({
+    client_id: process.env.YOUTUBE_CLIENT_ID,
+    redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
+    response_type: "code",
+    scope: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+    access_type: "offline",
+    prompt: "consent",
+    state
+  });
+  return res.redirect("https://accounts.google.com/o/oauth2/v2/auth?" + params.toString());
+});
+app.get("/api/youtube/callback", async (req, res) => {
+  if (!youtubeConfigReady()) return youtubeNotConfigured(res);
+  const oldSession = decryptSession(req);
+  if (!req.query.code || !req.query.state || req.query.state !== oldSession.oauth_state) {
+    clearYoutubeSession(res);
+    return res.status(400).send("OAuth state mismatch. Please start YouTube Connect again.");
+  }
+  try {
+    const form = new URLSearchParams({
+      code: String(req.query.code),
+      client_id: process.env.YOUTUBE_CLIENT_ID,
+      client_secret: process.env.YOUTUBE_CLIENT_SECRET,
+      redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
+      grant_type: "authorization_code"
+    });
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form
+    });
+    const tokens = await tokenResponse.json().catch(() => ({}));
+    if (!tokenResponse.ok || !tokens.access_token) {
+      safeLog("YouTube OAuth token exchange failed", { status: tokenResponse.status });
+      return res.status(502).send("Google OAuth token exchange failed. Check OAuth setup and redirect URI.");
+    }
+    setYoutubeSession(res, { access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token || oldSession.refresh_token,
+      expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000 });
+    return res.redirect("/?youtube=connected");
+  } catch (error) {
+    safeLog("YouTube OAuth callback failed", error);
+    return res.status(502).send("YouTube OAuth callback failed.");
+  }
+});
+app.post("/api/youtube/disconnect", (req, res) => {
+  clearYoutubeSession(res);
+  return res.json({ success: true });
+});
+app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }), async (req, res) => {
+  if (!youtubeConfigReady()) return youtubeNotConfigured(res);
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: "MP4 वीडियो फ़ाइल भेजें।" });
+  if (req.body.length > 90 * 1024 * 1024) return res.status(413).json({ error: "इस hosted upload में 90 MB तक की फ़ाइल स्वीकार है।" });
+  const title = String(req.headers["x-video-title"] || "").trim().slice(0, 100);
+  const description = String(req.headers["x-video-description"] || "").slice(0, 5000);
+  const privacy = String(req.headers["x-video-privacy"] || "private");
+  const mime = String(req.headers["content-type"] || "video/mp4").split(";")[0];
+  if (!title) return res.status(400).json({ error: "YouTube वीडियो का title भरें।" });
+  if (!["private", "unlisted", "public"].includes(privacy)) return res.status(400).json({ error: "Privacy private/unlisted/public में से चुनें।" });
+  if (!["video/mp4", "video/quicktime", "video/webm"].includes(mime)) return res.status(415).json({ error: "समर्थित फ़ाइल: MP4, MOV या WebM।" });
+  try {
+    const token = await getYoutubeAccessToken(req, res);
+    if (!token) return;
+    const initUrl = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status";
+    const init = await fetch(initUrl, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": mime, "X-Upload-Content-Length": String(req.body.length) },
+      body: JSON.stringify({ snippet: { title, description }, status: { privacyStatus: privacy, selfDeclaredMadeForKids: false } })
+    });
+    if (!init.ok) {
+      const details = await init.json().catch(() => ({}));
+      safeLog("YouTube upload session creation failed", { status: init.status });
+      return res.status(init.status === 401 ? 401 : 502).json({ error: details.error?.message || "YouTube upload session नहीं बन सका। Google API quota/permissions जाँचें।" });
+    }
+    const uploadUrl = init.headers.get("location");
+    if (!uploadUrl) return res.status(502).json({ error: "Google ने resumable upload URL नहीं दिया।" });
+    const uploaded = await fetch(uploadUrl, {
+      method: "PUT", headers: { "Content-Type": mime, "Content-Length": String(req.body.length),
+        "Content-Range": "bytes 0-" + (req.body.length - 1) + "/" + req.body.length },
+      body: req.body
+    });
+    const result = await uploaded.json().catch(() => ({}));
+    if (!uploaded.ok || !result.id) {
+      safeLog("YouTube video transfer failed", { status: uploaded.status });
+      return res.status(502).json({ error: result.error?.message || "YouTube वीडियो upload पूरा नहीं हुआ।" });
+    }
+    return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy });
+  } catch (error) {
+    safeLog("YouTube upload failed", error);
+    return res.status(502).json({ error: "YouTube upload विफल हुआ। Render logs में सुरक्षित status जाँचें।" });
+  }
+});
+
 // 6. सर्वर शुरू करना
 
 const PORT = process.env.PORT || 3000;
