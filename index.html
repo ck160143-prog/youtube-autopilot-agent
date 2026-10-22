@@ -108,7 +108,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <h2>🎬 वीडियो निर्माण</h2>
 <button onclick="showFeature('voice')">🎙️ हिंदी आवाज बनाएँ</button>
 <button onclick="showFeature('images')">🖼️ वीडियो की तस्वीरें बनाएँ</button>
-<button onclick="showFeature('video')">🎞️ पूरा वीडियो बनाएँ</button>
+<button onclick="showFeature('video')">🎞️ स्क्रिप्ट से MP4 वीडियो बनाएँ</button>
 <button onclick="showFeature('thumbnail')">🖼️ थंबनेल बनाएँ</button>
 <button class="green" onclick="showUploadForm()">📤 MP4 वीडियो YouTube पर अपलोड करें</button>
 <p id="featureStatus" class="status">आपका एजेंट शुरुआत होने के लिए तैयार है।</p>
@@ -158,8 +158,35 @@ function showUploadForm() {
     '<label>वीडियो फ़ाइल (MP4/MOV/WebM, 90 MB तक)</label><input id="ytVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm">' +
     '<button id="ytUploadButton" class="green" onclick="uploadVideoToYouTube()">⬆️ अभी YouTube पर अपलोड करें</button>' +
     '<p id="ytUploadResult" class="status" role="status">फ़ाइल चुनकर Upload दबाएँ।</p>';
+  if (lastRenderedVideoBlob) {
+    var generatedUpload = document.createElement('button');
+    generatedUpload.className = 'green';
+    generatedUpload.textContent = '⬆️ अभी तैयार MP4 को YouTube पर अपलोड करें';
+    generatedUpload.addEventListener('click', uploadRenderedVideo);
+    info.appendChild(generatedUpload);
+  }
   info.style.display = 'block'; status.textContent = 'YouTube upload form तैयार है।';
 }
+
+async function uploadRenderedVideo() {
+  if(!lastRenderedVideoBlob){document.getElementById('ytUploadResult').textContent='पहले MP4 वीडियो बनाएँ।';return;}
+  var title=document.getElementById('ytTitle').value.trim();
+  if(!title){document.getElementById('ytUploadResult').textContent='YouTube title भरें।';return;}
+  var button=document.getElementById('ytUploadButton'), result=document.getElementById('ytUploadResult');
+  if(button)button.disabled=true;
+  result.textContent='तैयार MP4 YouTube पर upload हो रहा है…';
+  try{
+    var response=await fetch('/api/youtube/upload',{method:'POST',headers:{
+      'Content-Type':'video/mp4','X-Video-Title':title,
+      'X-Video-Description':document.getElementById('ytDescription').value,
+      'X-Video-Privacy':document.getElementById('ytPrivacy').value
+    },body:lastRenderedVideoBlob});
+    var data=await response.json();if(!response.ok)throw new Error(data.error||'Upload विफल।');
+    result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy;
+  }catch(error){result.textContent='❌ '+(error.message||'Upload failed');}
+  finally{if(button)button.disabled=false;}
+}
+
 async function uploadVideoToYouTube() {
   var file = document.getElementById('ytVideoFile')?.files?.[0], title = document.getElementById('ytTitle')?.value.trim();
   var result = document.getElementById('ytUploadResult'), button = document.getElementById('ytUploadButton');
@@ -354,6 +381,9 @@ function saveProject() {
   }
 }
 
+var lastRenderedVideoBlob = null;
+var lastRenderedVideoUrl = null;
+
 var featureDetails = {
   voice: {
     msg: '🎙️ हिंदी आवाज बनाने के लिए Text-to-Speech (TTS) API कनेक्ट करना होगा।',
@@ -527,6 +557,69 @@ async function generateSceneImages() {
   }
 }
 
+
+async function generateAutoVideo() {
+  var scriptText = document.getElementById('script').value.trim();
+  var status = document.getElementById('featureStatus');
+  var info = document.getElementById('featureInfo');
+  var button = document.getElementById('btnAutoRender');
+  if (!scriptText) { status.textContent = 'पहले script बनाएँ।'; return; }
+  button.disabled = true;
+  info.replaceChildren();
+  var progress = document.createElement('p'); progress.className = 'status';
+  progress.textContent = 'Step 1/3: AI scene images बना रहा है…'; info.appendChild(progress);
+  try {
+    var imageResp = await fetch('/api/images', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({script:scriptText}) });
+    var imageData = await imageResp.json();
+    if (!imageResp.ok || !imageData.images || !imageData.images.length) throw new Error(imageData.error || 'Scene images नहीं बनीं।');
+    progress.textContent = 'Step 2/3: हिंदी narration बना रहा है…';
+    var sentences = scriptText.match(/[^।.!?\n]+[।.!?\n]*/g) || [scriptText];
+    var chunks = [], current = '';
+    sentences.forEach(function(s) {
+      s=s.trim(); if(!s)return;
+      while(s.length>4500){ if(current){chunks.push(current);current='';} chunks.push(s.slice(0,4500));s=s.slice(4500); }
+      if(current && (current+' '+s).length>4500){chunks.push(current);current=s;}
+      else current=current?current+' '+s:s;
+    });
+    if(current)chunks.push(current);
+    if(chunks.length>12) throw new Error('स्क्रिप्ट बहुत लंबी है। अभी 12 voice clips तक support है; छोटी script चुनें।');
+    var pcmParts=[], mime='audio/L16;rate=24000';
+    for(var i=0;i<chunks.length;i++){
+      progress.textContent='Step 2/3: Voice clip '+(i+1)+'/'+chunks.length+'…';
+      var voiceResp=await fetch('/api/voice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:chunks[i]})});
+      var voiceData=await voiceResp.json();
+      if(!voiceResp.ok || !voiceData.audioBase64) throw new Error(voiceData.error || 'Voice generate नहीं हुई।');
+      if(!/^audio\/l16/i.test(voiceData.mimeType||'')) throw new Error('Auto render के लिए raw PCM (audio/L16) output चाहिए।');
+      mime=voiceData.mimeType||mime;
+      var bin=atob(voiceData.audioBase64), bytes=new Uint8Array(bin.length);
+      for(var j=0;j<bin.length;j++)bytes[j]=bin.charCodeAt(j);
+      pcmParts.push(bytes);
+    }
+    var pcmLength=pcmParts.reduce(function(n,p){return n+p.length;},0);
+    if(pcmLength>8*1024*1024) throw new Error('Narration बहुत बड़ी है। छोटी script से retry करें।');
+    var merged=new Uint8Array(pcmLength), offset=0;
+    pcmParts.forEach(function(p){merged.set(p,offset);offset+=p.length;});
+    var binary=''; for(var k=0;k<merged.length;k+=32768) binary+=String.fromCharCode.apply(null,merged.subarray(k,k+32768));
+    var audioBase64=btoa(binary);
+    progress.textContent='Step 3/3: FFmpeg 720p MP4 render कर रहा है…';
+    var renderResp=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      scenes:imageData.images.map(function(x){return {mimeType:x.mimeType,imageBase64:x.imageBase64};}),
+      audioBase64:audioBase64,audioMime:mime
+    })});
+    if(!renderResp.ok){var err=await renderResp.json().catch(function(){return {};});throw new Error(err.error||'MP4 render नहीं हुआ।');}
+    lastRenderedVideoBlob=await renderResp.blob();
+    if(lastRenderedVideoUrl)URL.revokeObjectURL(lastRenderedVideoUrl);
+    lastRenderedVideoUrl=URL.createObjectURL(lastRenderedVideoBlob);
+    info.replaceChildren();
+    var heading=document.createElement('h3');heading.textContent='🎉 आपका MP4 वीडियो तैयार है';info.appendChild(heading);
+    var player=document.createElement('video');player.controls=true;player.src=lastRenderedVideoUrl;player.style.width='100%';player.style.borderRadius='10px';info.appendChild(player);
+    var download=document.createElement('a');download.href=lastRenderedVideoUrl;download.download='BABA-AI-Video.mp4';download.textContent='⬇️ MP4 डाउनलोड करें';download.style.display='block';download.style.padding='12px 0';download.style.color='#b9a1ff';info.appendChild(download);
+    var uploadBtn=document.createElement('button');uploadBtn.className='green';uploadBtn.textContent='📤 इस वीडियो को YouTube पर भेजें';uploadBtn.addEventListener('click',function(){showUploadForm();});info.appendChild(uploadBtn);
+    status.textContent='✅ MP4 तैयार ('+(lastRenderedVideoBlob.size/1024/1024).toFixed(1)+' MB)। Preview देखें।';
+  } catch(error) { progress.textContent='❌ '+(error.message||'Video pipeline failed');status.textContent='वीडियो बनाते समय समस्या हुई।'; }
+  finally { button.disabled=false; }
+}
+
 function showFeature(feature) {
   var detail = featureDetails[feature];
   var status = document.getElementById('featureStatus');
@@ -535,6 +628,31 @@ function showFeature(feature) {
   if (!detail) {
     status.textContent = 'यह फीचर उपलब्ध नहीं है।';
     info.style.display = 'none';
+    return;
+  }
+
+
+  if (feature === 'video') {
+    var scriptText = document.getElementById('script').value.trim();
+    if (!scriptText) {
+      status.textContent = 'पहले AI Script Studio में स्क्रिप्ट बनाएँ।';
+      info.textContent = 'पहले विषय भरकर पूरी AI स्क्रिप्ट बनाएँ।';
+      info.style.display = 'block';
+      return;
+    }
+    info.replaceChildren();
+    var note = document.createElement('p');
+    note.className = 'small';
+    note.textContent = 'यह pipeline अधिकतम 3 AI तस्वीरें और हिंदी narration जोड़कर 720p MP4 बनाएगी। लगभग 180 सेकंड तक; Gemini API quota लागू हो सकती है।';
+    info.appendChild(note);
+    var generate = document.createElement('button');
+    generate.id = 'btnAutoRender';
+    generate.className = 'green';
+    generate.textContent = '✨ तस्वीरें + हिंदी आवाज़ + MP4 बनाएँ';
+    generate.addEventListener('click', generateAutoVideo);
+    info.appendChild(generate);
+    info.style.display = 'block';
+    status.textContent = 'स्वचालित वीडियो pipeline तैयार है।';
     return;
   }
 
