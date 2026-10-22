@@ -124,9 +124,18 @@ function sendAPIError(res, error, fallbackMessage, kind) {
   }
   const status = getStatus(error);
   if ([500, 502, 503, 504].includes(status)) {
-    return res.status(503).json({ error: "Gemini सेवा अभी अस्थायी रूप से उपलब्ध नहीं है। कुछ देर बाद पुनः प्रयास करें।" });
+    return res.status(503).json({ error: "Google Gemini सर्वर पर अस्थायी समस्या (HTTP " + status + ") है। 30–60 सेकंड बाद दोबारा कोशिश करें। यदि लगातार हो, Render Logs में request का status देखें।" });
   }
-  return res.status(500).json({ error: fallbackMessage });
+  if (status === 401 || status === 403) {
+    return res.status(502).json({ error: "Gemini API key स्वीकार नहीं हुई या इस मॉडल की अनुमति नहीं है (HTTP " + status + ")। Render Environment में GEMINI_API_KEY और Google AI Studio के उसी project की API access जाँचें।" });
+  }
+  if (status === 404) {
+    return res.status(502).json({ error: "Gemini मॉडल नहीं मिला (HTTP 404)। Render Environment में GEMINI_SCRIPT_MODEL / GEMINI_IMAGE_MODEL / GEMINI_TTS_MODEL का model ID जाँचें।" });
+  }
+  if (status === 400) {
+    return res.status(502).json({ error: "Gemini ने request अस्वीकार की (HTTP 400)। मॉडल/feature compatibility या request format जाँचें।" });
+  }
+  return res.status(500).json({ error: fallbackMessage + " (server status " + (status || "unknown") + ") Render Logs जाँचें।" });
 }
 
 // 1. सर्वर की स्थिति
@@ -246,11 +255,10 @@ app.post("/api/script", async (req, res) => {
 7. अंत में निष्कर्ष और लाइक तथा सब्सक्राइब करने का अनुरोध दें।
 8. आउटपुट ${videoLanguage} में दें।`;
 
-    const response = await ai.models.generateContent({
-      model:
-        process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
+    const response = await withTemporaryRetries(() => ai.models.generateContent({
+      model: process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
       contents: prompt,
-    });
+    }));
 
     const scriptText = response.text;
 
