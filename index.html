@@ -52,7 +52,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div class="card">
 <h2>📺 YouTube Channel</h2>
 <p id="channelStatus" class="status">अभी चैनल कनेक्ट नहीं है।</p>
-<button onclick="connectYouTube()">🔗 YouTube Connect की जानकारी</button>
+<button onclick="connectYouTube()">🔗 YouTube चैनल Connect करें</button><button class="secondary" onclick="refreshYouTubeStatus()">🔄 कनेक्शन स्थिति जाँचें</button>
 <p class="small">वास्तविक चैनल कनेक्शन के लिए Google OAuth और YouTube API सेटअप जरूरी है।</p>
 </div>
 
@@ -110,7 +110,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <button onclick="showFeature('images')">🖼️ वीडियो की तस्वीरें बनाएँ</button>
 <button onclick="showFeature('video')">🎞️ पूरा वीडियो बनाएँ</button>
 <button onclick="showFeature('thumbnail')">🖼️ थंबनेल बनाएँ</button>
-<button class="green" onclick="showFeature('upload')">📤 YouTube पर अपलोड करें</button>
+<button class="green" onclick="showUploadForm()">📤 MP4 वीडियो YouTube पर अपलोड करें</button>
 <p id="featureStatus" class="status">आपका एजेंट शुरुआत होने के लिए तैयार है।</p>
 <div id="featureInfo" style="display:none"></div>
 </div>
@@ -139,18 +139,51 @@ function setBadge(text, isAI) {
   el.innerHTML = '<span class="' + cls + '">' + label + '</span>';
 }
 
-function connectYouTube() {
-  document.getElementById('channelStatus').textContent =
-    'कनेक्शन अभी सेटअप नहीं है। YouTube Data API v3 और Google OAuth की जरूरत है।';
-  document.getElementById('result').textContent =
-    'YouTube चैनल कनेक्ट करने के लिए:\n\n' +
-    '1. Google Cloud Console (console.cloud.google.com) पर जाएँ।\n' +
-    '2. नया प्रोजेक्ट बनाएँ।\n' +
-    '3. YouTube Data API v3 को Enable करें।\n' +
-    '4. OAuth 2.0 Credentials बनाएँ।\n' +
-    '5. Client ID और Client Secret को सर्वर के .env में सेट करें।\n\n' +
-    'बिना अनुमति के कुछ भी अपलोड नहीं होगा।';
+function connectYouTube() { window.location.href = '/api/youtube/connect'; }
+async function refreshYouTubeStatus() {
+  var status = document.getElementById('channelStatus');
+  try {
+    var response = await fetch('/api/youtube/status'); var data = await response.json();
+    status.textContent = !data.configured ? 'OAuth credentials Render में सेट नहीं हैं। README के setup steps करें।' :
+      data.connected ? '✅ Connected: ' + (data.channel?.title || 'YouTube चैनल') + ' (' + (data.channel?.id || '') + ')' :
+      'अभी चैनल Connect नहीं है। Connect बटन दबाएँ।';
+  } catch (_) { status.textContent = 'कनेक्शन स्थिति नहीं मिल सकी।'; }
 }
+function showUploadForm() {
+  var status = document.getElementById('featureStatus'), info = document.getElementById('featureInfo');
+  info.innerHTML = '<p class="small">तैयार MP4 चुनें। Upload आपके OAuth-connected चैनल पर होगा। Hosted सीमा 90 MB है।</p>' +
+    '<label>YouTube Title</label><input id="ytTitle" maxlength="100" placeholder="वीडियो का शीर्षक">' +
+    '<label>Description</label><textarea id="ytDescription" maxlength="5000" placeholder="वीडियो विवरण"></textarea>' +
+    '<label>Privacy</label><select id="ytPrivacy"><option value="private">Private (पहले यही चुनें)</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select>' +
+    '<label>वीडियो फ़ाइल (MP4/MOV/WebM, 90 MB तक)</label><input id="ytVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm">' +
+    '<button id="ytUploadButton" class="green" onclick="uploadVideoToYouTube()">⬆️ अभी YouTube पर अपलोड करें</button>' +
+    '<p id="ytUploadResult" class="status" role="status">फ़ाइल चुनकर Upload दबाएँ।</p>';
+  info.style.display = 'block'; status.textContent = 'YouTube upload form तैयार है।';
+}
+async function uploadVideoToYouTube() {
+  var file = document.getElementById('ytVideoFile')?.files?.[0], title = document.getElementById('ytTitle')?.value.trim();
+  var result = document.getElementById('ytUploadResult'), button = document.getElementById('ytUploadButton');
+  if (!file || !title) { result.textContent = 'वीडियो फ़ाइल और title दोनों भरें।'; return; }
+  if (file.size > 90 * 1024 * 1024) { result.textContent = 'फ़ाइल 90 MB से बड़ी है।'; return; }
+  button.disabled = true; result.textContent = 'YouTube पर वीडियो भेजा जा रहा है…';
+  try {
+    var response = await fetch('/api/youtube/upload', { method:'POST', headers:{
+      'Content-Type':file.type || 'video/mp4','X-Video-Title':title,
+      'X-Video-Description':document.getElementById('ytDescription').value,
+      'X-Video-Privacy':document.getElementById('ytPrivacy').value
+    }, body:file });
+    var data = await response.json(); if (!response.ok) throw new Error(data.error || 'Upload नहीं हो सका।');
+    result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy;
+  } catch(error) { result.textContent = '❌ ' + (error.message || 'Upload failed'); }
+  finally { button.disabled = false; }
+}
+window.addEventListener('DOMContentLoaded', function() {
+  refreshYouTubeStatus();
+  if (new URLSearchParams(location.search).get('youtube') === 'connected') {
+    document.getElementById('result').textContent = 'YouTube OAuth connection सफल। अब MP4 upload करें।';
+    history.replaceState({}, '', location.pathname);
+  }
+});
 
 function makeOutline() {
   var topic = document.getElementById('topic').value.trim();
