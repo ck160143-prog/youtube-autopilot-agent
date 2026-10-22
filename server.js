@@ -704,6 +704,14 @@ app.post("/api/render", async (req, res) => {
   }
 });
 
+// Unknown API routes must return JSON, not Express's default HTML 404 page.
+app.use("/api", (req, res) => {
+  return res.status(404).json({
+    error: "API endpoint नहीं मिला: " + req.method + " " + req.originalUrl +
+      "। Render पर सही/latest deployment और frontend version जाँचें।"
+  });
+});
+
 // 6. सर्वर शुरू करना
 
 const PORT = process.env.PORT || 3000;
