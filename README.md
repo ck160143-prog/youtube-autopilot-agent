@@ -1,117 +1,65 @@
-# BABA AI — YouTube Automation Agent
+# BABA AI — YouTube Agent
 
-BABA AI एक AI-संचालित YouTube स्क्रिप्ट और SEO जनरेटर है। यह Gemini AI का उपयोग करके
-वीडियो स्क्रिप्ट, YouTube SEO (शीर्षक, विवरण, कीवर्ड्स, हैशटैग्स, थंबनेल टेक्स्ट) तैयार करता है।
+Hindi-first web app for Gemini script/SEO generation, scene images and Hindi TTS, plus real Google OAuth channel connection and YouTube video upload.
 
-BABA AI is an AI-powered YouTube script and SEO generator. It uses Google's Gemini AI
-to produce video scripts and YouTube SEO content (titles, descriptions, keywords,
-hashtags, thumbnail text) in Hindi or English.
+## Current implemented features
 
-## Features
+- Gemini script and SEO endpoints.
+- Scene image generation (up to 3 images per request; Gemini quota/billing may apply).
+- Hindi TTS endpoint (provider quota/billing may apply).
+- Google OAuth 2.0 connect/status/disconnect.
+- YouTube Data API v3 resumable upload for an already-rendered MP4/MOV/WebM, up to 90 MB per request. Upload defaults to **Private**; user must explicitly choose another privacy level.
+- Frontend form for video file, title, description and privacy.
 
-- **AI Script Generation** — Generate full YouTube video scripts with chapters,
-  narration, visual directions, and transitions.
-- **YouTube SEO** — AI-generated titles, descriptions, keywords, hashtags, and
-  thumbnail text suggestions.
-- **Multi-language** — Supports Hindi and English output.
-- **Project Save** — Save and restore your work in the browser via localStorage.
-- **Script & SEO Export** — Copy or download scripts and SEO as text files.
+## Important limits (not falsely advertised as complete)
 
-## Tech Stack
+This repository does **not** yet include an end-to-end video renderer/FFmpeg pipeline, durable multi-user token database, persistent upload queue, or automatic daily scheduler. Generate/download voice and scene assets, render a final video using your editor/FFmpeg, then upload the rendered file from the app. The OAuth session is encrypted in a browser cookie; clearing browser cookies or losing the session requires reconnecting. Render's request-size/time limits can also affect large uploads. Do not upload files containing private or copyrighted material unless you have rights.
 
-- **Frontend:** Vanilla HTML/CSS/JavaScript (single-page app)
-- **Backend:** Node.js + Express
-- **AI:** Google Gemini (`@google/genai`)
+## Run locally
 
-## Prerequisites
+Requirements: Node.js 18+.
 
-- Node.js 18 or higher
-- A Google Gemini API key — get one free at
-  https://aistudio.google.com/apikey
-
-## Setup
-
-1. **Clone the repository**
-
-   ```bash
-   git clone https://github.com/<your-username>/youtube-autopilot-agent.git
-   cd youtube-autopilot-agent
-   ```
-
-2. **Install dependencies**
-
-   ```bash
-   npm install
-   ```
-
-3. **Configure your API key**
-
-   Copy the example env file and add your real key:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   Then edit `.env` and set:
-
-   ```
-   GEMINI_API_KEY=your_real_gemini_api_key_here
-   ```
-
-4. **Build the frontend**
-
-   ```bash
-   npm run build
-   ```
-
-5. **Start the server**
-
-   ```bash
-   npm start
-   ```
-
-   The app runs at `http://localhost:3000`.
-
-## Environment Variables
-
-| Variable            | Required | Description                          |
-|---------------------|----------|--------------------------------------|
-| `GEMINI_API_KEY`    | Yes      | Google Gemini API key for AI features|
-| `PORT`              | No       | Server port (default: 3000)          |
-| `GEMINI_IMAGE_MODEL` | No       | Image model (default: `gemini-3.1-flash-image`); verify project access/quota in AI Studio |
-
-See [`.env.example`](.env.example) for optional future integrations
-(YouTube upload, TTS, image generation).
-
-## Deployment (Netlify)
-
-This project includes a `netlify.toml` for deployment. The build command is
-`node build.js` and the publish directory is `dist`.
-
-> **Note:** The AI endpoints (`/api/script`, `/api/seo`) require a Node.js
-> server. On Netlify, use Netlify Functions or deploy the Express server
-> separately. The static frontend works on any static host, but AI features
-> need the server running.
-
-## Project Structure
-
-```
-├── index.html        # Frontend single-page app
-├── server.js         # Express server with Gemini AI endpoints
-├── build.js          # Build script (copies index.html to dist/)
-├── package.json      # Dependencies and scripts
-├── netlify.toml      # Netlify deployment config
-├── .env.example      # Example environment variables (safe to commit)
-└── .gitignore        # Ignores .env, node_modules, dist, etc.
+```bash
+npm install
+cp .env.example .env
+# Edit .env and set GEMINI_API_KEY plus YouTube OAuth values (if uploading)
+npm run build
+npm start
 ```
 
-## Security
+Open http://localhost:3000.
 
-- **Never commit `.env`** — it contains your API keys. The `.gitignore`
-  excludes it automatically.
-- Only `.env.example` (with placeholder values) is included in the repository.
-- API keys are used server-side only; the frontend never sees them.
+## Configure real YouTube OAuth
 
-## License
+1. Open Google Cloud Console and create/select a project.
+2. Enable **YouTube Data API v3**.
+3. Configure the OAuth consent screen. Add your Google account as a test user while the app is in Testing.
+4. Create **OAuth Client ID → Web application**.
+5. Add the exact authorized redirect URI:
+   - Local: `http://localhost:3000/api/youtube/callback`
+   - Render: `https://YOUR-RENDER-SERVICE.onrender.com/api/youtube/callback`
+6. Add these to the Render service's **Environment** settings (not GitHub files):
+   - `YOUTUBE_CLIENT_ID`
+   - `YOUTUBE_CLIENT_SECRET`
+   - `YOUTUBE_REDIRECT_URI` (must exactly match the Google URI)
+   - `APP_SESSION_SECRET` (random string, at least 32 characters)
+   - `GEMINI_API_KEY` (for Gemini features)
+7. Save/redeploy Render. Visit your app, tap **YouTube चैनल Connect करें**, approve the Google permissions, then check status.
+8. In the app's video section, select a final rendered video, enter title/description, leave privacy **Private** for a test, and upload. Verify it in YouTube Studio before making it public.
 
-This project is for personal/educational use.
+Never paste OAuth secrets, Gemini keys, access tokens, or refresh tokens into GitHub, chat, or frontend code. Rotate any key that was accidentally exposed.
+
+## Environment variables
+
+See `.env.example`. No real credentials belong in that file.
+
+## Deployment
+
+Render should run the Node server with `npm start`. The static frontend is served from `dist` (build with `npm run build`). For production uploads, consider a persistent/object-storage based job pipeline and chunked transfer; this current hosted upload endpoint has a 90 MB body limit.
+
+## Security notes
+
+- OAuth state is checked on callback.
+- OAuth token session data is encrypted with AES-256-GCM using `APP_SESSION_SECRET`, stored in an HttpOnly, SameSite=Lax cookie (Secure in production).
+- YouTube upload uses the authenticated user's OAuth token and requests confirmation through the app form; default visibility is private.
+- This is a personal/single-browser implementation, not a hardened public multi-tenant service. Restrict access to your deployment; do not share the connected app URL as an open upload service.
