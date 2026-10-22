@@ -669,7 +669,7 @@ app.post("/api/render", async (req, res) => {
     }
     const clipDuration = duration / scenes.length;
     const args = [];
-    for (const p of imagePaths) args.push("-loop", "1", "-framerate", "25", "-t", clipDuration.toFixed(3), "-i", p);
+    for (const p of imagePaths) args.push("-loop", "1", "-framerate", "1", "-t", "1", "-i", p);
     if (isPcm) args.push("-f", "s16le", "-ar", "24000", "-ac", "1", "-i", audioPath);
     else args.push("-i", audioPath);
     const filters = imagePaths.map((_, i) =>
