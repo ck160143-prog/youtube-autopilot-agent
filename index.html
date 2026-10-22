@@ -199,7 +199,7 @@ async function uploadRenderedVideo() {
       'X-Video-Description':document.getElementById('ytDescription').value,
       'X-Video-Privacy':document.getElementById('ytPrivacy').value
     },body:lastRenderedVideoBlob});
-    var data=await response.json();if(!response.ok)throw new Error(data.error||'Upload विफल।');
+    var data=await readApiJson(response);if(!response.ok)throw new Error(data.error||'Upload विफल।');
     result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy;
   }catch(error){result.textContent='❌ '+(error.message||'Upload failed');}
   finally{if(button)button.disabled=false;}
@@ -217,7 +217,7 @@ async function uploadVideoToYouTube() {
       'X-Video-Description':document.getElementById('ytDescription').value,
       'X-Video-Privacy':document.getElementById('ytPrivacy').value
     }, body:file });
-    var data = await response.json(); if (!response.ok) throw new Error(data.error || 'Upload नहीं हो सका।');
+    var data = await readApiJson(response); if (!response.ok) throw new Error(data.error || 'Upload नहीं हो सका।');
     result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy;
   } catch(error) { result.textContent = '❌ ' + (error.message || 'Upload failed'); }
   finally { button.disabled = false; }
@@ -311,7 +311,7 @@ async function generateSEO() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ topic: topic, language: lang })
     });
-    var data = await resp.json();
+    var data = await readApiJson(resp);
     if (!resp.ok) {
       throw new Error(data.error || 'SEO बनाने में समस्या हुई।');
     }
@@ -493,7 +493,7 @@ async function generateSceneImages() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ script: script })
     });
-    var data = await response.json();
+    var data = await readApiJson(response);
     if (!response.ok) throw new Error(data.error || 'तस्वीरें नहीं बन सकीं।');
     if (!Array.isArray(data.images) || !data.images.length) {
       throw new Error('API से तस्वीरें नहीं मिलीं।');
@@ -830,7 +830,7 @@ function showFeature(feature) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: chunks[index] })
         });
-        var data = await response.json();
+        var data = await readApiJson(response);
         if (!response.ok) throw new Error(data.error || ('क्लिप ' + (index + 1) + ' नहीं बन सकी।'));
         if (!data.audioBase64) throw new Error('क्लिप ' + (index + 1) + ' में ऑडियो नहीं मिला।');
 
