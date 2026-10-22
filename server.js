@@ -6,7 +6,7 @@ const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "20mb" }));
 app.use(express.static("dist"));
 
 const crypto = require("crypto");
@@ -613,6 +613,86 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   } catch (error) {
     safeLog("YouTube upload failed", error);
     return res.status(502).json({ error: "YouTube upload विफल हुआ। Render logs में सुरक्षित status जाँचें।" });
+  }
+});
+
+
+/* ---- Render a narrated slideshow MP4 from generated scene images + Gemini TTS ---- */
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
+const execFileAsync = promisify(execFile);
+function validBase64(value) {
+  return typeof value === "string" && value.length > 0 && value.length < 18 * 1024 * 1024 &&
+    /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+app.post("/api/render", async (req, res) => {
+  const scenes = req.body?.scenes;
+  const audioBase64 = req.body?.audioBase64;
+  const audioMime = String(req.body?.audioMime || "audio/L16").toLowerCase();
+  if (!Array.isArray(scenes) || scenes.length < 1 || scenes.length > 3 ||
+      scenes.some(s => !validBase64(s?.imageBase64) || !/^image\/(png|jpeg|webp)$/.test(String(s?.mimeType || ""))) ||
+      !validBase64(audioBase64)) {
+    return res.status(400).json({ error: "1–3 generated scene images और valid TTS audio चाहिए। पहले Images और Voice बनाएँ।" });
+  }
+  const imageBytes = scenes.reduce((sum, s) => sum + Math.floor(s.imageBase64.length * 0.75), 0);
+  const audioBytes = Math.floor(audioBase64.length * 0.75);
+  if (imageBytes > 12 * 1024 * 1024 || audioBytes > 8 * 1024 * 1024) {
+    return res.status(413).json({ error: "Generated assets बहुत बड़े हैं। छोटा script/voice या कम images चुनें।" });
+  }
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-render-"));
+  try {
+    const ffmpegPath = require("ffmpeg-static");
+    if (!ffmpegPath) return res.status(503).json({ error: "FFmpeg binary उपलब्ध नहीं।" });
+    const imagePaths = [];
+    for (let i = 0; i < scenes.length; i++) {
+      const ext = scenes[i].mimeType === "image/jpeg" ? "jpg" : scenes[i].mimeType === "image/webp" ? "webp" : "png";
+      const p = path.join(tempDir, "scene-" + i + "." + ext);
+      await fs.promises.writeFile(p, Buffer.from(scenes[i].imageBase64, "base64"));
+      imagePaths.push(p);
+    }
+    const isPcm = audioMime.includes("l16") || audioMime.includes("pcm");
+    const audioPath = path.join(tempDir, isPcm ? "narration.pcm" : "narration.audio");
+    await fs.promises.writeFile(audioPath, Buffer.from(audioBase64, "base64"));
+    // Gemini's raw L16 response is 24 kHz mono, 16-bit PCM. Derive duration without ffprobe.
+    let duration = isPcm ? audioBytes / (24000 * 2) : 0;
+    if (!isPcm) {
+      const probe = await execFileAsync(ffmpegPath, ["-i", audioPath, "-f", "null", "-"], { timeout: 30000 }).catch(e => e);
+      const textOut = String(probe.stderr || probe.message || "");
+      const m = textOut.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (m) duration = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+    }
+    if (!Number.isFinite(duration) || duration < 0.5 || duration > 180) {
+      return res.status(422).json({ error: "Voice duration 0.5–180 seconds के बीच होनी चाहिए। छोटे narration से retry करें।" });
+    }
+    const clipDuration = duration / scenes.length;
+    const args = [];
+    for (const p of imagePaths) args.push("-loop", "1", "-framerate", "25", "-t", clipDuration.toFixed(3), "-i", p);
+    if (isPcm) args.push("-f", "s16le", "-ar", "24000", "-ac", "1", "-i", audioPath);
+    else args.push("-i", audioPath);
+    const filters = imagePaths.map((_, i) =>
+      "[" + i + ":v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,zoompan=z='min(zoom+0.0004,1.06)':d=" +
+      Math.max(1, Math.round(clipDuration * 25)) + ":s=1280x720:fps=25,setsar=1,format=yuv420p[v" + i + "]"
+    );
+    filters.push(imagePaths.map((_, i) => "[v" + i + "]").join("") +
+      "concat=n=" + imagePaths.length + ":v=1:a=0[outv]");
+    const outputPath = path.join(tempDir, "baba-video.mp4");
+    args.push("-filter_complex", filters.join(";"), "-map", "[outv]", "-map", imagePaths.length + ":a:0",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", outputPath);
+    await execFileAsync(ffmpegPath, args, { timeout: 240000, maxBuffer: 4 * 1024 * 1024 });
+    const stat = await fs.promises.stat(outputPath);
+    if (!stat.size || stat.size > 90 * 1024 * 1024) return res.status(413).json({ error: "Rendered video 90 MB से बड़ा है। छोटा/कम resolution वाला project बनाएँ।" });
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Disposition", 'attachment; filename="BABA-AI-video.mp4"');
+    res.setHeader("Content-Length", String(stat.size));
+    return res.sendFile(outputPath, err => { if (err) safeLog("MP4 response failed", err); fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {}); });
+  } catch (error) {
+    safeLog("FFmpeg video render failed", error);
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    return res.status(503).json({ error: "वीडियो render नहीं हो सका। FFmpeg/Render resources जाँचें और छोटे script से retry करें।" });
   }
 });
 
