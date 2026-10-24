@@ -367,7 +367,7 @@ app.post("/api/images", async (req, res) => {
 
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
-    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
     quotaModel = scriptModel;
     const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
       model: scriptModel,
@@ -411,20 +411,20 @@ ${script.slice(0, 18000)}
         ])];
         let imageResponse = null;
         let lastImageError = null;
-        let successfulImageModel = imageModel;
         for (const candidateModel of imageModels) {
+          quotaModel = candidateModel;
           try {
             imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
               model: candidateModel,
               contents: scene.prompt,
               config: { responseModalities: ["TEXT", "IMAGE"] }
             }));
-            successfulImageModel = candidateModel;
             break;
           } catch (candidateError) {
             lastImageError = candidateError;
             const status = getStatus(candidateError);
-            const mayTryFallback = isQuotaError(candidateError) || status === 400 || status === 404;
+            const quotaFallbackAlreadyTried = isQuotaError(candidateError) && candidateModel !== imageModels[0];
+            const mayTryFallback = !quotaFallbackAlreadyTried && (isQuotaError(candidateError) || status === 400 || status === 404);
             if (!mayTryFallback || candidateModel === imageModels[imageModels.length - 1]) throw candidateError;
           }
         }
