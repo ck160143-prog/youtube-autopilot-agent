@@ -427,16 +427,12 @@ var featureDetails = {
       '<b>ध्यान दें:</b> अभी कोई ऑडियो फ़ाइल नहीं बनती। यह एक इंटीग्रेशन पॉइंट है।'
   },
   images: {
-    msg: '🖼️ वीडियो की तस्वीरें बनाने के लिए Image Generation API कनेक्ट करनी होगी।',
-    info: '<b>आवश्यक सेवाएँ:</b><br>' +
-      '• Google Gemini Image Generation, या<br>' +
-      '• OpenAI DALL-E API, या<br>' +
-      '• Stable Diffusion API<br><br>' +
-      '<b>क्या करना होगा:</b><br>' +
-      '1. स्क्रिप्ट के दृश्य निर्देशों से image prompts बनाएँ।<br>' +
-      '2. Image API को कॉल करके तस्वीरें जनरेट करें।<br>' +
-      '3. सर्वर में endpoint बनाएँ।<br><br>' +
-      '<b>ध्यान दें:</b> अभी कोई तस्वीर नहीं बनती। यह एक इंटीग्रेशन पॉइंट है।'
+    msg: '🖼️ स्क्रिप्ट से AI दृश्य-तस्वीरें जनरेट करें।',
+    info: '<b>यह फीचर कैसे काम करता है:</b><br>' +
+      '• Gemini image-generation API से अधिकतम 3 दृश्य बनते हैं।<br>' +
+      '• तस्वीरें बनते ही नीचे preview और download लिंक दिखेंगे।<br>' +
+      '• API quota (429), model access या अस्थायी सेवा त्रुटि होने पर नीचे वास्तविक कारण दिखेगा।<br><br>' +
+      '<b>ज़रूरी:</b> Render Environment में GEMINI_API_KEY सेट होनी चाहिए और चुने गए मॉडल की API access उपलब्ध होनी चाहिए।'
   },
   video: {
     msg: '🎞️ पूरा वीडियो बनाने के लिए आवाज, दृश्य, और वीडियो रेंडरिंग सेवाएँ जोड़नी होंगी।',
@@ -714,7 +710,7 @@ function showFeature(feature) {
     status.textContent = 'तस्वीरें बनाने के लिए तैयार।';
     info.replaceChildren();
     var intro = document.createElement('p');
-    intro.textContent = 'स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें Gemini से जनरेट होंगी। API usage/quota या billing लागू हो सकती है।';
+    intro.textContent = 'स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें Gemini से जनरेट होंगी। यदि quota या model access की समस्या हो, तो नीचे उसका कारण दिखेगा।';
     info.appendChild(intro);
 
     var generateButton = document.createElement('button');

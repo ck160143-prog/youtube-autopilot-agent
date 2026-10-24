@@ -96,7 +96,7 @@ function quotaMessage(kind, model, error) {
       (hint ? " Google का retry/reset संकेत: " + hint + "." : "") +
       " Google AI Studio में उसी API key/project का usage और quota जाँचें।";
   }
-  return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image").message;
+  return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1").message;
 }
 
 let aiClientFactory = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -132,7 +132,7 @@ function sendAPIError(res, error, fallbackMessage, kind) {
     const model = operationKind === "voice"
       ? (process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts")
       : operationKind === "images"
-        ? (process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image")
+        ? (process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1")
         : (process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash");
     return res.status(429).json({ error: quotaMessage(operationKind, model, error) });
   }
@@ -367,7 +367,7 @@ app.post("/api/images", async (req, res) => {
 
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
-    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
     quotaModel = scriptModel;
     const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
       model: scriptModel,
@@ -402,11 +402,33 @@ ${script.slice(0, 18000)}
       if (!scene || typeof scene.prompt !== "string" || !scene.prompt.trim()) continue;
 
       try {
-        const imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
-          model: imageModel,
-          contents: scene.prompt,
-          config: { responseModalities: ["IMAGE"] }
-        }));
+        // Try the configured image model first, then one current compatible fallback.
+        // Do not retry the same model repeatedly on quota errors.
+        const imageModels = [...new Set([
+          imageModel,
+          "gemini-nano-banana-2.1",
+          "gemini-2.5-flash-image"
+        ])];
+        let imageResponse = null;
+        let lastImageError = null;
+        for (const candidateModel of imageModels) {
+          quotaModel = candidateModel;
+          try {
+            imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
+              model: candidateModel,
+              contents: scene.prompt,
+              config: { responseModalities: ["TEXT", "IMAGE"] }
+            }));
+            break;
+          } catch (candidateError) {
+            lastImageError = candidateError;
+            const status = getStatus(candidateError);
+            const quotaFallbackAlreadyTried = isQuotaError(candidateError) && candidateModel !== imageModels[0];
+            const mayTryFallback = !quotaFallbackAlreadyTried && (isQuotaError(candidateError) || status === 400 || status === 404);
+            if (!mayTryFallback || candidateModel === imageModels[imageModels.length - 1]) throw candidateError;
+          }
+        }
+        if (!imageResponse) throw lastImageError || new Error("Image model ने response नहीं दिया।");
         const parts = imageResponse.candidates?.[0]?.content?.parts || [];
         const imagePart = parts.find(part => part.inlineData?.data && (part.inlineData.mimeType || "").startsWith("image/"));
         if (!imagePart) throw new Error("Image payload missing");
