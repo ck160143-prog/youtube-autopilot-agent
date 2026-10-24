@@ -116,6 +116,16 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div id="featureInfo" style="display:none"></div>
 </div>
 
+<div class="card" id="workflowCheckpointCard">
+<h2>🧭 काम की प्रगति सेव करें / अगले दिन यहीं से शुरू करें</h2>
+<p class="small">स्क्रिप्ट, SEO और पूरा हुआ चरण इस ब्राउज़र में सेव होगा। API quota खत्म होने पर पहले से सेव काम नहीं मिटेगा। तस्वीर, आवाज़ और MP4 फ़ाइलें अलग से डाउनलोड करें; वे checkpoint में शामिल नहीं हैं।</p>
+<div id="workflowCheckpointStatus" class="status" aria-live="polite">Checkpoint तैयार है।</div>
+<div class="grid"><button type="button" onclick="saveWorkflowCheckpoint(true)">💾 अभी सेव करें</button><button type="button" class="secondary" onclick="restoreWorkflowCheckpoint(true)">↩️ सेव काम वापस लाएँ</button></div>
+<div class="grid"><button type="button" class="secondary" onclick="exportWorkflowCheckpoint()">⬇️ Backup JSON डाउनलोड</button><button type="button" class="secondary" onclick="document.getElementById('workflowImportFile').click()">📂 Backup वापस लाएँ</button></div>
+<input id="workflowImportFile" type="file" accept="application/json,.json" style="display:none">
+<p class="small" id="workflowCheckpointStages">अभी कोई चरण सेव नहीं हुआ।</p>
+</div>
+
 <div class="card">
 <h2>📦 प्रोजेक्ट डाउनलोड</h2>
 <p class="small">पूरा प्रोजेक्ट ZIP फ़ाइल के रूप में डाउनलोड करें (बिना API keys या secrets के)।</p>
