@@ -26,8 +26,10 @@ function getStatus(error) {
 }
 
 function isQuotaError(error) {
+  // Do not classify generic billing/permission messages as quota exhaustion.
+  // Stop retries for explicit provider quota/rate-limit responses only.
   return getStatus(error) === 429 ||
-    /RESOURCE_EXHAUSTED|quota|rate.?limit|billing|payment/i.test(String(error?.message || ""));
+    /RESOURCE_EXHAUSTED|quota(?:\s+has been)?\s+(?:exceeded|exhausted)|rate[ -]?limit/i.test(String(error?.message || ""));
 }
 
 function safeLog(label, error) {
@@ -120,7 +122,13 @@ function sendAPIError(res, error, fallbackMessage, kind) {
     return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
   }
   if (isQuotaError(error)) {
-    return res.status(429).json({ error: quotaMessage(kind, process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts", error) });
+    const operationKind = kind || "script";
+    const model = operationKind === "voice"
+      ? (process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts")
+      : operationKind === "images"
+        ? (process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image")
+        : (process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash");
+    return res.status(429).json({ error: quotaMessage(operationKind, model, error) });
   }
   const status = getStatus(error);
   if ([500, 502, 503, 504].includes(status)) {
@@ -234,8 +242,13 @@ app.post("/api/script", async (req, res) => {
       });
     }
 
-    const videoLanguage = language || "हिंदी";
-    const videoDuration = Number(duration) || 30;
+    if (topic.trim().length > 500) {
+      return res.status(400).json({ error: "विषय 500 अक्षरों से छोटा रखें।" });
+    }
+    const videoLanguage = language === "English" ? "English" : "हिंदी";
+    const parsedDuration = Number(duration);
+    const videoDuration = Number.isFinite(parsedDuration) && parsedDuration >= 1 && parsedDuration <= 30
+      ? parsedDuration : 30;
 
     const ai = getAIClient();
 
@@ -289,7 +302,10 @@ app.post("/api/seo", async (req, res) => {
       });
     }
 
-    const videoLanguage = language || "हिंदी";
+    if (topic.trim().length > 500) {
+      return res.status(400).json({ error: "विषय 500 अक्षरों से छोटा रखें।" });
+    }
+    const videoLanguage = language === "English" ? "English" : "हिंदी";
     const ai = getAIClient();
 
     const prompt = `आप YouTube SEO विशेषज्ञ हैं।
@@ -307,11 +323,10 @@ app.post("/api/seo", async (req, res) => {
 
 उत्तर ${videoLanguage} में दें। कीवर्ड्स और हैशटैग्स अंग्रेज़ी में भी हो सकते हैं।`;
 
-    const response = await ai.models.generateContent({
-      model:
-        process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
+    const response = await withTemporaryRetries(() => ai.models.generateContent({
+      model: process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
       contents: prompt,
-    });
+    }));
 
     const seoText = response.text;
 
