@@ -84,11 +84,17 @@ function quotaInfo(error, model, operation = "image generation") {
 }
 
 function quotaMessage(kind, model, error) {
+  const hint = extractRetryHint(error);
   if (kind === "voice") {
-    const hint = extractRetryHint(error);
-    return "Gemini TTS quota खत्म हो गई है (429)।" + (model ? " मॉडल: " + model + "." : "") +
+    return "Gemini TTS quota खत्म/सीमित है (429)।" + (model ? " मॉडल: " + model + "." : "") +
       (hint ? " Google का retry/reset संकेत: " + hint + "." : "") +
-      " Google AI Studio में usage, quota और billing जाँचें।";
+      " Google AI Studio में usage और quota जाँचें; quota खत्म होने पर बार-बार retry न करें।";
+  }
+  if (kind === "script" || kind === "seo") {
+    return "Gemini " + (kind === "seo" ? "SEO" : "script") + " generation quota खत्म/सीमित है (429)।" +
+      (model ? " मॉडल: " + model + "." : "") +
+      (hint ? " Google का retry/reset संकेत: " + hint + "." : "") +
+      " Google AI Studio में उसी API key/project का usage और quota जाँचें।";
   }
   return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image").message;
 }
