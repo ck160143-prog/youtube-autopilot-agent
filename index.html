@@ -116,6 +116,16 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div id="featureInfo" style="display:none"></div>
 </div>
 
+<div class="card" id="workflowCheckpointCard">
+<h2>🧭 काम की प्रगति सेव करें / अगले दिन यहीं से शुरू करें</h2>
+<p class="small">स्क्रिप्ट, SEO और पूरा हुआ चरण इस ब्राउज़र में सेव होगा। API quota खत्म होने पर पहले से सेव काम नहीं मिटेगा। तस्वीर, आवाज़ और MP4 फ़ाइलें अलग से डाउनलोड करें; वे checkpoint में शामिल नहीं हैं।</p>
+<div id="workflowCheckpointStatus" class="status" aria-live="polite">Checkpoint तैयार है।</div>
+<div class="grid"><button type="button" onclick="saveWorkflowCheckpoint(true)">💾 अभी सेव करें</button><button type="button" class="secondary" onclick="restoreWorkflowCheckpoint(true)">↩️ सेव काम वापस लाएँ</button></div>
+<div class="grid"><button type="button" class="secondary" onclick="exportWorkflowCheckpoint()">⬇️ Backup JSON डाउनलोड</button><button type="button" class="secondary" onclick="document.getElementById('workflowImportFile').click()">📂 Backup वापस लाएँ</button></div>
+<input id="workflowImportFile" type="file" accept="application/json,.json" style="display:none">
+<p class="small" id="workflowCheckpointStages">अभी कोई चरण सेव नहीं हुआ।</p>
+</div>
+
 <div class="card">
 <h2>📦 प्रोजेक्ट डाउनलोड</h2>
 <p class="small">पूरा प्रोजेक्ट ZIP फ़ाइल के रूप में डाउनलोड करें (बिना API keys या secrets के)।</p>
@@ -924,5 +934,59 @@ try {
   }
 } catch (e) {}
 </script>
-</body>
+
+<script>
+(function () {
+  'use strict';
+  var KEY='babaAIWorkflowCheckpointV1';
+  var stages=['विषय','स्क्रिप्ट','SEO','आवाज़','तस्वीरें','MP4 वीडियो','YouTube अपलोड'];
+  function el(id){return document.getElementById(id);}
+  function previous(){try{return JSON.parse(localStorage.getItem(KEY)||'{}')||{};}catch(_){return {};}}
+  function render(data){
+    var node=el('workflowCheckpointStages'); if(!node)return;
+    var done=Array.isArray(data.completed)?data.completed:[];
+    node.textContent='चरण स्थिति: '+stages.map(function(s){return (done.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
+  }
+  function snapshot(){
+    return {version:1,updatedAt:new Date().toISOString(),topic:el('topic')?.value||'',duration:el('duration')?.value||'30',language:el('language')?.value||'हिंदी',script:el('script')?.value||'',seo:typeof currentSEO==='string'?currentSEO:'',completed:Array.isArray(previous().completed)?previous().completed:[],lastStatus:previous().lastStatus||''};
+  }
+  function setStatus(s){if(el('workflowCheckpointStatus'))el('workflowCheckpointStatus').textContent=s;}
+  window.saveWorkflowCheckpoint=function(manual){
+    try{var d=snapshot();localStorage.setItem(KEY,JSON.stringify(d));localStorage.setItem('babaAIProject',JSON.stringify({topic:d.topic,duration:d.duration,language:d.language,script:d.script,seo:d.seo}));render(d);setStatus(manual?'✅ Checkpoint सेव हो गया। कल इसी ब्राउज़र में वापस आकर “सेव काम वापस लाएँ” दबाएँ।':'✅ प्रगति अपने-आप सेव हो गई।');return true;}
+    catch(_){setStatus('❌ सेव नहीं हुआ। Backup JSON डाउनलोड करके रखें।');return false;}
+  };
+  window.restoreWorkflowCheckpoint=function(manual){
+    try{var raw=localStorage.getItem(KEY)||localStorage.getItem('babaAIProject');if(!raw){setStatus('कोई सेव किया हुआ प्रोजेक्ट नहीं मिला।');return false;}var d=JSON.parse(raw);
+      if(el('topic'))el('topic').value=d.topic||'';if(el('duration'))el('duration').value=d.duration||'30';if(el('language'))el('language').value=d.language||'हिंदी';if(el('script'))el('script').value=d.script||'';
+      if(typeof d.seo==='string'){currentSEO=d.seo;var seo=el('seoResult');if(seo){seo.textContent=d.seo;seo.style.display=d.seo?'block':'none';}}
+      render(d);setStatus(manual?'✅ विषय, स्क्रिप्ट और SEO वापस आ गए। अब अधूरे चरण को दोबारा चलाएँ।':'पिछला checkpoint उपलब्ध है।');return true;
+    }catch(_){setStatus('❌ सेव डेटा पढ़ा नहीं जा सका।');return false;}
+  };
+  window.exportWorkflowCheckpoint=function(){
+    var d=snapshot(),blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='BABA-AI-Workflow-Checkpoint.json';a.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);setStatus('✅ Backup JSON डाउनलोड शुरू हुआ। इसे सुरक्षित रखें।');
+  };
+  function mark(stage){
+    try{var d=snapshot(),old=previous();d.completed=Array.isArray(old.completed)?old.completed:[];if(d.completed.indexOf(stage)<0)d.completed.push(stage);localStorage.setItem(KEY,JSON.stringify(d));render(d);}catch(_){}
+  }
+  function inspect(){
+    var t=(el('result')?.textContent||'')+' '+(el('featureStatus')?.textContent||'');
+    if(/पूरी AI स्क्रिप्ट तैयार|स्क्रिप्ट तैयार हो गई/i.test(t))mark('स्क्रिप्ट');
+    if(/SEO तैयार हो गया|SEO तैयार हो गई/i.test(t))mark('SEO');
+    if(/आवाज़ तैयार है|आवाज़ के हिस्से तैयार/i.test(t))mark('आवाज़');
+    if(/दृश्य-तस्वीरें तैयार हैं|तस्वीरें तैयार/i.test(t))mark('तस्वीरें');
+    if(/MP4 तैयार|वीडियो तैयार/i.test(t))mark('MP4 वीडियो');
+    if(/Upload सफल/i.test(t))mark('YouTube अपलोड');
+    if(el('topic')?.value.trim())mark('विषय');
+    window.saveWorkflowCheckpoint(false);
+  }
+  document.addEventListener('DOMContentLoaded',function(){
+    ['topic','duration','language','script'].forEach(function(id){var n=el(id);if(n){n.addEventListener('input',function(){window.saveWorkflowCheckpoint(false);});n.addEventListener('change',function(){window.saveWorkflowCheckpoint(false);});}});
+    var f=el('workflowImportFile');if(f)f.addEventListener('change',function(){var file=f.files&&f.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(){try{var d=JSON.parse(String(reader.result||'{}'));if(d.version!==1||typeof d.topic!=='string')throw Error('bad backup');localStorage.setItem(KEY,JSON.stringify(d));window.restoreWorkflowCheckpoint(true);}catch(_){setStatus('❌ Backup JSON सही नहीं है।');}f.value='';};reader.readAsText(file);});
+    var observer=new MutationObserver(inspect);['result','featureStatus','seoResult'].forEach(function(id){if(el(id))observer.observe(el(id),{childList:true,subtree:true,characterData:true});});
+    if(localStorage.getItem(KEY)){try{render(previous());setStatus('पिछला checkpoint मिला। “सेव काम वापस लाएँ” दबाकर जारी रखें।');}catch(_){}}else window.saveWorkflowCheckpoint(false);
+  });
+})();
+</script>
+\n</body>
 </html>
