@@ -455,7 +455,14 @@ ${script.slice(0, 18000)}
           error: quotaHit
             ? "Gemini quota exhausted; आगे image requests रोक दी गईं।"
             : "इस दृश्य की तस्वीर नहीं बन सकी; अस्थायी Gemini त्रुटि पर सीमित retry के बाद रुक गए।" });
-        if (quotaHit) {\n          // Quota is normally project-wide. Mark the remaining scenes as deferred without making more API calls.\n          for (let pending = i + 1; pending < scenes.length; pending++) {\n            const next = scenes[pending];\n            failedScenes.push({ scene: next.originalScene || pending + 1, title: String(next.title || ("दृश्य " + (next.originalScene || pending + 1))).slice(0, 120), prompt: next.prompt, error: "Quota limit के कारण request नहीं भेजी गई; quota reset के बाद ही retry करें।" });\n          }\n          break;\n        }
+        if (quotaHit) {
+          // Quota is normally project-wide. Mark the remaining scenes as deferred without making more API calls.
+          for (let pending = i + 1; pending < scenes.length; pending++) {
+            const next = scenes[pending];
+            failedScenes.push({ scene: next.originalScene || pending + 1, title: String(next.title || ("दृश्य " + (next.originalScene || pending + 1))).slice(0, 120), prompt: next.prompt, error: "Quota limit के कारण request नहीं भेजी गई; quota reset के बाद ही retry करें।" });
+          }
+          break;
+        }
       }
     }
 
