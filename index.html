@@ -750,8 +750,23 @@ function showFeature(feature) {
     status.textContent = 'तस्वीरें बनाने के लिए तैयार।';
     info.replaceChildren();
     var intro = document.createElement('p');
-    intro.textContent = 'स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें Gemini से जनरेट होंगी। यदि quota या model access की समस्या हो, तो नीचे उसका कारण दिखेगा।';
+    intro.textContent = 'स्क्रिप्ट से अधिकतम 3 दृश्य-तस्वीरें Gemini से जनरेट होंगी। यदि quota या model access की समस्या हो, तो नीचे उसका कारण दिखेगा। आप अपने कंप्यूटर/फोन या स्थानीय ComfyUI/Stable Diffusion से बनाई गई PNG/JPEG/WebP तस्वीरें भी चुन सकते हैं।';
     info.appendChild(intro);
+    var localLabel=document.createElement('label');localLabel.textContent='स्थानीय / मुफ्त टूल से बनी तस्वीरें आयात करें (अधिकतम 3)';
+    var localInput=document.createElement('input');localInput.type='file';localInput.accept='image/png,image/jpeg,image/webp';localInput.multiple=true;
+    localInput.addEventListener('change',function(){
+      var files=Array.from(localInput.files||[]).filter(function(file){return /^image\/(png|jpeg|webp)$/.test(file.type);}).slice(0,3);
+      if(!files.length){status.textContent='PNG, JPEG या WebP तस्वीर चुनें।';return;}
+      Promise.all(files.map(function(file,index){return new Promise(function(resolve,reject){
+        var reader=new FileReader();reader.onload=function(){try{var data=String(reader.result);resolve({scene:index+1,title:file.name,mimeType:file.type,imageBase64:data.split(',')[1],isLocalImage:true});}catch(e){reject(e);}};
+        reader.onerror=reject;reader.readAsDataURL(file);
+      });})).then(function(items){
+        savedSceneImages=items;savedFailedScenes=[];
+        status.textContent='✅ '+items.length+' स्थानीय तस्वीरें आयात हुईं। अब इन्हें MP4 render में इस्तेमाल कर सकते हैं।';
+        var note=document.createElement('p');note.className='status';note.textContent='स्थानीय तस्वीरें सफलतापूर्वक लोड हुईं; कोई AI image-generation दावा नहीं किया गया।';info.appendChild(note);
+      }).catch(function(){status.textContent='तस्वीरें पढ़ी नहीं जा सकीं। दूसरी फ़ाइल चुनें।';});
+    });
+    info.appendChild(localLabel);info.appendChild(localInput);
 
     var generateButton = document.createElement('button');
     generateButton.id = 'btnGenerateSceneImages';
