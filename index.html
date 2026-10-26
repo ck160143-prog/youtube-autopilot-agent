@@ -140,7 +140,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </div>
 
 <script>
-var currentSEO = "";
+var currentSEO = "";\nvar savedSceneImages = [];\nvar savedFailedScenes = [];
 
 // Parse API responses safely. Express/Render can return an HTML error page
 // (which begins with "<!DOCTYPE") instead of JSON; show a useful diagnostic.
@@ -494,19 +494,17 @@ async function generateSceneImages() {
   info.appendChild(progress);
 
   try {
-    var response = await fetch('/api/images', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ script: script })
-    });
+    var response = await fetch('/api/images', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})});
     var data = await readApiJson(response);
-    if (!response.ok) throw new Error(data.error || 'तस्वीरें नहीं बन सकीं।');
-    if (!Array.isArray(data.images) || !data.images.length) {
-      throw new Error('API से तस्वीरें नहीं मिलीं।');
-    }
-
+    if (Array.isArray(data.images)) data.images.forEach(function(item){
+      var ix=savedSceneImages.findIndex(function(old){return Number(old.scene)===Number(item.scene);});
+      if(ix>=0)savedSceneImages[ix]=item;else savedSceneImages.push(item);
+    });
+    if (Array.isArray(data.failedScenes)) savedFailedScenes=data.failedScenes;
+    if (!response.ok && !savedSceneImages.length) throw new Error(data.error || 'तस्वीरें नहीं बन सकीं।');
+    if (!savedSceneImages.length) throw new Error(data.error || 'कोई वास्तविक तस्वीर उपलब्ध नहीं है।');
     info.replaceChildren();
-    data.images.forEach(function(item, index) {
+    savedSceneImages.slice().sort(function(a,b){return Number(a.scene)-Number(b.scene);}).forEach(function(item,index) {
       var card = document.createElement('section');
       card.style.marginTop = '16px';
       card.style.padding = '12px';
@@ -565,9 +563,9 @@ async function generateSceneImages() {
           (item.title || 'वीडियो दृश्य') + ' — ' + (item.error || 'अस्थायी त्रुटि');
         failures.appendChild(failure);
       });
-      info.appendChild(failures);
+      if (data.failedScenes.some(function(item){return Boolean(item.prompt);})) { var retry=document.createElement('button'); retry.className='secondary'; retry.textContent='🔁 केवल असफल दृश्य दोबारा बनाएँ'; retry.addEventListener('click',retryFailedSceneImages); failures.appendChild(retry); }\n      info.appendChild(failures);
     }
-    status.textContent = '✅ ' + data.images.length + ' दृश्य-तस्वीरें तैयार हैं।' +
+    status.textContent = '✅ ' + savedSceneImages.length + ' दृश्य-तस्वीरें उपलब्ध हैं।' +
       (data.quotaInfo ? ' Gemini image quota खत्म हुई; पहले से बनी तस्वीरें सुरक्षित हैं।' :
        (Array.isArray(data.failedScenes) && data.failedScenes.length ? ' कुछ दृश्य असफल रहे—विवरण नीचे है।' : ''));
   } catch (error) {
@@ -581,6 +579,38 @@ async function generateSceneImages() {
   }
 }
 
+
+
+async function retryFailedSceneImages() {
+  var status=document.getElementById('featureStatus'), info=document.getElementById('featureInfo');
+  var pending=savedFailedScenes.filter(function(x){return typeof x.prompt==='string'&&x.prompt.trim();});
+  if(!pending.length){status.textContent='दोबारा बनाने के लिए saved failed-scene prompts नहीं हैं।';return;}
+  status.textContent='केवल '+pending.length+' असफल दृश्य दोबारा बनाए जा रहे हैं…';
+  try{
+    var resp=await fetch('/api/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:document.getElementById('script').value.trim(),scenePrompts:pending})});
+    var data=await readApiJson(resp);
+    (data.images||[]).forEach(function(item){var ix=savedSceneImages.findIndex(function(old){return Number(old.scene)===Number(item.scene);});if(ix>=0)savedSceneImages[ix]=item;else savedSceneImages.push(item);});
+    savedFailedScenes=Array.isArray(data.failedScenes)?data.failedScenes:[];
+    if(!resp.ok&&!(data.images||[]).length)throw new Error(data.error||'Retry विफल।');
+    info.replaceChildren();var p=document.createElement('p');p.className='status';p.textContent='सफल तस्वीरें सुरक्षित हैं। कुल उपलब्ध: '+savedSceneImages.length+'; अभी असफल: '+savedFailedScenes.length;info.appendChild(p);
+    savedSceneImages.slice().sort(function(a,b){return Number(a.scene)-Number(b.scene);}).forEach(function(item){var im=document.createElement('img');im.src='data:'+(item.mimeType||'image/png')+';base64,'+item.imageBase64;im.alt=item.title||'Generated scene';im.style.width='100%';var a=document.createElement('a');a.href=im.src;a.download='BABA-AI-Scene-'+item.scene+'.png';a.textContent='तस्वीर डाउनलोड करें';info.append(im,a);});
+    if(data.quotaInfo&&data.quotaInfo.message){var q=document.createElement('p');q.className='status error-status';q.textContent=data.quotaInfo.message;info.appendChild(q);}
+    status.textContent='Failed-scene retry पूरा हुआ।';
+  }catch(e){status.textContent=e.message||'Retry विफल।';}
+}
+function createScriptSlides(script) {
+  var sentences=(script.match(/[^।.!?\n]+[।.!?\n]*/g)||[script]).map(function(x){return x.trim();}).filter(Boolean);
+  var chunks=[sentences.slice(0,3).join(' '),sentences.slice(3,6).join(' '),sentences.slice(6,9).join(' ')].filter(Boolean);
+  if(!chunks.length)chunks=[script.slice(0,500)];
+  return chunks.slice(0,3).map(function(text,index){
+    var c=document.createElement('canvas');c.width=1280;c.height=720;var x=c.getContext('2d');
+    x.fillStyle='#10121c';x.fillRect(0,0,1280,720);x.fillStyle='#b9a1ff';x.font='bold 42px Arial';x.fillText('BABA AI · SCRIPT SLIDE '+(index+1),70,95);
+    x.fillStyle='#ffffff';x.font='32px Arial';var line='',y=190;
+    text.split(/\s+/).forEach(function(word){var n=line?line+' '+word:word;if(x.measureText(n).width>1120){if(y<630)x.fillText(line,70,y);line=word;y+=54;}else line=n;});
+    if(line&&y<650)x.fillText(line,70,y);
+    return {scene:index+1,title:'Script slide '+(index+1),mimeType:'image/png',imageBase64:c.toDataURL('image/png').split(',')[1],isTextSlide:true};
+  });
+}
 
 async function generateAutoVideo() {
   var scriptText = document.getElementById('script').value.trim();
@@ -611,9 +641,19 @@ async function generateAutoVideo() {
     : 'Step 1/3: AI scene images बना रहा है…';
   info.appendChild(progress);
   try {
-    var imageResp = await fetch('/api/images', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({script:renderScriptText}) });
-    var imageData = await readApiJson(imageResp);
-    if (!imageResp.ok || !imageData.images || !imageData.images.length) throw new Error(imageData.error || 'Scene images नहीं बनीं।');
+    var imageData={images:[]};
+    try{
+      var imageResp=await fetch('/api/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:renderScriptText})});
+      var generated=await readApiJson(imageResp);
+      (generated.images||[]).forEach(function(item){var ix=savedSceneImages.findIndex(function(old){return Number(old.scene)===Number(item.scene);});if(ix>=0)savedSceneImages[ix]=item;else savedSceneImages.push(item);});
+      if(Array.isArray(generated.failedScenes))savedFailedScenes=generated.failedScenes;
+      if(!imageResp.ok&&!savedSceneImages.length)throw new Error(generated.error||'Images unavailable');
+      imageData.images=savedSceneImages.slice().sort(function(a,b){return Number(a.scene)-Number(b.scene);}).slice(0,3);
+    }catch(imageError){
+      if(savedSceneImages.length){imageData.images=savedSceneImages.slice().sort(function(a,b){return Number(a.scene)-Number(b.scene);}).slice(0,3);progress.textContent='Gemini image quota/error: पहले से बनी तस्वीरों से आगे बढ़ रहा है…';}
+      else{imageData.images=createScriptSlides(renderScriptText);progress.textContent='Gemini images उपलब्ध नहीं हैं। AI तस्वीरों के बजाय स्क्रिप्ट से बनी PNG स्लाइड्स + हिंदी आवाज़ से MP4 बनाया जाएगा।';}
+    }
+    if(!imageData.images.length)throw new Error('MP4 बनाने के लिए scenes उपलब्ध नहीं हैं।');
     progress.textContent = 'Step 2/3: हिंदी narration बना रहा है…';
     var sentences = renderScriptText.match(/[^।.!?\n]+[।.!?\n]*/g) || [renderScriptText];
     var chunks = [], current = '';
