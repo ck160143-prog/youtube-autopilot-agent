@@ -33,7 +33,7 @@ test("quota notice includes configured model and Google's retry hint", () => {
   assert.equal(extractRetryHint(error), "20s");
   const info = quotaInfo(error, "gemini-3.1-flash-image");
   assert.equal(info.model, "gemini-3.1-flash-image");
-  assert.match(info.message, /gemini-2\.5-flash-image/);
+  assert.match(info.message, /gemini-3\.1-flash-image/);
   assert.match(info.message, /20s/);
   assert.match(info.message, /RESOURCE_EXHAUSTED/);
 });
