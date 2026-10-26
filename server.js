@@ -368,10 +368,20 @@ app.post("/api/images", async (req, res) => {
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
     const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
-    quotaModel = scriptModel;
-    const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
-      model: scriptModel,
-      contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
+    let scenes;
+    // Failed-scene retries reuse the original prompts; they do not re-plan or regenerate successful scenes.
+    if (Array.isArray(req.body?.scenePrompts) && req.body.scenePrompts.length) {
+      scenes = req.body.scenePrompts.slice(0, 3).map((scene, index) => ({
+        title: String(scene?.title || ("दृश्य " + (scene?.scene || index + 1))).slice(0, 120),
+        prompt: typeof scene?.prompt === "string" ? scene.prompt : "",
+        originalScene: Number.isInteger(Number(scene?.scene)) ? Number(scene.scene) : index + 1
+      })).filter(scene => scene.prompt.trim());
+      if (!scenes.length) return res.status(400).json({ error: "दोबारा बनाने के लिए वैध failed-scene prompts नहीं मिले।" });
+    } else {
+      quotaModel = scriptModel;
+      const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
+        model: scriptModel,
+        contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
 सभी दृश्य एक ही visual style में हों: cinematic, polished, YouTube-friendly, 16:9 landscape, कोई लिखावट/टेक्स्ट/वॉटरमार्क नहीं।
 स्क्रिप्ट:
 ${script.slice(0, 18000)}
@@ -379,17 +389,18 @@ ${script.slice(0, 18000)}
 केवल वैध JSON लौटाएँ, इस schema में:
 {"scenes":[{"title":"दृश्य का छोटा शीर्षक","prompt":"English image prompt"}]}
 3 से अधिक दृश्य न दें।`,
-      config: { responseMimeType: "application/json" }
-    }));
-
-    let planText = planResponse.text || "";
-    planText = planText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    let plan;
-    try { plan = JSON.parse(planText); }
-    catch (_) { return res.status(502).json({ error: "AI से दृश्य योजना सही JSON में नहीं मिली। दोबारा प्रयास करें।" }); }
-
-    const scenes = Array.isArray(plan.scenes) ? plan.scenes.slice(0, 3) : [];
-    if (!scenes.length) return res.status(502).json({ error: "स्क्रिप्ट से कोई दृश्य नहीं निकला।" });
+        config: { responseMimeType: "application/json" }
+      }));
+      let planText = planResponse.text || "";
+      planText = planText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+      let plan;
+      try { plan = JSON.parse(planText); }
+      catch (_) { return res.status(502).json({ error: "AI से दृश्य योजना सही JSON में नहीं मिली। दोबारा प्रयास करें।" }); }
+      scenes = (Array.isArray(plan.scenes) ? plan.scenes.slice(0, 3) : []).map((scene, index) => ({
+        ...scene, originalScene: index + 1
+      }));
+      if (!scenes.length) return res.status(502).json({ error: "स्क्रिप्ट से कोई दृश्य नहीं निकला।" });
+    }
 
     const images = [];
     const failedScenes = [];
@@ -402,16 +413,13 @@ ${script.slice(0, 18000)}
       if (!scene || typeof scene.prompt !== "string" || !scene.prompt.trim()) continue;
 
       try {
-        // Try the configured image model first, then one current compatible fallback.
-        // Do not retry the same model repeatedly on quota errors.
-        const imageModels = [...new Set([
-          imageModel,
-          "gemini-nano-banana-2.1",
-          "gemini-2.5-flash-image"
-        ])];
+        // A 429 is project/key quota exhaustion: never send more image requests to fallback models.
+        // Only model-compatibility errors (400/404) may try one explicitly configured fallback.
+        const imageModels = [...new Set([imageModel, "gemini-2.5-flash-image"])];
         let imageResponse = null;
         let lastImageError = null;
-        for (const candidateModel of imageModels) {
+        for (let modelIndex = 0; modelIndex < imageModels.length; modelIndex++) {
+          const candidateModel = imageModels[modelIndex];
           quotaModel = candidateModel;
           try {
             imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
@@ -422,10 +430,9 @@ ${script.slice(0, 18000)}
             break;
           } catch (candidateError) {
             lastImageError = candidateError;
+            if (isQuotaError(candidateError)) throw candidateError;
             const status = getStatus(candidateError);
-            const quotaFallbackAlreadyTried = isQuotaError(candidateError) && candidateModel !== imageModels[0];
-            const mayTryFallback = !quotaFallbackAlreadyTried && (isQuotaError(candidateError) || status === 400 || status === 404);
-            if (!mayTryFallback || candidateModel === imageModels[imageModels.length - 1]) throw candidateError;
+            if (![400, 404].includes(status) || modelIndex === imageModels.length - 1) throw candidateError;
           }
         }
         if (!imageResponse) throw lastImageError || new Error("Image model ने response नहीं दिया।");
@@ -433,8 +440,8 @@ ${script.slice(0, 18000)}
         const imagePart = parts.find(part => part.inlineData?.data && (part.inlineData.mimeType || "").startsWith("image/"));
         if (!imagePart) throw new Error("Image payload missing");
         images.push({
-          scene: i + 1,
-          title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
+          scene: scene.originalScene || i + 1,
+          title: String(scene.title || `दृश्य ${scene.originalScene || i + 1}`).slice(0, 120),
           mimeType: imagePart.inlineData.mimeType || "image/png",
           imageBase64: imagePart.inlineData.data
         });
@@ -444,11 +451,18 @@ ${script.slice(0, 18000)}
         const temporaryHit = [500, 502, 503, 504].includes(getStatus(sceneError));
         if (temporaryHit) temporaryImageFailure = true;
         if (quotaHit) imageQuota = quotaInfo(sceneError, imageModel, "image generation");
-        failedScenes.push({ scene: i + 1, title: String(scene.title || `दृश्य ${i + 1}`).slice(0, 120),
+        failedScenes.push({ scene: scene.originalScene || i + 1, title: String(scene.title || `दृश्य ${scene.originalScene || i + 1}`).slice(0, 120), prompt: scene.prompt,
           error: quotaHit
             ? "Gemini quota exhausted; आगे image requests रोक दी गईं।"
             : "इस दृश्य की तस्वीर नहीं बन सकी; अस्थायी Gemini त्रुटि पर सीमित retry के बाद रुक गए।" });
-        if (quotaHit) break;
+        if (quotaHit) {
+          // Quota is normally project-wide. Mark the remaining scenes as deferred without making more API calls.
+          for (let pending = i + 1; pending < scenes.length; pending++) {
+            const next = scenes[pending];
+            failedScenes.push({ scene: next.originalScene || pending + 1, title: String(next.title || ("दृश्य " + (next.originalScene || pending + 1))).slice(0, 120), prompt: next.prompt, error: "Quota limit के कारण request नहीं भेजी गई; quota reset के बाद ही retry करें।" });
+          }
+          break;
+        }
       }
     }
 
