@@ -565,7 +565,8 @@ async function generateSceneImages() {
           (item.title || 'वीडियो दृश्य') + ' — ' + (item.error || 'अस्थायी त्रुटि');
         failures.appendChild(failure);
       });
-      if (data.failedScenes.some(function(item){return Boolean(item.prompt);})) { var retry=document.createElement('button'); retry.className='secondary'; retry.textContent='🔁 केवल असफल दृश्य दोबारा बनाएँ'; retry.addEventListener('click',retryFailedSceneImages); failures.appendChild(retry); }\n      info.appendChild(failures);
+      if (data.failedScenes.some(function(item){return Boolean(item.prompt);})) { var retry=document.createElement('button'); retry.className='secondary'; retry.textContent='🔁 केवल असफल दृश्य दोबारा बनाएँ'; retry.addEventListener('click',retryFailedSceneImages); failures.appendChild(retry); }
+      info.appendChild(failures);
     }
     status.textContent = '✅ ' + savedSceneImages.length + ' दृश्य-तस्वीरें उपलब्ध हैं।' +
       (data.quotaInfo ? ' Gemini image quota खत्म हुई; पहले से बनी तस्वीरें सुरक्षित हैं।' :
