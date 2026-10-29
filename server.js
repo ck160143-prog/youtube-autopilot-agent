@@ -10,6 +10,7 @@ app.use(express.json({ limit: "20mb" }));
 app.use(express.static("dist"));
 
 const crypto = require("crypto");
+const { inspectYoutubeOAuthConfig, describeOAuthFailure } = require("./youtubeOAuthConfig");
 
 // Bounded in-memory LRU: max 12 successful audio responses; cleared on restart.
 const ttsCache = new Map();
@@ -154,9 +155,11 @@ function sendAPIError(res, error, fallbackMessage, kind) {
 
 // 1. सर्वर की स्थिति
 app.get("/api/health", (req, res) => {
+  const externalUrl = process.env.RENDER_EXTERNAL_URL || "";
   res.json({
     status: "ok",
     geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    youtubeOAuth: inspectYoutubeOAuthConfig(process.env, externalUrl),
     message: "BABA AI सर्वर चल रहा है।",
   });
 });
@@ -602,6 +605,11 @@ app.get("/api/youtube/connect", (req, res) => {
 });
 app.get("/api/youtube/callback", async (req, res) => {
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
+  if (req.query.error) {
+    const detail = describeOAuthFailure(String(req.query.error));
+    clearYoutubeSession(res);
+    return res.status(400).send(detail);
+  }
   const oldSession = decryptSession(req);
   if (!req.query.code || !req.query.state || req.query.state !== oldSession.oauth_state) {
     clearYoutubeSession(res);
@@ -620,8 +628,8 @@ app.get("/api/youtube/callback", async (req, res) => {
     });
     const tokens = await tokenResponse.json().catch(() => ({}));
     if (!tokenResponse.ok || !tokens.access_token) {
-      safeLog("YouTube OAuth token exchange failed", { status: tokenResponse.status });
-      return res.status(502).send("Google OAuth token exchange failed. Check OAuth setup and redirect URI.");
+      safeLog("YouTube OAuth token exchange failed", { status: tokenResponse.status, code: tokens.error });
+      return res.status(502).send(describeOAuthFailure(String(tokens.error || "token_exchange_failed")));
     }
     setYoutubeSession(res, { access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || oldSession.refresh_token,
