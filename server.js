@@ -781,7 +781,6 @@ async function renderToFile(body) {
     throw Object.assign(new Error("वीडियो render नहीं हो सका। FFmpeg/Render resources जाँचें और छोटे script से retry करें।"), { statusCode: 503 });
   }
 }
-}
 
 app.post("/api/render", async (req, res) => {
   const invalid = validateRenderPayload(req.body);
