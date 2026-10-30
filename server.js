@@ -623,9 +623,21 @@ app.get("/api/youtube/callback", async (req, res) => {
       safeLog("YouTube OAuth token exchange failed", { status: tokenResponse.status });
       return res.status(502).send("Google OAuth token exchange failed. Check OAuth setup and redirect URI.");
     }
+    // Verify the real authenticated YouTube channel before marking OAuth as connected.
+    const channelResponse = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+      headers: { Authorization: "Bearer " + tokens.access_token }
+    });
+    const channelData = await channelResponse.json().catch(() => ({}));
+    const channel = channelData.items?.[0];
+    if (!channelResponse.ok || !channel?.id) {
+      safeLog("YouTube channel verification failed", { status: channelResponse.status });
+      clearYoutubeSession(res);
+      return res.status(502).send("Google login सफल हुआ, लेकिन YouTube चैनल सत्यापित नहीं हो सका। YouTube Data API v3 और खाते की अनुमति जाँचें, फिर Connect दोबारा करें।");
+    }
     setYoutubeSession(res, { access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || oldSession.refresh_token,
-      expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000 });
+      expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
+      channel: { id: channel.id, title: channel.snippet?.title || "" } });
     return res.redirect("/?youtube=connected");
   } catch (error) {
     safeLog("YouTube OAuth callback failed", error);
@@ -693,24 +705,35 @@ function validBase64(value) {
   return typeof value === "string" && value.length > 0 && value.length < 18 * 1024 * 1024 &&
     /^[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
-app.post("/api/render", async (req, res) => {
-  const scenes = req.body?.scenes;
-  const audioBase64 = req.body?.audioBase64;
-  const audioMime = String(req.body?.audioMime || "audio/L16").toLowerCase();
+function validateRenderPayload(body) {
+  const scenes = body?.scenes;
+  const audioBase64 = body?.audioBase64;
   if (!Array.isArray(scenes) || scenes.length < 1 || scenes.length > 3 ||
-      scenes.some(s => !validBase64(s?.imageBase64) || !/^image\/(png|jpeg|webp)$/.test(String(s?.mimeType || ""))) ||
+      scenes.some(s => !validBase64(s?.imageBase64) || !/^image[\\/](png|jpeg|webp)$/.test(String(s?.mimeType || ""))) ||
       !validBase64(audioBase64)) {
-    return res.status(400).json({ error: "1–3 generated scene images और valid TTS audio चाहिए। पहले Images और Voice बनाएँ।" });
+    return { status: 400, error: "1–3 generated scene images और valid TTS audio चाहिए। पहले Images और Voice बनाएँ।" };
   }
   const imageBytes = scenes.reduce((sum, s) => sum + Math.floor(s.imageBase64.length * 0.75), 0);
   const audioBytes = Math.floor(audioBase64.length * 0.75);
   if (imageBytes > 12 * 1024 * 1024 || audioBytes > 8 * 1024 * 1024) {
-    return res.status(413).json({ error: "Generated assets बहुत बड़े हैं। छोटा script/voice या कम images चुनें।" });
+    return { status: 413, error: "Generated assets बहुत बड़े हैं। छोटा script/voice या कम images चुनें।" };
   }
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-render-"));
+  return null;
+}
+const renderJobs = new Map();
+const MAX_RENDER_JOBS = 3;
+const MAX_RETAINED_RENDER_JOBS = 30;
+
+async function renderToFile(body) {
+  const scenes = body.scenes;
+  const audioBase64 = body.audioBase64;
+  const audioMime = String(body.audioMime || "audio/L16").toLowerCase();
+  let tempDir;
   try {
+    // Keep filesystem failures inside this route's JSON error boundary.
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-render-"));
     const ffmpegPath = require("ffmpeg-static");
-    if (!ffmpegPath) return res.status(503).json({ error: "FFmpeg binary उपलब्ध नहीं।" });
+    if (!ffmpegPath) throw Object.assign(new Error("FFmpeg binary उपलब्ध नहीं।"), { statusCode: 503 });
     const imagePaths = [];
     for (let i = 0; i < scenes.length; i++) {
       const ext = scenes[i].mimeType === "image/jpeg" ? "jpg" : scenes[i].mimeType === "image/webp" ? "webp" : "png";
@@ -730,7 +753,7 @@ app.post("/api/render", async (req, res) => {
       if (m) duration = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
     }
     if (!Number.isFinite(duration) || duration < 0.5 || duration > 180) {
-      return res.status(422).json({ error: "Voice duration 0.5–180 seconds के बीच होनी चाहिए। छोटे narration से retry करें।" });
+      throw Object.assign(new Error("Voice duration 0.5–180 seconds के बीच होनी चाहिए। छोटे narration से retry करें।"), { statusCode: 422 });
     }
     const clipDuration = duration / scenes.length;
     const args = [];
@@ -749,17 +772,70 @@ app.post("/api/render", async (req, res) => {
       "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", outputPath);
     await execFileAsync(ffmpegPath, args, { timeout: 240000, maxBuffer: 4 * 1024 * 1024 });
     const stat = await fs.promises.stat(outputPath);
-    if (!stat.size || stat.size > 90 * 1024 * 1024) return res.status(413).json({ error: "Rendered video 90 MB से बड़ा है। छोटा/कम resolution वाला project बनाएँ।" });
-    res.setHeader("Content-Type", "video/mp4");
-    res.setHeader("Content-Disposition", 'attachment; filename="BABA-AI-video.mp4"');
-    res.setHeader("Content-Length", String(stat.size));
-    return res.sendFile(outputPath, err => { if (err) safeLog("MP4 response failed", err); fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {}); });
+    if (!stat.size || stat.size > 90 * 1024 * 1024) throw Object.assign(new Error("Rendered video 90 MB से बड़ा है। छोटा/कम resolution वाला project बनाएँ।"), { statusCode: 413 });
+    return { tempDir, outputPath, size: stat.size };
   } catch (error) {
     safeLog("FFmpeg video render failed", error);
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-    return res.status(503).json({ error: "वीडियो render नहीं हो सका। FFmpeg/Render resources जाँचें और छोटे script से retry करें।" });
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    if (error.statusCode) throw error;
+    throw Object.assign(new Error("वीडियो render नहीं हो सका। FFmpeg/Render resources जाँचें और छोटे script से retry करें।"), { statusCode: 503 });
   }
+}
+
+app.post("/api/render", async (req, res) => {
+  const invalid = validateRenderPayload(req.body);
+  if (invalid) return res.status(invalid.status).json({ error: invalid.error });
+  const activeJobs = Array.from(renderJobs.values()).filter(j => j.status === "queued" || j.status === "processing").length;
+  if (activeJobs >= MAX_RENDER_JOBS) return res.status(429).json({ error: "अभी दूसरे वीडियो render हो रहे हैं। थोड़ी देर बाद retry करें।" });
+  if (renderJobs.size >= MAX_RETAINED_RENDER_JOBS) {
+    for (const [id, oldJob] of renderJobs) {
+      if (oldJob.status === "completed" || oldJob.status === "failed") {
+        if (oldJob.tempDir) fs.promises.rm(oldJob.tempDir, { recursive: true, force: true }).catch(() => {});
+        renderJobs.delete(id);
+        if (renderJobs.size < MAX_RETAINED_RENDER_JOBS) break;
+      }
+    }
+  }
+  const jobId = require("crypto").randomUUID();
+  const job = { id: jobId, status: "queued", createdAt: Date.now(), updatedAt: Date.now(), error: null, tempDir: null, outputPath: null, size: null };
+  renderJobs.set(jobId, job);
+  res.status(202).json({ jobId, status: job.status, statusUrl: "/api/render/status/" + jobId });
+  setImmediate(async () => {
+    job.status = "processing"; job.updatedAt = Date.now();
+    try {
+      const result = await renderToFile(req.body);
+      job.tempDir = result.tempDir; job.outputPath = result.outputPath; job.size = result.size;
+      job.status = "completed"; job.updatedAt = Date.now();
+    } catch (error) {
+      safeLog("Background render job failed", error);
+      job.status = "failed"; job.error = error.statusCode ? error.message : "वीडियो render नहीं हो सका। FFmpeg/Render resources जाँचें और retry करें।";
+      job.updatedAt = Date.now();
+    }
+  });
 });
+
+app.get("/api/render/status/:jobId", (req, res) => {
+  const job = renderJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Render job नहीं मिला या server restart के बाद हट गया।" });
+  return res.json({ jobId: job.id, status: job.status, error: job.error, size: job.size,
+    downloadUrl: job.status === "completed" ? "/api/render/download/" + job.id : null,
+    updatedAt: new Date(job.updatedAt).toISOString() });
+});
+
+app.get("/api/render/download/:jobId", (req, res) => {
+  const job = renderJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Render job नहीं मिला या server restart के बाद हट गया।" });
+  if (job.status !== "completed" || !job.outputPath) return res.status(409).json({ error: "वीडियो अभी डाउनलोड के लिए तैयार नहीं है।" });
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Content-Disposition", 'attachment; filename="BABA-AI-video.mp4"');
+  res.setHeader("Content-Length", String(job.size));
+  return res.sendFile(job.outputPath, err => {
+    if (err) safeLog("MP4 download failed", err);
+    if (job.tempDir) fs.promises.rm(job.tempDir, { recursive: true, force: true }).catch(() => {});
+    renderJobs.delete(job.id);
+  });
+});
+
 
 // Unknown API routes must return JSON, not Express's default HTML 404 page.
 app.use("/api", (req, res) => {
@@ -767,6 +843,17 @@ app.use("/api", (req, res) => {
     error: "API endpoint नहीं मिला: " + req.method + " " + req.originalUrl +
       "। Render पर सही/latest deployment और frontend version जाँचें।"
   });
+});
+
+// Convert parser and unexpected API middleware failures to safe JSON responses.
+app.use((error, req, res, next) => {
+  if (!req.path.startsWith("/api")) return next(error);
+  if (res.headersSent) return next(error);
+  const status = Number(error?.status || error?.statusCode);
+  if (status === 413) return res.status(413).json({ error: "Request बहुत बड़ा है। छोटा input या कम assets चुनें।" });
+  if (status === 400) return res.status(400).json({ error: "Request JSON सही नहीं है। डेटा जाँचकर दोबारा प्रयास करें।" });
+  safeLog("Unhandled API middleware error", error);
+  return res.status(500).json({ error: "सर्वर अनुरोध पूरा नहीं कर सका। कृपया थोड़ी देर बाद पुनः प्रयास करें।" });
 });
 
 // 6. सर्वर शुरू करना

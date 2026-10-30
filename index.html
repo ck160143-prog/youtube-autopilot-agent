@@ -577,6 +577,25 @@ async function generateSceneImages() {
     var errorText = document.createElement('p');
     errorText.textContent = error.message || 'कृपया दोबारा प्रयास करें।';
     info.appendChild(errorText);
+    var fallback = document.createElement('button');
+    fallback.className = 'secondary';
+    fallback.textContent = '🧩 बिना AI quota के Script Slides बनाएँ';
+    fallback.addEventListener('click', function() {
+      try {
+        savedSceneImages = createScriptSlides(script);
+        savedFailedScenes = [];
+        info.replaceChildren();
+        savedSceneImages.forEach(function(item) {
+          var card = document.createElement('section'); card.style.marginTop='14px';
+          var heading = document.createElement('p'); heading.textContent='स्थानीय Script Slide '+item.scene; card.appendChild(heading);
+          var image = document.createElement('img'); image.alt=heading.textContent; image.src='data:'+item.mimeType+';base64,'+item.imageBase64; image.style.width='100%'; image.style.borderRadius='8px'; card.appendChild(image);
+          var link=document.createElement('a');link.href=image.src;link.download='BABA-AI-Script-Slide-'+item.scene+'.png';link.textContent='⬇️ स्लाइड डाउनलोड करें';link.style.display='block';link.style.padding='10px 0';card.appendChild(link);info.appendChild(card);
+        });
+        var warning=document.createElement('p');warning.className='small';warning.textContent='ये स्क्रिप्ट से बनी टेक्स्ट स्लाइड हैं, AI-generated तस्वीरें नहीं। इन्हें MP4 preview में इस्तेमाल किया जा सकता है।';info.appendChild(warning);
+        status.textContent='स्थानीय Script Slides तैयार हैं; AI तस्वीरें quota error के कारण नहीं बनीं।';
+      } catch (fallbackError) { status.textContent='स्थानीय स्लाइड नहीं बन सकीं: '+fallbackError.message; }
+    });
+    info.appendChild(fallback);
   } finally {
     button.disabled = false;
   }
@@ -691,8 +710,23 @@ async function generateAutoVideo() {
       scenes:imageData.images.map(function(x){return {mimeType:x.mimeType,imageBase64:x.imageBase64};}),
       audioBase64:audioBase64,audioMime:mime
     })});
-    if(!renderResp.ok){var err=await readApiJson(renderResp).catch(function(error){return {error:error.message};});throw new Error(err.error||'MP4 render नहीं हुआ।');}
-    lastRenderedVideoBlob=await renderResp.blob();
+    var renderStart=await readApiJson(renderResp).catch(function(error){return {error:error.message};});
+    if(!renderResp.ok) throw new Error(renderStart.error||'Render job शुरू नहीं हुआ।');
+    if(!renderStart.jobId) throw new Error('Render job ID नहीं मिला।');
+    var jobStatus=null, renderStartedAt=Date.now();
+    while(Date.now()-renderStartedAt<12*60*1000){
+      await new Promise(function(resolve){setTimeout(resolve,1800);});
+      var statusResp=await fetch('/api/render/status/'+encodeURIComponent(renderStart.jobId),{cache:'no-store'});
+      jobStatus=await readApiJson(statusResp).catch(function(error){return {error:error.message};});
+      if(!statusResp.ok) throw new Error(jobStatus.error||'Render status नहीं मिल सका।');
+      if(jobStatus.status==='failed') throw new Error(jobStatus.error||'MP4 render नहीं हुआ।');
+      if(jobStatus.status==='completed') break;
+      progress.textContent=jobStatus.status==='queued'?'Render queue में है…':'Step 3/3: FFmpeg background में MP4 बना रहा है…';
+    }
+    if(!jobStatus||jobStatus.status!=='completed') throw new Error('Render में 12 मिनट से अधिक लग गए। यह job server restart पर खो सकती है; status जाँचकर retry करें।');
+    var downloadResp=await fetch('/api/render/download/'+encodeURIComponent(renderStart.jobId));
+    if(!downloadResp.ok){var downloadError=await readApiJson(downloadResp).catch(function(error){return {error:error.message};});throw new Error(downloadError.error||'MP4 डाउनलोड नहीं हुआ।');}
+    lastRenderedVideoBlob=await downloadResp.blob();
     if(lastRenderedVideoUrl)URL.revokeObjectURL(lastRenderedVideoUrl);
     lastRenderedVideoUrl=URL.createObjectURL(lastRenderedVideoBlob);
     info.replaceChildren();
@@ -738,6 +772,39 @@ function showFeature(feature) {
     info.appendChild(generate);
     info.style.display = 'block';
     status.textContent = 'स्वचालित वीडियो pipeline तैयार है।';
+    return;
+  }
+
+  if (feature === 'thumbnail') {
+    var titleText = (document.getElementById('topic')?.value || document.getElementById('title')?.value || document.getElementById('script').value.split(/[।.!?\\n]/)[0] || 'BABA AI VIDEO').trim().slice(0,90);
+    if (!titleText) titleText = 'BABA AI VIDEO';
+    info.replaceChildren();
+    var note = document.createElement('p');
+    note.className = 'small';
+    note.textContent = 'यह थंबनेल ब्राउज़र में Canvas से बनाया जाएगा। यह Gemini की AI तस्वीर नहीं है; आप इसे डाउनलोड करके इस्तेमाल कर सकते हैं।';
+    info.appendChild(note);
+    var canvas = document.createElement('canvas');
+    canvas.width = 1280; canvas.height = 720;
+    var ctx = canvas.getContext('2d');
+    var grad = ctx.createLinearGradient(0,0,1280,720);
+    grad.addColorStop(0,'#17152f'); grad.addColorStop(0.55,'#5426a8'); grad.addColorStop(1,'#e04d28');
+    ctx.fillStyle=grad; ctx.fillRect(0,0,1280,720);
+    ctx.fillStyle='rgba(0,0,0,0.34)'; ctx.fillRect(35,35,1210,650);
+    ctx.strokeStyle='#ffd34e'; ctx.lineWidth=12; ctx.strokeRect(42,42,1196,636);
+    ctx.fillStyle='#ffd34e'; ctx.font='bold 42px sans-serif'; ctx.textAlign='left'; ctx.fillText('BABA AI • YOUTUBE',80,120);
+    var words=titleText.split(/\\s+/), lines=[], line='';
+    words.forEach(function(word){var test=line?line+' '+word:word;if(ctx.measureText(test).width>1080&&line){lines.push(line);line=word;}else line=test;});
+    if(line)lines.push(line);
+    lines=lines.slice(0,3);
+    var fontSize=lines.length===1?94:lines.length===2?82:70;
+    ctx.font='900 '+fontSize+'px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    var lineHeight=fontSize*1.18, startY=390-((lines.length-1)*lineHeight/2);
+    lines.forEach(function(text,index){ctx.lineWidth=12;ctx.strokeStyle='#111111';ctx.strokeText(text,640,startY+index*lineHeight,1080);ctx.fillStyle='#ffffff';ctx.fillText(text,640,startY+index*lineHeight,1080);});
+    ctx.fillStyle='#ffda55';ctx.font='bold 34px sans-serif';ctx.fillText('देखें अभी!  •  LIKE  •  SUBSCRIBE',640,625,1080);
+    var preview=document.createElement('img');preview.alt='Generated BABA AI thumbnail';preview.src=canvas.toDataURL('image/png');preview.style.width='100%';preview.style.borderRadius='10px';preview.style.display='block';info.appendChild(preview);
+    var download=document.createElement('a');download.href=preview.src;download.download='BABA-AI-Thumbnail.png';download.textContent='⬇️ थंबनेल PNG डाउनलोड करें';download.style.display='block';download.style.padding='14px 0';download.style.color='#b9a1ff';info.appendChild(download);
+    status.textContent='✅ थंबनेल तैयार है। इसे PNG में डाउनलोड करें।';
+    info.style.display='block';
     return;
   }
 
