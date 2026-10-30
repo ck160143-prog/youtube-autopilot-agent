@@ -572,30 +572,27 @@ async function generateSceneImages() {
       (data.quotaInfo ? ' Gemini image quota खत्म हुई; पहले से बनी तस्वीरें सुरक्षित हैं।' :
        (Array.isArray(data.failedScenes) && data.failedScenes.length ? ' कुछ दृश्य असफल रहे—विवरण नीचे है।' : ''));
   } catch (error) {
-    status.textContent = 'तस्वीरें बनाने में समस्या हुई।';
+    // Always leave the user with usable local scene slides when Gemini image
+    // generation fails (quota/model access/network). These are explicitly labeled
+    // text slides, never represented as AI-generated images.
     info.replaceChildren();
     var errorText = document.createElement('p');
-    errorText.textContent = error.message || 'कृपया दोबारा प्रयास करें।';
+    errorText.textContent = 'Gemini तस्वीरें नहीं बना सका: ' + (error.message || 'अज्ञात त्रुटि');
     info.appendChild(errorText);
-    var fallback = document.createElement('button');
-    fallback.className = 'secondary';
-    fallback.textContent = '🧩 बिना AI quota के Script Slides बनाएँ';
-    fallback.addEventListener('click', function() {
-      try {
-        savedSceneImages = createScriptSlides(script);
-        savedFailedScenes = [];
-        info.replaceChildren();
-        savedSceneImages.forEach(function(item) {
-          var card = document.createElement('section'); card.style.marginTop='14px';
-          var heading = document.createElement('p'); heading.textContent='स्थानीय Script Slide '+item.scene; card.appendChild(heading);
-          var image = document.createElement('img'); image.alt=heading.textContent; image.src='data:'+item.mimeType+';base64,'+item.imageBase64; image.style.width='100%'; image.style.borderRadius='8px'; card.appendChild(image);
-          var link=document.createElement('a');link.href=image.src;link.download='BABA-AI-Script-Slide-'+item.scene+'.png';link.textContent='⬇️ स्लाइड डाउनलोड करें';link.style.display='block';link.style.padding='10px 0';card.appendChild(link);info.appendChild(card);
-        });
-        var warning=document.createElement('p');warning.className='small';warning.textContent='ये स्क्रिप्ट से बनी टेक्स्ट स्लाइड हैं, AI-generated तस्वीरें नहीं। इन्हें MP4 preview में इस्तेमाल किया जा सकता है।';info.appendChild(warning);
-        status.textContent='स्थानीय Script Slides तैयार हैं; AI तस्वीरें quota error के कारण नहीं बनीं।';
-      } catch (fallbackError) { status.textContent='स्थानीय स्लाइड नहीं बन सकीं: '+fallbackError.message; }
-    });
-    info.appendChild(fallback);
+    try {
+      savedSceneImages = createScriptSlides(script);
+      savedFailedScenes = [];
+      savedSceneImages.forEach(function(item) {
+        var card = document.createElement('section'); card.style.marginTop='14px'; card.style.padding='10px'; card.style.border='1px solid #343a51'; card.style.borderRadius='8px';
+        var heading = document.createElement('p'); heading.textContent='स्थानीय Script Slide '+item.scene; card.appendChild(heading);
+        var image = document.createElement('img'); image.alt=heading.textContent; image.src='data:'+item.mimeType+';base64,'+item.imageBase64; image.style.width='100%'; image.style.borderRadius='8px'; card.appendChild(image);
+        var link=document.createElement('a');link.href=image.src;link.download='BABA-AI-Script-Slide-'+item.scene+'.png';link.textContent='⬇️ स्लाइड PNG डाउनलोड करें';link.style.display='block';link.style.padding='10px 0';link.style.color='#b9a1ff';card.appendChild(link);info.appendChild(card);
+      });
+      var warning=document.createElement('p');warning.className='small';warning.textContent='ये स्क्रिप्ट से बनी स्थानीय टेक्स्ट स्लाइड हैं, AI तस्वीरें नहीं। इन्हें MP4 preview बनाने में इस्तेमाल कर सकते हैं। असली AI तस्वीरों के लिए Gemini image quota/model access ठीक होना चाहिए।';info.appendChild(warning);
+      status.textContent='⚠️ Gemini असफल रहा; '+savedSceneImages.length+' स्थानीय Script Slides तैयार हैं।';
+    } catch (fallbackError) {
+      status.textContent='तस्वीरें/स्थानीय स्लाइड नहीं बन सकीं: '+fallbackError.message;
+    }
   } finally {
     button.disabled = false;
   }
