@@ -315,6 +315,8 @@ async function runFullAutomation() {
   button.disabled = true;
   var originalText = button.textContent;
   var stage = 'स्क्रिप्ट';
+  // पुराने रन का MP4 नए रन की सफलता न माना जाए।
+  lastRenderedVideoBlob = null;
   try {
     status.textContent = 'ऑटोमेशन 1/4: AI स्क्रिप्ट तैयार/जाँच रहा है…';
     if (!document.getElementById('script').value.trim()) {
