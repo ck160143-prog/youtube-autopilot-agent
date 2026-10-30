@@ -47,7 +47,7 @@ test("malformed JSON requests receive a safe JSON 400", async () => {
   const contentType = response.headers.get("content-type") || "";
   const body = await response.json();
   assert.equal(response.status, 400);
-  assert.match(contentType, /application\\/json/i);
+  assert.match(contentType, /application\/json/i);
   assert.match(body.error, /JSON सही नहीं है/);
 });
 
