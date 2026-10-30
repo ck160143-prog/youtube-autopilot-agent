@@ -85,7 +85,7 @@ test("inline browser JavaScript in index.html parses without syntax errors", () 
   const fs = require("node:fs");
   const vm = require("node:vm");
   const html = fs.readFileSync(require("node:path").join(__dirname, "index.html"), "utf8");
-  const scripts = [...html.matchAll(/<script(?:\\s[^>]*)?>([\\s\\S]*?)<\\/script>/gi)];
+  const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
   assert.ok(scripts.length > 0, "index.html should contain inline JavaScript");
   for (const [index, match] of scripts.entries()) {
     assert.doesNotThrow(() => new vm.Script(match[1], { filename: "index.html:inline-script-" + (index + 1) }),
