@@ -51,6 +51,18 @@ test("malformed JSON requests receive a safe JSON 400", async () => {
   assert.match(body.error, /JSON सही नहीं है/);
 });
 
+test("unknown render job status and download return JSON 404", async () => {
+  const statusResponse = await fetch(baseUrl + "/api/render/status/not-a-real-job");
+  const statusBody = await statusResponse.json();
+  assert.equal(statusResponse.status, 404);
+  assert.match(statusBody.error, /Render job नहीं मिला/);
+
+  const downloadResponse = await fetch(baseUrl + "/api/render/download/not-a-real-job");
+  const downloadBody = await downloadResponse.json();
+  assert.equal(downloadResponse.status, 404);
+  assert.match(downloadBody.error, /Render job नहीं मिला/);
+});
+
 test("unknown API endpoint returns a JSON 404", async () => {
   const response = await fetch(baseUrl + "/api/not-a-real-route");
   const body = await response.json();
