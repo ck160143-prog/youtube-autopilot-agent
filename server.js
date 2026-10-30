@@ -362,7 +362,7 @@ async function findCommonsSceneImage(scene) {
     .filter(word => word.length > 2 && !stopWords.has(word.toLowerCase())).slice(0, 8);
   const primary = terms.join(" ").trim();
   const queries = [...new Set([primary, String(scene?.title || "").trim(), "Taj Mahal India", "Indian historical architecture"].filter(Boolean))];
-  const clean = value => String(value?.value || "").replace(/<[^>]*>/g, " ").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, "&").replace(/\\s+/g, " ").trim().slice(0, 300);
+  const clean = value => String(value?.value || "").replace(/<[^>]*>/g, " ").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim().slice(0, 300);
   for (const searchTerm of queries) {
     try {
       const searchUrl = new URL("https://commons.wikimedia.org/w/api.php");
@@ -775,6 +775,13 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
+function getPcmDurationSeconds(audioBase64, sampleRate = 24000, channels = 1, bytesPerSample = 2) {
+  if (typeof audioBase64 !== "string" || !audioBase64) return 0;
+  const bytes = Buffer.from(audioBase64, "base64").length;
+  const bytesPerSecond = Number(sampleRate) * Number(channels) * Number(bytesPerSample);
+  return Number.isFinite(bytesPerSecond) && bytesPerSecond > 0 ? bytes / bytesPerSecond : 0;
+}
+
 function validBase64(value) {
   return typeof value === "string" && value.length > 0 && value.length < 18 * 1024 * 1024 &&
     /^[A-Za-z0-9+/]+={0,2}$/.test(value);
@@ -820,7 +827,7 @@ async function renderToFile(body) {
     await fs.promises.writeFile(audioPath, Buffer.from(audioBase64, "base64"));
     // Gemini's raw L16 response is 24 kHz mono, 16-bit PCM. Derive duration without ffprobe.
     const audioBuffer = Buffer.from(audioBase64, "base64");
-    let duration = isPcm ? audioBuffer.length / (24000 * 2) : 0;
+    let duration = isPcm ? getPcmDurationSeconds(audioBase64) : 0;
     if (!isPcm) {
       const probe = await execFileAsync(ffmpegPath, ["-i", audioPath, "-f", "null", "-"], { timeout: 30000 }).catch(e => e);
       const textOut = String(probe.stderr || probe.message || "");
@@ -942,4 +949,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
