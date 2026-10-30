@@ -2,7 +2,14 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { app } = require("./server");
+const { app, getPcmDurationSeconds } = require("./server");
+
+test("PCM duration uses decoded bytes and 24 kHz mono 16-bit defaults", () => {
+  const oneSecondPcm = Buffer.alloc(24000 * 2);
+  assert.equal(getPcmDurationSeconds(oneSecondPcm.toString("base64")), 1);
+  assert.equal(getPcmDurationSeconds(Buffer.alloc(12000).toString("base64")), 0.25);
+  assert.equal(getPcmDurationSeconds(""), 0);
+});
 
 let server;
 let baseUrl;
