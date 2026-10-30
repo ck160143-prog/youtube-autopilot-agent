@@ -499,6 +499,35 @@ ${script.slice(0, 18000)}
       }
     }
 
+    // When Gemini returns 429, do not retry another paid model. Try free, real, license-attributed Wikimedia Commons photos instead.
+    if (imageQuota && failedScenes.length) {
+      const remainingFailures = [];
+      for (const failed of failedScenes) {
+        try {
+          const fallback = await findCommonsSceneImage(failed);
+          if (fallback) {
+            images.push({
+              scene: failed.scene,
+              title: failed.title,
+              mimeType: fallback.mimeType,
+              imageBase64: fallback.imageBase64,
+              source: fallback.source,
+              sourceUrl: fallback.sourceUrl,
+              sourceTitle: fallback.title,
+              license: fallback.license,
+              credit: fallback.credit,
+              attribution: fallback.attribution
+            });
+          } else {
+            remainingFailures.push({ ...failed, error: "Gemini quota खत्म है और इस दृश्य के लिए Wikimedia Commons पर उपयुक्त तस्वीर नहीं मिली।" });
+          }
+        } catch (_) {
+          remainingFailures.push({ ...failed, error: "Gemini quota खत्म है; मुफ्त Wikimedia फोटो सेवा अभी उपलब्ध नहीं हुई।" });
+        }
+      }
+      failedScenes.splice(0, failedScenes.length, ...remainingFailures);
+    }
+
     if (!images.length) {
       const quotaHit = failedScenes.some(item => /quota/.test(item.error));
       return res.status(quotaHit ? 429 : (temporaryImageFailure ? 503 : 502)).json({
