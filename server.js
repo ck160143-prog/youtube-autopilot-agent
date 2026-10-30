@@ -424,9 +424,11 @@ app.post("/api/images", async (req, res) => {
       if (!scenes.length) return res.status(400).json({ error: "दोबारा बनाने के लिए वैध failed-scene prompts नहीं मिले।" });
     } else {
       quotaModel = scriptModel;
-      const planResponse = await withTemporaryRetries(() => ai.models.generateContent({
-        model: scriptModel,
-        contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
+      let planResponse;
+      try {
+        planResponse = await withTemporaryRetries(() => ai.models.generateContent({
+          model: scriptModel,
+          contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
 सभी दृश्य एक ही visual style में हों: cinematic, polished, YouTube-friendly, 16:9 landscape, कोई लिखावट/टेक्स्ट/वॉटरमार्क नहीं।
 स्क्रिप्ट:
 ${script.slice(0, 18000)}
@@ -434,8 +436,30 @@ ${script.slice(0, 18000)}
 केवल वैध JSON लौटाएँ, इस schema में:
 {"scenes":[{"title":"दृश्य का छोटा शीर्षक","prompt":"English image prompt"}]}
 3 से अधिक दृश्य न दें।`,
-        config: { responseMimeType: "application/json" }
-      }));
+          config: { responseMimeType: "application/json" }
+        }));
+      } catch (planningError) {
+        // If scene planning itself is quota-limited, still try real, attributed Commons photos.
+        if (!isQuotaError(planningError)) throw planningError;
+        const topic = /ताजमहल|taj\s*mahal/i.test(script) ? "Taj Mahal India" :
+          ((script.match(/(?:विषय|title|शीर्षक)\s*[:：-]\s*([^\n.!]{3,100})/i) || [])[1] || script.slice(0, 100)).trim();
+        const fallbackScenes = [
+          { scene: 1, title: topic + " — मुख्य दृश्य", prompt: "Real photograph of " + topic + " exterior, wide cinematic view" },
+          { scene: 2, title: topic + " — वास्तुकला", prompt: "Real photograph of " + topic + " architecture and detailed structure" },
+          { scene: 3, title: topic + " — परिवेश", prompt: "Real photograph of " + topic + " gardens and surrounding landscape" }
+        ];
+        const fallbackImages = [];
+        const failedScenes = [];
+        for (const scene of fallbackScenes) {
+          const found = await findCommonsSceneImage(scene);
+          if (found) fallbackImages.push({ ...found, scene: scene.scene, title: scene.title });
+          else failedScenes.push({ scene: scene.scene, title: scene.title, error: "Wikimedia Commons पर उपयुक्त वास्तविक तस्वीर नहीं मिली।" });
+        }
+        if (fallbackImages.length) {
+          return res.json({ success: true, images: fallbackImages, failedScenes, model: "Wikimedia Commons fallback", warning: "Gemini scene planning quota सीमित है; वास्तविक, attribution सहित Commons तस्वीरें दिखाई जा रही हैं।" });
+        }
+        return res.status(429).json({ success: false, error: quotaMessage("script", scriptModel, planningError) + " Wikimedia Commons से भी कोई वास्तविक तस्वीर उपलब्ध नहीं हुई।", images: [], failedScenes, model: scriptModel });
+      }
       let planText = planResponse.text || "";
       planText = planText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
       let plan;
