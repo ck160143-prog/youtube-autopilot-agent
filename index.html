@@ -75,6 +75,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <p class="small">ध्यान दें: 5–30 मिनट का विकल्प पूरी स्क्रिप्ट के लिए है। अभी ऑटो MP4 रेंडर अधिकतम लगभग 3 मिनट का छोटा preview बनाता है; पूरी 30-मिनट की फिल्म अभी समर्थित नहीं है।</p>
 <button onclick="makeOutline()">📝 वीडियो की रूपरेखा बनाएँ</button>
 <button class="green" onclick="generateFullScript()" id="btnGenerateScript">🤖 पूरी AI स्क्रिप्ट बनाएँ</button>
+<button class="green" id="btnRunFullAutomation" onclick="runFullAutomation()">🚀 पूरा ऑटोमैटिक काम शुरू करें</button>
+<p class="small">यह एजेंट क्रम से स्क्रिप्ट → SEO → तस्वीरें → हिंदी आवाज़ → MP4 बनाएगा। quota या कनेक्शन त्रुटि पर कारण दिखेगा; YouTube upload से पहले आपकी पुष्टि जरूरी होगी।</p>
 <button class="secondary" onclick="saveProject()">💾 प्रोजेक्ट सेव करें</button>
 </div>
 
@@ -301,6 +303,51 @@ async function generateFullScript() {
   } finally {
     btn.disabled = false;
     loading.style.display = 'none';
+  }
+}
+
+async function runFullAutomation() {
+  var button = document.getElementById('btnRunFullAutomation');
+  var status = document.getElementById('featureStatus');
+  var topic = document.getElementById('topic').value.trim();
+  if (!topic) { alert('पहले वीडियो का विषय लिखें।'); return; }
+  if (button.disabled) return;
+  button.disabled = true;
+  var originalText = button.textContent;
+  var stage = 'स्क्रिप्ट';
+  try {
+    status.textContent = 'ऑटोमेशन 1/4: AI स्क्रिप्ट तैयार/जाँच रहा है…';
+    if (!document.getElementById('script').value.trim()) {
+      await generateFullScript();
+    }
+    if (!document.getElementById('script').value.trim()) throw new Error('स्क्रिप्ट नहीं बनी। API key/quota जाँचें; फिर इसी बटन से दोबारा शुरू करें।');
+    if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
+
+    stage = 'YouTube SEO';
+    status.textContent = 'ऑटोमेशन 2/4: YouTube SEO बना रहा है…';
+    if (!String(currentSEO || '').trim()) await generateSEO();
+    if (!String(currentSEO || '').trim()) throw new Error('SEO नहीं बना। quota/कनेक्शन जाँचें और फिर कोशिश करें।');
+    if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
+
+    stage = 'वीडियो';
+    status.textContent = 'ऑटोमेशन 3/4: तस्वीरें → हिंदी आवाज़ → MP4 क्रम से बना रहा है…';
+    await generateAutoVideo();
+    if (!lastRenderedVideoBlob || !lastRenderedVideoBlob.size) {
+      throw new Error('MP4 अभी तैयार नहीं हुआ। ऊपर दिखाई गई त्रुटि ठीक करें; स्क्रिप्ट और SEO सेव रहेंगे।');
+    }
+    if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
+
+    stage = 'YouTube upload तैयारी';
+    status.textContent = 'ऑटोमेशन 4/4 पूरा: स्क्रिप्ट, SEO और MP4 तैयार हैं। अब YouTube कनेक्शन जाँचें और अपलोड की पुष्टि करें।';
+    var result = document.getElementById('result');
+    if (result) result.textContent = '✅ ऑटोमेशन सफल: स्क्रिप्ट + SEO + MP4 तैयार। YouTube पर भेजने से पहले चैनल/शीर्षक/Privacy की पुष्टि करें।';
+    var info = document.getElementById('featureInfo');
+    if (info) info.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (error) {
+    status.textContent = '⏸️ ऑटोमेशन ' + stage + ' चरण पर रुका: ' + (error.message || 'अज्ञात त्रुटि') + ' पहले से तैयार स्क्रिप्ट/SEO सुरक्षित हैं। समस्या ठीक करके फिर “पूरा ऑटोमैटिक काम शुरू करें” दबाएँ।';
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
   }
 }
 
