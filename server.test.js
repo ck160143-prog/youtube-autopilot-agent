@@ -2,7 +2,29 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { app, getPcmDurationSeconds } = require("./server");
+const { app, getPcmDurationSeconds, getYoutubeOAuthConfigStatus } = require("./server");
+
+
+test("YouTube OAuth diagnostics report missing variable names without exposing secret values", () => {
+  const incomplete = getYoutubeOAuthConfigStatus({ YOUTUBE_CLIENT_ID: "client-id-placeholder" });
+  assert.equal(incomplete.configured, false);
+  assert.deepEqual(incomplete.missing, [
+    "YOUTUBE_CLIENT_SECRET",
+    "YOUTUBE_REDIRECT_URI",
+    "APP_SESSION_SECRET (must be at least 32 characters)"
+  ]);
+  assert.equal(JSON.stringify(incomplete).includes("client-id-placeholder"), false);
+
+  const complete = getYoutubeOAuthConfigStatus({
+    YOUTUBE_CLIENT_ID: "client-id-placeholder",
+    YOUTUBE_CLIENT_SECRET: "secret-placeholder",
+    YOUTUBE_REDIRECT_URI: "https://example.onrender.com/api/youtube/callback",
+    APP_SESSION_SECRET: "x".repeat(32)
+  });
+  assert.equal(complete.configured, true);
+  assert.deepEqual(complete.missing, []);
+  assert.equal(JSON.stringify(complete).includes("secret-placeholder"), false);
+});
 
 test("PCM duration uses decoded bytes and 24 kHz mono 16-bit defaults", () => {
   const oneSecondPcm = Buffer.alloc(24000 * 2);
