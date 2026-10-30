@@ -79,8 +79,10 @@ test("image route preserves successful scenes and stops after a scene-level 429"
     });
     const body = await response.json();
     assert.equal(response.status, 200);
-    assert.equal(body.images.length, 1);
-    assert.equal(body.images[0].imageBase64, "dGVzdC1pbWFnZQ==");
+    // Wikimedia fallback may add real images after Gemini quota is exhausted.
+    // Verify the successful Gemini scene is retained without assuming fallback count.
+    assert.ok(body.images.some(image => image.imageBase64 === "dGVzdC1pbWFnZQ=="));
+
     assert.equal(imageCalls, 2, "must not request scene three after 429");
     assert.equal(body.quotaInfo.model, "gemini-3.1-flash-image");
     assert.match(body.quotaInfo.message, /30s/);
