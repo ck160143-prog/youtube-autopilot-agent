@@ -623,9 +623,21 @@ app.get("/api/youtube/callback", async (req, res) => {
       safeLog("YouTube OAuth token exchange failed", { status: tokenResponse.status });
       return res.status(502).send("Google OAuth token exchange failed. Check OAuth setup and redirect URI.");
     }
+    // Verify the real authenticated YouTube channel before marking OAuth as connected.
+    const channelResponse = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+      headers: { Authorization: "Bearer " + tokens.access_token }
+    });
+    const channelData = await channelResponse.json().catch(() => ({}));
+    const channel = channelData.items?.[0];
+    if (!channelResponse.ok || !channel?.id) {
+      safeLog("YouTube channel verification failed", { status: channelResponse.status });
+      clearYoutubeSession(res);
+      return res.status(502).send("Google login सफल हुआ, लेकिन YouTube चैनल सत्यापित नहीं हो सका। YouTube Data API v3 और खाते की अनुमति जाँचें, फिर Connect दोबारा करें।");
+    }
     setYoutubeSession(res, { access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || oldSession.refresh_token,
-      expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000 });
+      expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
+      channel: { id: channel.id, title: channel.snippet?.title || "" } });
     return res.redirect("/?youtube=connected");
   } catch (error) {
     safeLog("YouTube OAuth callback failed", error);
