@@ -499,8 +499,12 @@ ${script.slice(0, 18000)}
             break;
           } catch (candidateError) {
             lastImageError = candidateError;
-            if (isQuotaError(candidateError)) throw candidateError;
             const status = getStatus(candidateError);
+            // Never try a second image model after an explicit HTTP 429 or quota code.
+            if (status === 429 || isQuotaError(candidateError) ||
+                /RESOURCE_EXHAUSTED/i.test(String(candidateError?.code || ""))) {
+              throw candidateError;
+            }
             if (![400, 404].includes(status) || modelIndex === imageModels.length - 1) throw candidateError;
           }
         }
