@@ -354,33 +354,45 @@ app.post("/api/seo", async (req, res) => {
 });
 
 // Free, license-attributed photo fallback for Gemini image quota failures.
-// This returns real Wikimedia Commons files (not AI-generated images) and keeps attribution metadata.
+// Search Commons explicitly, then fetch image metadata separately for better API compatibility.
 async function findCommonsSceneImage(scene) {
-  const stopWords = new Set(["the","and","with","from","that","this","for","into","over","under","cinematic","polished","youtube","friendly","landscape","image","photo","realistic","high","quality","16:9","no","text","watermark","a","an","of","in","on","to","at","is","are","was","were"]);
+  const stopWords = new Set(["the","and","with","from","that","this","for","into","over","under","cinematic","polished","youtube","friendly","landscape","image","photo","realistic","high","quality","16:9","no","text","watermark","a","an","of","in","on","to","at","is","are","was","were","ultra","detailed","wide","shot","lighting","style"]);
   const raw = String(scene?.title || "") + " " + String(scene?.prompt || "");
   const terms = raw.replace(/https?:\/\/\S+/g, " ").replace(/[^\p{L}\p{N}\s-]/gu, " ").split(/\s+/)
-    .filter(word => word.length > 2 && !stopWords.has(word.toLowerCase())).slice(0, 7);
-  const search = terms.join(" ").trim() || "historical architecture India";
-  const api = new URL("https://commons.wikimedia.org/w/api.php");
-  api.search = new URLSearchParams({ action: "query", generator: "search", gsrsearch: search, gsrnamespace: "6", gsrlimit: "8", prop: "imageinfo", iiprop: "url|extmetadata", iiurlwidth: "1280", format: "json" }).toString();
-  const response = await fetch(api, { headers: { "User-Agent": "BABA-AI-YouTube-Agent/1.0 (scene-image-fallback)" }, signal: AbortSignal.timeout(8000) });
-  if (!response.ok) throw new Error("Wikimedia image search HTTP " + response.status);
-  const data = await response.json();
-  const pages = Object.values(data?.query?.pages || {}).sort((a,b) => Number(a.index || 999) - Number(b.index || 999));
-  for (const page of pages) {
-    const info = page?.imageinfo?.[0];
-    const imageUrl = info?.thumburl || info?.url;
-    if (!imageUrl || !/^https:\/\//i.test(imageUrl) || !/^image\/(png|jpeg|webp)$/i.test(info?.mime || "")) continue;
+    .filter(word => word.length > 2 && !stopWords.has(word.toLowerCase())).slice(0, 8);
+  const primary = terms.join(" ").trim();
+  const queries = [...new Set([primary, String(scene?.title || "").trim(), "Taj Mahal India", "Indian historical architecture"].filter(Boolean))];
+  const clean = value => String(value?.value || "").replace(/<[^>]*>/g, " ").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, "&").replace(/\\s+/g, " ").trim().slice(0, 300);
+  for (const searchTerm of queries) {
     try {
-      const imageResponse = await fetch(imageUrl, { headers: { "User-Agent": "BABA-AI-YouTube-Agent/1.0" }, signal: AbortSignal.timeout(8000) });
-      if (!imageResponse.ok) continue;
-      const bytes = Buffer.from(await imageResponse.arrayBuffer());
-      if (!bytes.length || bytes.length > 5 * 1024 * 1024) continue;
-      const meta = info.extmetadata || {};
-      const clean = value => String(value?.value || "").replace(/<[^>]*>/g, " ").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim().slice(0, 300);
-      const mimeType = info.mime === "image/jpeg" ? "image/jpeg" : (info.mime === "image/webp" ? "image/webp" : "image/png");
-      return { mimeType, imageBase64: bytes.toString("base64"), source: "Wikimedia Commons", sourceUrl: info.descriptionurl || page.canonicalurl || "https://commons.wikimedia.org/", title: clean(meta.ObjectName) || String(page.title || "Wikimedia Commons image").replace(/^File:/, ""), license: clean(meta.LicenseShortName) || "See source page", credit: clean(meta.Artist) || "See source page", attribution: clean(meta.Attribution) || clean(meta.Artist) || "See source page" };
-    } catch (_) { /* try another public file; never hide the original Gemini quota message */ }
+      const searchUrl = new URL("https://commons.wikimedia.org/w/api.php");
+      searchUrl.search = new URLSearchParams({ action: "query", list: "search", srsearch: searchTerm, srnamespace: "6", srlimit: "8", format: "json", origin: "*" }).toString();
+      const searchResponse = await fetch(searchUrl, { headers: { "User-Agent": "BABA-AI-YouTube-Agent/1.0 (scene-image-fallback)" }, signal: AbortSignal.timeout(10000) });
+      if (!searchResponse.ok) continue;
+      const searchData = await searchResponse.json();
+      const titles = (searchData?.query?.search || []).map(item => item.title).filter(Boolean);
+      if (!titles.length) continue;
+      const infoUrl = new URL("https://commons.wikimedia.org/w/api.php");
+      infoUrl.search = new URLSearchParams({ action: "query", titles: titles.join("|"), prop: "imageinfo", iiprop: "url|mime|extmetadata", iiurlwidth: "1280", format: "json", origin: "*" }).toString();
+      const infoResponse = await fetch(infoUrl, { headers: { "User-Agent": "BABA-AI-YouTube-Agent/1.0 (scene-image-fallback)" }, signal: AbortSignal.timeout(10000) });
+      if (!infoResponse.ok) continue;
+      const infoData = await infoResponse.json();
+      const pages = Object.values(infoData?.query?.pages || {});
+      for (const page of pages) {
+        const info = page?.imageinfo?.[0];
+        const imageUrl = info?.thumburl || info?.url;
+        if (!imageUrl || !/^https:\/\//i.test(imageUrl) || !/^image\/(png|jpeg|webp)$/i.test(info?.mime || "")) continue;
+        try {
+          const imageResponse = await fetch(imageUrl, { headers: { "User-Agent": "BABA-AI-YouTube-Agent/1.0" }, signal: AbortSignal.timeout(10000) });
+          if (!imageResponse.ok) continue;
+          const bytes = Buffer.from(await imageResponse.arrayBuffer());
+          if (!bytes.length || bytes.length > 5 * 1024 * 1024) continue;
+          const meta = info.extmetadata || {};
+          const mimeType = info.mime === "image/jpeg" ? "image/jpeg" : (info.mime === "image/webp" ? "image/webp" : "image/png");
+          return { mimeType, imageBase64: bytes.toString("base64"), source: "Wikimedia Commons", sourceUrl: info.descriptionurl || "https://commons.wikimedia.org/", title: clean(meta.ObjectName) || String(page.title || "Wikimedia Commons image").replace(/^File:/, ""), license: clean(meta.LicenseShortName) || "See source page", credit: clean(meta.Artist) || "See source page", attribution: clean(meta.Attribution) || clean(meta.Artist) || "See source page" };
+        } catch (_) { /* try the next image */ }
+      }
+    } catch (_) { /* try the next broader query */ }
   }
   return null;
 }
