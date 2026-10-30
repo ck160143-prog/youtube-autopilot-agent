@@ -6,7 +6,8 @@ const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
 
-app.use(express.json({ limit: "20mb" }));
+// Render payloads contain base64-encoded scene images plus narration; allow the documented 12 MB image + 8 MB audio payload with base64 overhead.
+app.use(express.json({ limit: "35mb" }));
 app.use(express.static("dist"));
 
 const crypto = require("crypto");
