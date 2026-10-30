@@ -339,10 +339,26 @@ async function runFullAutomation() {
     }
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
-    stage = 'YouTube upload तैयारी';
-    status.textContent = 'ऑटोमेशन 4/4 पूरा: स्क्रिप्ट, SEO और MP4 तैयार हैं। अब YouTube कनेक्शन जाँचें और अपलोड की पुष्टि करें।';
+    stage = 'YouTube पर Private upload';
+    status.textContent = 'ऑटोमेशन 4/5: जुड़े हुए YouTube चैनल पर वीडियो Private रूप में अपलोड कर रहा है…';
+    // अपलोड अपने-आप होगा, लेकिन डिफ़ॉल्ट Private रहेगा ताकि अधूरा/गलत वीडियो सार्वजनिक न हो।
+    showUploadForm();
+    var titleField = document.getElementById('ytTitle');
+    var descriptionField = document.getElementById('ytDescription');
+    var privacyField = document.getElementById('ytPrivacy');
+    if (titleField) titleField.value = topic.slice(0, 100);
+    if (descriptionField) descriptionField.value = String(currentSEO || '').slice(0, 5000);
+    if (privacyField) privacyField.value = 'private';
+    if (typeof refreshYouTubeStatus === 'function') await refreshYouTubeStatus();
+    var ytResult = document.getElementById('ytUploadResult');
+    if (!ytResult) throw new Error('YouTube upload form तैयार नहीं हुआ। MP4 बना है; Upload सेक्शन से दोबारा कोशिश करें।');
+    await uploadRenderedVideo();
+    var uploadMessage = ytResult.textContent || '';
+    if (!/^✅ Upload सफल:/.test(uploadMessage)) throw new Error('वीडियो तैयार है, लेकिन YouTube upload पूरा नहीं हुआ: ' + uploadMessage);
+    if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
     var result = document.getElementById('result');
-    if (result) result.textContent = '✅ ऑटोमेशन सफल: स्क्रिप्ट + SEO + MP4 तैयार। YouTube पर भेजने से पहले चैनल/शीर्षक/Privacy की पुष्टि करें।';
+    status.textContent = '✅ ऑटोमेशन पूरा: स्क्रिप्ट → SEO → तस्वीरें → हिंदी आवाज़ → MP4 → YouTube पर Private upload सफल। वीडियो अभी सार्वजनिक नहीं है।';
+    if (result) result.textContent = '✅ पूरा workflow सफल। YouTube पर Private वीडियो अपलोड हो गया: ' + uploadMessage.replace('✅ Upload सफल: ', '');
     var info = document.getElementById('featureInfo');
     if (info) info.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
