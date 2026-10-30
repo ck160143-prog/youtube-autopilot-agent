@@ -122,6 +122,16 @@ function getAIClient() {
   return aiClientFactory();
 }
 
+// Return OAuth readiness without ever returning credential values.
+function getYoutubeOAuthConfigStatus(env = process.env) {
+  const required = ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REDIRECT_URI"];
+  const missing = required.filter(name => typeof env[name] !== "string" || !env[name].trim());
+  if (typeof env.APP_SESSION_SECRET !== "string" || env.APP_SESSION_SECRET.length < 32) {
+    missing.push("APP_SESSION_SECRET (must be at least 32 characters)");
+  }
+  return { configured: missing.length === 0, missing };
+}
+
 function sendAPIError(res, error, fallbackMessage, kind) {
   safeLog(fallbackMessage, error);
 
@@ -155,9 +165,12 @@ function sendAPIError(res, error, fallbackMessage, kind) {
 
 // 1. सर्वर की स्थिति
 app.get("/api/health", (req, res) => {
+  const youtubeOAuth = getYoutubeOAuthConfigStatus();
   res.json({
     status: "ok",
     geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    youtubeOAuthConfigured: youtubeOAuth.configured,
+    youtubeOAuthMissing: youtubeOAuth.missing,
     message: "BABA AI सर्वर चल रहा है।",
   });
 });
@@ -977,4 +990,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, getPcmDurationSeconds, getYoutubeOAuthConfigStatus, setAIClientFactoryForTests, resetAIClientFactory };
