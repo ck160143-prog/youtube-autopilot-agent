@@ -37,6 +37,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 #loadingOverlay{display:none;text-align:center;padding:20px}
 .info-box{background:#111725;border:1px solid #2a3050;border-radius:10px;padding:14px;margin-top:10px;font-size:13px;line-height:1.7;color:#b9bfd0}
 .info-box b{color:#b9a1ff}
+.progress-track{height:12px;background:#30364b;border-radius:999px;overflow:hidden;margin:10px 0}.progress-fill{height:100%;width:0;background:#f0b44d;transition:width .25s ease}.progress-wrap.complete .progress-fill{background:#20c878}.progress-wrap.complete .progress-label{color:#8fffc1}.progress-wrap.pending .progress-label{color:#ffd27a}.progress-label{font-weight:bold;font-size:14px}.progress-note{font-size:12px;color:#b9bfd0;line-height:1.5}
 </style>
   <meta property="og:image" content="https://bolt.new/static/og_default.png">
     <meta name="twitter:card" content="summary_large_image">
@@ -124,6 +125,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div class="grid"><button type="button" class="secondary" onclick="exportWorkflowCheckpoint()">⬇️ Backup JSON डाउनलोड</button><button type="button" class="secondary" onclick="document.getElementById('workflowImportFile').click()">📂 Backup वापस लाएँ</button></div>
 <input id="workflowImportFile" type="file" accept="application/json,.json" style="display:none">
 <p class="small" id="workflowCheckpointStages">अभी कोई चरण सेव नहीं हुआ।</p>
+<div id="workflowProgress" class="progress-wrap pending" role="status" aria-live="polite" style="margin-top:14px">
+  <div class="progress-label" id="workflowProgressLabel">प्रगति: 0% — अभी काम बाकी है</div>
+  <div class="progress-track" role="progressbar" aria-label="BABA AI workflow completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="workflowProgressBar"><div class="progress-fill" id="workflowProgressFill"></div></div>
+  <p class="progress-note" id="workflowProgressNote">हरे रंग में 100% तभी दिखेगा जब सभी 7 चरणों की सफलता दर्ज हो। केवल विषय लिखने से काम पूरा नहीं माना जाएगा।</p>
+</div>
 </div>
 
 <div class="card">
@@ -998,8 +1004,18 @@ try {
   function previous(){try{return JSON.parse(localStorage.getItem(KEY)||'{}')||{};}catch(_){return {};}}
   function render(data){
     var node=el('workflowCheckpointStages'); if(!node)return;
-    var done=Array.isArray(data.completed)?data.completed:[];
-    node.textContent='चरण स्थिति: '+stages.map(function(s){return (done.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
+    var done=Array.isArray(data.completed)?data.completed.filter(function(s){return stages.indexOf(s)>=0;}):[];
+    var uniqueDone=stages.filter(function(s){return done.indexOf(s)>=0;});
+    var percent=Math.round(uniqueDone.length/stages.length*100);
+    node.textContent='चरण स्थिति: '+stages.map(function(s){return (uniqueDone.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
+    var wrap=el('workflowProgress'),label=el('workflowProgressLabel'),bar=el('workflowProgressBar'),fill=el('workflowProgressFill'),note=el('workflowProgressNote');
+    if(wrap&&label&&bar&&fill){
+      wrap.classList.toggle('complete',percent===100);
+      wrap.classList.toggle('pending',percent!==100);
+      label.textContent=percent===100?'प्रगति: 100% — सभी चरण पूरे ✅':'प्रगति: '+percent+'% — '+uniqueDone.length+' / '+stages.length+' चरण पूरे';
+      fill.style.width=percent+'%';bar.setAttribute('aria-valuenow',String(percent));
+      if(note)note.textContent=percent===100?'सभी 7 चरण सफलता के साथ दर्ज हैं।':'हरे रंग में 100% तभी दिखेगा जब सभी 7 चरणों की सफलता दर्ज हो; quota/error या अधूरे चरण पूरे नहीं गिने जाएँगे।';
+    }
   }
   function snapshot(){
     return {version:1,updatedAt:new Date().toISOString(),topic:el('topic')?.value||'',duration:el('duration')?.value||'30',language:el('language')?.value||'हिंदी',script:el('script')?.value||'',seo:typeof currentSEO==='string'?currentSEO:'',completed:Array.isArray(previous().completed)?previous().completed:[],lastStatus:previous().lastStatus||''};
