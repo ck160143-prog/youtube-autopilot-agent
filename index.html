@@ -331,17 +331,29 @@ async function runFullAutomation() {
   // पुराने रन का MP4 नए रन की सफलता न माना जाए।
   lastRenderedVideoBlob = null;
   try {
+    // हर नए रन में पुराने चरण हटाएँ, ताकि पिछली वीडियो की progress नई वीडियो पर न दिखे।
+    if (typeof window.resetWorkflowStages === 'function') window.resetWorkflowStages();
+    if (typeof window.markWorkflowStage === 'function') window.markWorkflowStage('विषय');
+    document.getElementById('result').textContent = '';
     // हर रन में वर्तमान topic के लिए नया script/SEO बनाएँ; पिछले topic की सामग्री reuse न हो।
     status.textContent = 'ऑटोमेशन 1/5: वर्तमान विषय के लिए नई AI स्क्रिप्ट बना रहा है…';
     await generateFullScript();
-    if (!document.getElementById('script').value.trim()) throw new Error('स्क्रिप्ट नहीं बनी। API key/quota जाँचें; पुरानी स्क्रिप्ट upload नहीं होगी।');
+    if (!document.getElementById('script').value.trim() ||
+        !/^✅ पूरी AI स्क्रिप्ट तैयार हो गई/i.test(document.getElementById('result').textContent || '')) {
+      throw new Error('नई स्क्रिप्ट नहीं बनी। API key/quota जाँचें; आगे के चरण शुरू नहीं होंगे।');
+    }
+    if (typeof window.markWorkflowStage === 'function') window.markWorkflowStage('स्क्रिप्ट');
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
     stage = 'YouTube SEO';
     status.textContent = 'ऑटोमेशन 2/5: वर्तमान विषय के लिए नया YouTube SEO बना रहा है…';
     currentSEO = '';
     await generateSEO();
-    if (!String(currentSEO || '').trim()) throw new Error('SEO नहीं बना। quota/कनेक्शन जाँचें; पुराना SEO upload नहीं होगा।');
+    if (!String(currentSEO || '').trim() ||
+        !/^✅ YouTube SEO तैयार हो गया/i.test(document.getElementById('result').textContent || '')) {
+      throw new Error('नया SEO नहीं बना। quota/कनेक्शन जाँचें; आगे के चरण शुरू नहीं होंगे।');
+    }
+    if (typeof window.markWorkflowStage === 'function') window.markWorkflowStage('SEO');
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
     stage = 'वीडियो';
@@ -352,6 +364,12 @@ async function runFullAutomation() {
     await generateAutoVideo();
     if (!lastRenderedVideoBlob || !lastRenderedVideoBlob.size) {
       throw new Error('MP4 अभी तैयार नहीं हुआ। ऊपर दिखाई गई त्रुटि ठीक करें; स्क्रिप्ट और SEO सेव रहेंगे।');
+    }
+    // generateAutoVideo तभी लौटता है जब असली scene images, narration और MP4 बन चुके हों।
+    if (typeof window.markWorkflowStage === 'function') {
+      window.markWorkflowStage('तस्वीरें');
+      window.markWorkflowStage('आवाज़');
+      window.markWorkflowStage('MP4 वीडियो');
     }
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
@@ -371,6 +389,7 @@ async function runFullAutomation() {
     await uploadRenderedVideo();
     var uploadMessage = ytResult.textContent || '';
     if (!/^✅ Upload सफल:/.test(uploadMessage)) throw new Error('वीडियो तैयार है, लेकिन YouTube upload पूरा नहीं हुआ: ' + uploadMessage);
+    if (typeof window.markWorkflowStage === 'function') window.markWorkflowStage('YouTube अपलोड');
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
     var result = document.getElementById('result');
     status.textContent = '✅ ऑटोमेशन पूरा: स्क्रिप्ट → SEO → तस्वीरें → हिंदी आवाज़ → MP4 → YouTube पर Private upload सफल। वीडियो अभी सार्वजनिक नहीं है।';
@@ -1153,7 +1172,10 @@ try {
     node.textContent='चरण स्थिति: '+stages.map(function(s){return (done.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
   }
   function snapshot(){
-    return {version:1,updatedAt:new Date().toISOString(),topic:el('topic')?.value||'',duration:el('duration')?.value||'30',language:el('language')?.value||'हिंदी',script:el('script')?.value||'',seo:typeof currentSEO==='string'?currentSEO:'',completed:Array.isArray(previous().completed)?previous().completed:[],lastStatus:previous().lastStatus||''};
+    var old=previous(),topic=el('topic')?.value||'';
+    // नया विषय चुने जाने पर पिछली वीडियो के completed चरण विरासत में न लें।
+    var completed=old.topic===topic&&Array.isArray(old.completed)?old.completed:[];
+    return {version:1,updatedAt:new Date().toISOString(),topic:topic,duration:el('duration')?.value||'30',language:el('language')?.value||'हिंदी',script:el('script')?.value||'',seo:typeof currentSEO==='string'?currentSEO:'',completed:completed,lastStatus:old.lastStatus||''};
   }
   function setStatus(s){if(el('workflowCheckpointStatus'))el('workflowCheckpointStatus').textContent=s;}
   window.saveWorkflowCheckpoint=function(manual){
@@ -1172,8 +1194,12 @@ try {
     a.href=url;a.download='BABA-AI-Workflow-Checkpoint.json';a.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);setStatus('✅ Backup JSON डाउनलोड शुरू हुआ। इसे सुरक्षित रखें।');
   };
   function mark(stage){
-    try{var d=snapshot(),old=previous();d.completed=Array.isArray(old.completed)?old.completed:[];if(d.completed.indexOf(stage)<0)d.completed.push(stage);localStorage.setItem(KEY,JSON.stringify(d));render(d);}catch(_){}
+    try{var d=snapshot();if(d.completed.indexOf(stage)<0)d.completed.push(stage);d.updatedAt=new Date().toISOString();localStorage.setItem(KEY,JSON.stringify(d));localStorage.setItem('babaAIProject',JSON.stringify({topic:d.topic,duration:d.duration,language:d.language,script:d.script,seo:d.seo}));render(d);}catch(_){}
   }
+  window.markWorkflowStage=mark;
+  window.resetWorkflowStages=function(){
+    try{var d=snapshot();d.completed=[];d.updatedAt=new Date().toISOString();localStorage.setItem(KEY,JSON.stringify(d));render(d);}catch(_){}
+  };
   function inspect(){
     var t=(el('result')?.textContent||'')+' '+(el('featureStatus')?.textContent||'');
     if(/पूरी AI स्क्रिप्ट तैयार|स्क्रिप्ट तैयार हो गई/i.test(t))mark('स्क्रिप्ट');
