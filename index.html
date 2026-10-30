@@ -529,12 +529,28 @@ async function generateSceneImages() {
 
       var download = document.createElement('a');
       download.href = image.src;
-      download.download = 'BABA-AI-Scene-' + sceneNumber + '.png';
+      var ext = (item.mimeType || 'image/png').indexOf('jpeg') >= 0 ? 'jpg' : ((item.mimeType || '').indexOf('webp') >= 0 ? 'webp' : 'png');
+      download.download = 'BABA-AI-Scene-' + sceneNumber + '.' + ext;
       download.textContent = '⬇️ यह तस्वीर डाउनलोड करें';
       download.style.display = 'block';
       download.style.padding = '12px 0';
       download.style.color = '#b9a1ff';
       card.appendChild(download);
+      if (item.sourceUrl) {
+        var attribution = document.createElement('p');
+        attribution.style.fontSize = '12px';
+        attribution.style.color = '#c6c9d5';
+        attribution.textContent = 'स्रोत: ' + (item.source || 'External image') + ' · ' + (item.sourceTitle || item.title || 'तस्वीर') + ' · लाइसेंस: ' + (item.license || 'स्रोत पेज पर देखें') + ' · श्रेय: ' + (item.credit || item.attribution || 'स्रोत पेज पर देखें');
+        card.appendChild(attribution);
+        var sourceLink = document.createElement('a');
+        sourceLink.href = item.sourceUrl;
+        sourceLink.target = '_blank';
+        sourceLink.rel = 'noopener noreferrer';
+        sourceLink.textContent = 'तस्वीर का मूल स्रोत और लाइसेंस देखें';
+        sourceLink.style.display = 'block';
+        sourceLink.style.color = '#b9a1ff';
+        card.appendChild(sourceLink);
+      }
       info.appendChild(card);
     });
 
