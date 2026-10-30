@@ -318,21 +318,21 @@ async function runFullAutomation() {
   // पुराने रन का MP4 नए रन की सफलता न माना जाए।
   lastRenderedVideoBlob = null;
   try {
-    status.textContent = 'ऑटोमेशन 1/4: AI स्क्रिप्ट तैयार/जाँच रहा है…';
-    if (!document.getElementById('script').value.trim()) {
-      await generateFullScript();
-    }
-    if (!document.getElementById('script').value.trim()) throw new Error('स्क्रिप्ट नहीं बनी। API key/quota जाँचें; फिर इसी बटन से दोबारा शुरू करें।');
+    // हर रन में वर्तमान topic के लिए नया script/SEO बनाएँ; पिछले topic की सामग्री reuse न हो।
+    status.textContent = 'ऑटोमेशन 1/5: वर्तमान विषय के लिए नई AI स्क्रिप्ट बना रहा है…';
+    await generateFullScript();
+    if (!document.getElementById('script').value.trim()) throw new Error('स्क्रिप्ट नहीं बनी। API key/quota जाँचें; पुरानी स्क्रिप्ट upload नहीं होगी।');
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
     stage = 'YouTube SEO';
-    status.textContent = 'ऑटोमेशन 2/4: YouTube SEO बना रहा है…';
-    if (!String(currentSEO || '').trim()) await generateSEO();
-    if (!String(currentSEO || '').trim()) throw new Error('SEO नहीं बना। quota/कनेक्शन जाँचें और फिर कोशिश करें।');
+    status.textContent = 'ऑटोमेशन 2/5: वर्तमान विषय के लिए नया YouTube SEO बना रहा है…';
+    currentSEO = '';
+    await generateSEO();
+    if (!String(currentSEO || '').trim()) throw new Error('SEO नहीं बना। quota/कनेक्शन जाँचें; पुराना SEO upload नहीं होगा।');
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
     stage = 'वीडियो';
-    status.textContent = 'ऑटोमेशन 3/4: तस्वीरें → हिंदी आवाज़ → MP4 क्रम से बना रहा है…';
+    status.textContent = 'ऑटोमेशन 3/5: तस्वीरें → हिंदी आवाज़ → MP4 क्रम से बना रहा है…';
     await generateAutoVideo();
     if (!lastRenderedVideoBlob || !lastRenderedVideoBlob.size) {
       throw new Error('MP4 अभी तैयार नहीं हुआ। ऊपर दिखाई गई त्रुटि ठीक करें; स्क्रिप्ट और SEO सेव रहेंगे।');
