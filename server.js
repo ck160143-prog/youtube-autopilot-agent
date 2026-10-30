@@ -358,7 +358,7 @@ app.post("/api/seo", async (req, res) => {
 async function findCommonsSceneImage(scene) {
   const stopWords = new Set(["the","and","with","from","that","this","for","into","over","under","cinematic","polished","youtube","friendly","landscape","image","photo","realistic","high","quality","16:9","no","text","watermark","a","an","of","in","on","to","at","is","are","was","were"]);
   const raw = String(scene?.title || "") + " " + String(scene?.prompt || "");
-  const terms = raw.replace(/https?:\\/\\/\\S+/g, " ").replace(/[^\\p{L}\\p{N}\\s-]/gu, " ").split(/\\s+/)
+  const terms = raw.replace(/https?:\/\/\S+/g, " ").replace(/[^\p{L}\p{N}\s-]/gu, " ").split(/\s+/)
     .filter(word => word.length > 2 && !stopWords.has(word.toLowerCase())).slice(0, 7);
   const search = terms.join(" ").trim() || "historical architecture India";
   const api = new URL("https://commons.wikimedia.org/w/api.php");
@@ -370,14 +370,14 @@ async function findCommonsSceneImage(scene) {
   for (const page of pages) {
     const info = page?.imageinfo?.[0];
     const imageUrl = info?.thumburl || info?.url;
-    if (!imageUrl || !/^https:\\/\\//i.test(imageUrl) || !/^image\\/(png|jpeg|webp)$/i.test(info?.mime || "")) continue;
+    if (!imageUrl || !/^https:\/\//i.test(imageUrl) || !/^image\/(png|jpeg|webp)$/i.test(info?.mime || "")) continue;
     try {
       const imageResponse = await fetch(imageUrl, { headers: { "User-Agent": "BABA-AI-YouTube-Agent/1.0" }, signal: AbortSignal.timeout(8000) });
       if (!imageResponse.ok) continue;
       const bytes = Buffer.from(await imageResponse.arrayBuffer());
       if (!bytes.length || bytes.length > 5 * 1024 * 1024) continue;
       const meta = info.extmetadata || {};
-      const clean = value => String(value?.value || "").replace(/<[^>]*>/g, " ").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, "&").replace(/\\s+/g, " ").trim().slice(0, 300);
+      const clean = value => String(value?.value || "").replace(/<[^>]*>/g, " ").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim().slice(0, 300);
       const mimeType = info.mime === "image/jpeg" ? "image/jpeg" : (info.mime === "image/webp" ? "image/webp" : "image/png");
       return { mimeType, imageBase64: bytes.toString("base64"), source: "Wikimedia Commons", sourceUrl: info.descriptionurl || page.canonicalurl || "https://commons.wikimedia.org/", title: clean(meta.ObjectName) || String(page.title || "Wikimedia Commons image").replace(/^File:/, ""), license: clean(meta.LicenseShortName) || "See source page", credit: clean(meta.Artist) || "See source page", attribution: clean(meta.Attribution) || clean(meta.Artist) || "See source page" };
     } catch (_) { /* try another public file; never hide the original Gemini quota message */ }
