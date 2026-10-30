@@ -5,7 +5,7 @@ Hindi-first web app for Gemini script/SEO generation, scene images and Hindi TTS
 ## Current implemented features
 
 - Gemini script and SEO endpoints.
-- Scene image generation (up to 3 images per request; Gemini quota/billing may apply).
+- Scene image generation (up to 3 images per request; Gemini quota/billing may apply), with Wikimedia Commons fallback on Gemini quota errors when suitable images are found and attribution details returned.
 - Hindi TTS endpoint (provider quota/billing may apply).
 - Google OAuth 2.0 connect/status/disconnect.
 - YouTube Data API v3 resumable upload for an already-rendered MP4/MOV/WebM, up to 90 MB per request. Upload defaults to **Private**; user must explicitly choose another privacy level.
@@ -13,7 +13,7 @@ Hindi-first web app for Gemini script/SEO generation, scene images and Hindi TTS
 
 ## Important limits (not falsely advertised as complete)
 
-This repository does **not** yet include an end-to-end video renderer/FFmpeg pipeline, durable multi-user token database, persistent upload queue, or automatic daily scheduler. Generate/download voice and scene assets, render a final video using your editor/FFmpeg, then upload the rendered file from the app. The OAuth session is encrypted in a browser cookie; clearing browser cookies or losing the session requires reconnecting. Render's request-size/time limits can also affect large uploads. Do not upload files containing private or copyrighted material unless you have rights.
+The repository includes an end-to-end narrated slideshow MP4 renderer using FFmpeg, with up to 3 scene images and Hindi TTS. The hosted renderer is currently limited to 180 seconds (3 minutes) per MP4, and the automatic flow makes a short excerpt from longer scripts. It is not a full 5–30 minute movie renderer. The app also includes a browser Canvas thumbnail, checkpoint/export tools, Commons image fallback on Gemini image quota errors, and real YouTube upload for a rendered video. It does not include a durable multi-user token database, persistent upload queue, or automatic daily scheduler. The OAuth session is encrypted in a browser cookie; clearing browser cookies or losing the session requires reconnecting. Render's request-size/time limits can also affect large uploads. Do not upload files containing private or copyrighted material unless you have rights.
 
 ## Run locally
 
