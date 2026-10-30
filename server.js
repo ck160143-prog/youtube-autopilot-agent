@@ -819,7 +819,8 @@ async function renderToFile(body) {
     const audioPath = path.join(tempDir, isPcm ? "narration.pcm" : "narration.audio");
     await fs.promises.writeFile(audioPath, Buffer.from(audioBase64, "base64"));
     // Gemini's raw L16 response is 24 kHz mono, 16-bit PCM. Derive duration without ffprobe.
-    let duration = isPcm ? audioBytes / (24000 * 2) : 0;
+    const audioBuffer = Buffer.from(audioBase64, "base64");
+    let duration = isPcm ? audioBuffer.length / (24000 * 2) : 0;
     if (!isPcm) {
       const probe = await execFileAsync(ffmpegPath, ["-i", audioPath, "-f", "null", "-"], { timeout: 30000 }).catch(e => e);
       const textOut = String(probe.stderr || probe.message || "");
