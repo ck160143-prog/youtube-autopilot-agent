@@ -306,6 +306,19 @@ async function generateFullScript() {
   }
 }
 
+function extractAutoUploadDescription(seoText) {
+  // SEO package में पूरा analysis/keywords होता है; YouTube description में सिर्फ
+  // section 2 का वास्तविक description डालें, पूरा SEO document नहीं।
+  var section = String(seoText || '').split(/###\s*2\.\s*विस्तृत वीडियो विवरण[^\n]*\n/i)[1];
+  if (section) {
+    section = section.split(/\n###\s*3\./i)[0];
+    var fenced = section.match(/```(?:text)?\s*([\s\S]*?)```/i);
+    if (fenced && fenced[1].trim()) return fenced[1].trim();
+    return section.replace(/^\s*\*\*?[^\n]*\*\*?\s*$/gm, '').trim();
+  }
+  return String(seoText || '').slice(0, 5000).trim();
+}
+
 async function runFullAutomation() {
   var button = document.getElementById('btnRunFullAutomation');
   var status = document.getElementById('featureStatus');
@@ -333,6 +346,9 @@ async function runFullAutomation() {
 
     stage = 'वीडियो';
     status.textContent = 'ऑटोमेशन 3/5: तस्वीरें → हिंदी आवाज़ → MP4 क्रम से बना रहा है…';
+    // पुराने topic की तस्वीरें इस वीडियो में न मिलें।
+    savedSceneImages = [];
+    savedFailedScenes = [];
     await generateAutoVideo();
     if (!lastRenderedVideoBlob || !lastRenderedVideoBlob.size) {
       throw new Error('MP4 अभी तैयार नहीं हुआ। ऊपर दिखाई गई त्रुटि ठीक करें; स्क्रिप्ट और SEO सेव रहेंगे।');
@@ -347,7 +363,7 @@ async function runFullAutomation() {
     var descriptionField = document.getElementById('ytDescription');
     var privacyField = document.getElementById('ytPrivacy');
     if (titleField) titleField.value = topic.slice(0, 100);
-    if (descriptionField) descriptionField.value = String(currentSEO || '').slice(0, 5000);
+    if (descriptionField) descriptionField.value = extractAutoUploadDescription(String(currentSEO || '')).slice(0, 5000);
     if (privacyField) privacyField.value = 'private';
     if (typeof refreshYouTubeStatus === 'function') await refreshYouTubeStatus();
     var ytResult = document.getElementById('ytUploadResult');
