@@ -38,6 +38,19 @@ test("invalid render input returns a JSON 400, not an HTML proxy-style error", a
   assert.match(body.error, /scene images.*audio/i);
 });
 
+test("malformed JSON requests receive a safe JSON 400", async () => {
+  const response = await fetch(baseUrl + "/api/render", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{broken"
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const body = await response.json();
+  assert.equal(response.status, 400);
+  assert.match(contentType, /application\\/json/i);
+  assert.match(body.error, /JSON सही नहीं है/);
+});
+
 test("unknown API endpoint returns a JSON 404", async () => {
   const response = await fetch(baseUrl + "/api/not-a-real-route");
   const body = await response.json();
