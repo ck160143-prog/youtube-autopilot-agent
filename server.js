@@ -719,8 +719,10 @@ app.post("/api/render", async (req, res) => {
   if (imageBytes > 12 * 1024 * 1024 || audioBytes > 8 * 1024 * 1024) {
     return res.status(413).json({ error: "Generated assets बहुत बड़े हैं। छोटा script/voice या कम images चुनें।" });
   }
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-render-"));
+  let tempDir;
   try {
+    // Keep filesystem failures inside this route's JSON error boundary.
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-render-"));
     const ffmpegPath = require("ffmpeg-static");
     if (!ffmpegPath) return res.status(503).json({ error: "FFmpeg binary उपलब्ध नहीं।" });
     const imagePaths = [];
@@ -768,7 +770,7 @@ app.post("/api/render", async (req, res) => {
     return res.sendFile(outputPath, err => { if (err) safeLog("MP4 response failed", err); fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {}); });
   } catch (error) {
     safeLog("FFmpeg video render failed", error);
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     return res.status(503).json({ error: "वीडियो render नहीं हो सका। FFmpeg/Render resources जाँचें और छोटे script से retry करें।" });
   }
 });
@@ -779,6 +781,17 @@ app.use("/api", (req, res) => {
     error: "API endpoint नहीं मिला: " + req.method + " " + req.originalUrl +
       "। Render पर सही/latest deployment और frontend version जाँचें।"
   });
+});
+
+// Convert parser and unexpected API middleware failures to safe JSON responses.
+app.use((error, req, res, next) => {
+  if (!req.path.startsWith("/api")) return next(error);
+  if (res.headersSent) return next(error);
+  const status = Number(error?.status || error?.statusCode);
+  if (status === 413) return res.status(413).json({ error: "Request बहुत बड़ा है। छोटा input या कम assets चुनें।" });
+  if (status === 400) return res.status(400).json({ error: "Request JSON सही नहीं है। डेटा जाँचकर दोबारा प्रयास करें।" });
+  safeLog("Unhandled API middleware error", error);
+  return res.status(500).json({ error: "सर्वर अनुरोध पूरा नहीं कर सका। कृपया थोड़ी देर बाद पुनः प्रयास करें।" });
 });
 
 // 6. सर्वर शुरू करना
