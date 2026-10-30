@@ -599,7 +599,7 @@ async function generateSceneImages() {
     hint.textContent = 'अगर Gemini quota (429) खत्म है, तो AI तस्वीरें quota reset होने तक नहीं बनेंगी। ऐप उपलब्ध होने पर Wikimedia Commons की वास्तविक तस्वीरें इस्तेमाल करेगा। नीचे “स्थानीय / मुफ्त टूल से बनी तस्वीरें आयात करें” से असली PNG/JPG/WebP भी चुन सकते हैं।';
     info.appendChild(hint);
     status.textContent = '❌ असली तस्वीरें नहीं बन सकीं। कारण ऊपर देखें; नकली टेक्स्ट-स्लाइड नहीं बनाई गई।';
-  }  } finally {
+  } finally {
     button.disabled = false;
   }
 }
@@ -676,7 +676,7 @@ async function generateAutoVideo() {
       imageData.images=savedSceneImages.slice().sort(function(a,b){return Number(a.scene)-Number(b.scene);}).slice(0,3);
     }catch(imageError){
       if(savedSceneImages.length){imageData.images=savedSceneImages.slice().sort(function(a,b){return Number(a.scene)-Number(b.scene);}).slice(0,3);progress.textContent='Gemini image quota/error: पहले से बनी तस्वीरों से आगे बढ़ रहा है…';}
-      else{imageData.images=createScriptSlides(renderScriptText);progress.textContent='Gemini images उपलब्ध नहीं हैं। AI तस्वीरों के बजाय स्क्रिप्ट से बनी PNG स्लाइड्स + हिंदी आवाज़ से MP4 बनाया जाएगा।';}
+      else{throw imageError;}
     }
     if(!imageData.images.length)throw new Error('MP4 बनाने के लिए scenes उपलब्ध नहीं हैं।');
     progress.textContent = 'Step 2/3: हिंदी narration बना रहा है…';
