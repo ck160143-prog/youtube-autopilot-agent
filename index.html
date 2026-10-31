@@ -841,14 +841,37 @@ async function generateAutoVideo() {
     if(!renderResp.ok) throw new Error(renderStart.error||'Render job शुरू नहीं हुआ।');
     if(!renderStart.jobId) throw new Error('Render job ID नहीं मिला।');
     var jobStatus=null, renderStartedAt=Date.now();
+    var temporaryStatusFailures=0;
     while(Date.now()-renderStartedAt<12*60*1000){
       await new Promise(function(resolve){setTimeout(resolve,1800);});
-      var statusResp=await fetch('/api/render/status/'+encodeURIComponent(renderStart.jobId),{cache:'no-store'});
+      var statusResp;
+      try {
+        statusResp=await fetch('/api/render/status/'+encodeURIComponent(renderStart.jobId),{cache:'no-store'});
+      } catch(networkError) {
+        temporaryStatusFailures++;
+        if(temporaryStatusFailures<=8){
+          progress.textContent='Render server से अस्थायी संपर्क समस्या ('+temporaryStatusFailures+'/8)। अपने-आप दोबारा जाँच रहे हैं…';
+          await new Promise(function(resolve){setTimeout(resolve,1500);});
+          continue;
+        }
+        throw new Error('Render server से संपर्क नहीं हो रहा। Server restart/OOM हो सकता है। Render logs देखें; काम फिर से चलाने से पहले deployment स्वस्थ होने दें।');
+      }
+      if(statusResp.status===502||statusResp.status===503||statusResp.status===504){
+        temporaryStatusFailures++;
+        if(temporaryStatusFailures<=8){
+          progress.textContent='Render server अस्थायी रूप से व्यस्त है (HTTP '+statusResp.status+')। दोबारा जाँच रहे हैं…';
+          await new Promise(function(resolve){setTimeout(resolve,1500);});
+          continue;
+        }
+      } else temporaryStatusFailures=0;
       jobStatus=await readApiJson(statusResp).catch(function(error){return {error:error.message};});
-      if(!statusResp.ok) throw new Error(jobStatus.error||'Render status नहीं मिल सका।');
+      if(!statusResp.ok) {
+        if(statusResp.status===404) throw new Error('Render job server restart के बाद खो गया हो सकता है। पहले deployment स्वस्थ होने दें, फिर MP4 दोबारा बनाएँ।');
+        throw new Error(jobStatus.error||'Render status नहीं मिल सका (HTTP '+statusResp.status+').');
+      }
       if(jobStatus.status==='failed') throw new Error(jobStatus.error||'MP4 render नहीं हुआ।');
       if(jobStatus.status==='completed') break;
-      progress.textContent=jobStatus.status==='queued'?'Render queue में है…':'Step 3/3: FFmpeg background में MP4 बना रहा है…';
+      progress.textContent=jobStatus.status==='queued'?'Render queue में है…':'Step 3/3: कम-मेमोरी FFmpeg background में MP4 बना रहा है…';
     }
     if(!jobStatus||jobStatus.status!=='completed') throw new Error('Render में 12 मिनट से अधिक लग गए। यह job server restart पर खो सकती है; status जाँचकर retry करें।');
     var downloadResp=await fetch('/api/render/download/'+encodeURIComponent(renderStart.jobId));
