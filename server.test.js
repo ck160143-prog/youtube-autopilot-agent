@@ -71,6 +71,45 @@ test("script generation falls back once when primary Gemini model hits 429 quota
   }
 });
 
+test("script generation falls back when a configured Gemini model ID returns 404", async () => {
+  const oldKey = process.env.GEMINI_API_KEY;
+  const oldPrimary = process.env.GEMINI_SCRIPT_MODEL;
+  const oldFallback = process.env.GEMINI_SCRIPT_FALLBACK_MODEL;
+  process.env.GEMINI_API_KEY = "test-key-not-real";
+  process.env.GEMINI_SCRIPT_MODEL = "stale-model-id";
+  process.env.GEMINI_SCRIPT_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+  const called = [];
+  setAIClientFactoryForTests(() => ({
+    models: {
+      async generateContent(args) {
+        called.push(args.model);
+        if (args.model === "stale-model-id") {
+          const error = new Error("404 model not found");
+          error.status = 404;
+          throw error;
+        }
+        return { text: "Fallback से बनी स्क्रिप्ट" };
+      }
+    }
+  }));
+  try {
+    const response = await fetch(baseUrl + "/api/script", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ topic: "ताजमहल के रहस्य", duration: 5, language: "हिंदी" })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.script, "Fallback से बनी स्क्रिप्ट");
+    assert.deepEqual(called, ["stale-model-id", "gemini-3.5-flash-lite"]);
+  } finally {
+    resetAIClientFactory();
+    if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey;
+    if (oldPrimary === undefined) delete process.env.GEMINI_SCRIPT_MODEL; else process.env.GEMINI_SCRIPT_MODEL = oldPrimary;
+    if (oldFallback === undefined) delete process.env.GEMINI_SCRIPT_FALLBACK_MODEL; else process.env.GEMINI_SCRIPT_FALLBACK_MODEL = oldFallback;
+  }
+});
+
 test("invalid render input returns a JSON 400, not an HTML proxy-style error", async () => {
   const response = await fetch(baseUrl + "/api/render", {
     method: "POST",
