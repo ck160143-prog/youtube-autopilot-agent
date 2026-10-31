@@ -72,6 +72,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <option value="15">15 मिनट</option>
 <option value="30" selected>30 मिनट</option>
 </select>
+<label>YouTube पर प्रकाशित करने का समय (वैकल्पिक)</label>
+<input id="publishAt" type="datetime-local" aria-describedby="publishAtHelp">
+<p id="publishAtHelp" class="small">खाली छोड़ें तो वीडियो Private अपलोड होगा और शेड्यूल नहीं होगा। समय चुनने पर वीडियो Private अपलोड होकर YouTube पर शेड्यूल होगा। समय आपके मोबाइल के स्थानीय टाइमज़ोन में लिया जाएगा।</p>
 <p class="small">ध्यान दें: 5–30 मिनट का विकल्प पूरी स्क्रिप्ट के लिए है। अभी ऑटो MP4 रेंडर अधिकतम लगभग 3 मिनट का छोटा preview बनाता है; पूरी 30-मिनट की फिल्म अभी समर्थित नहीं है।</p>
 <button onclick="makeOutline()">📝 वीडियो की रूपरेखा बनाएँ</button>
 <button class="green" onclick="generateFullScript()" id="btnGenerateScript">🤖 पूरी AI स्क्रिप्ट बनाएँ</button>
@@ -181,6 +184,15 @@ async function refreshYouTubeStatus() {
       'अभी चैनल Connect नहीं है। Connect बटन दबाएँ।';
   } catch (_) { status.textContent = 'कनेक्शन स्थिति नहीं मिल सकी।'; }
 }
+function getPublishAtIso() {
+  var field = document.getElementById('publishAt');
+  if (!field || !field.value) return '';
+  var date = new Date(field.value);
+  if (!Number.isFinite(date.getTime())) throw new Error('शेड्यूल समय सही नहीं है।');
+  if (date.getTime() < Date.now() + 2 * 60 * 1000) throw new Error('शेड्यूल समय कम-से-कम 2 मिनट भविष्य में चुनें।');
+  return date.toISOString();
+}
+
 function showUploadForm() {
   var status = document.getElementById('featureStatus'), info = document.getElementById('featureInfo');
   info.innerHTML = '<p class="small">तैयार MP4 चुनें। Upload आपके OAuth-connected चैनल पर होगा। Hosted सीमा 90 MB है।</p>' +
@@ -211,10 +223,11 @@ async function uploadRenderedVideo() {
     var response=await fetch('/api/youtube/upload',{method:'POST',headers:{
       'Content-Type':'video/mp4','X-Video-Title':title,
       'X-Video-Description':document.getElementById('ytDescription').value,
-      'X-Video-Privacy':document.getElementById('ytPrivacy').value
+      'X-Video-Privacy':document.getElementById('ytPrivacy').value,
+      'X-Video-Publish-At':getPublishAtIso()
     },body:lastRenderedVideoBlob});
     var data=await readApiJson(response);if(!response.ok)throw new Error(data.error||'Upload विफल।');
-    result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy;
+    result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy+(data.publishAt?' | Scheduled publish: '+data.publishAt:'');
   }catch(error){result.textContent='❌ '+(error.message||'Upload failed');}
   finally{if(button)button.disabled=false;}
 }
@@ -229,10 +242,11 @@ async function uploadVideoToYouTube() {
     var response = await fetch('/api/youtube/upload', { method:'POST', headers:{
       'Content-Type':file.type || 'video/mp4','X-Video-Title':title,
       'X-Video-Description':document.getElementById('ytDescription').value,
-      'X-Video-Privacy':document.getElementById('ytPrivacy').value
+      'X-Video-Privacy':document.getElementById('ytPrivacy').value,
+      'X-Video-Publish-At':getPublishAtIso()
     }, body:file });
     var data = await readApiJson(response); if (!response.ok) throw new Error(data.error || 'Upload नहीं हो सका।');
-    result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy;
+    result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy + (data.publishAt ? ' | Scheduled publish: ' + data.publishAt : '');
   } catch(error) { result.textContent = '❌ ' + (error.message || 'Upload failed'); }
   finally { button.disabled = false; }
 }
