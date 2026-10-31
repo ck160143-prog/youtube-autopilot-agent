@@ -810,8 +810,25 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   if (req.body.length > 90 * 1024 * 1024) return res.status(413).json({ error: "इस hosted upload में 90 MB तक की फ़ाइल स्वीकार है।" });
   const title = String(req.headers["x-video-title"] || "").trim().slice(0, 100);
   const description = String(req.headers["x-video-description"] || "").slice(0, 5000);
-  const privacy = String(req.headers["x-video-privacy"] || "private");
+  const requestedPrivacy = String(req.headers["x-video-privacy"] || "private");
+  const rawPublishAt = String(req.headers["x-video-publish-at"] || "").trim();
   const mime = String(req.headers["content-type"] || "video/mp4").split(";")[0];
+  let publishAt = null;
+  if (rawPublishAt) {
+    const parsedPublishAt = new Date(rawPublishAt);
+    if (!Number.isFinite(parsedPublishAt.getTime())) {
+      return res.status(400).json({ error: "शेड्यूल समय सही तारीख/समय नहीं है।" });
+    }
+    if (parsedPublishAt.getTime() < Date.now() + 2 * 60 * 1000) {
+      return res.status(400).json({ error: "YouTube शेड्यूल का समय कम-से-कम 2 मिनट भविष्य में होना चाहिए।" });
+    }
+    // YouTube scheduled publishing requires a private video that has not been published.
+    if (requestedPrivacy !== "private") {
+      return res.status(400).json({ error: "शेड्यूल करने के लिए Privacy को Private रखें।" });
+    }
+    publishAt = parsedPublishAt.toISOString();
+  }
+  const privacy = requestedPrivacy;
   if (!title) return res.status(400).json({ error: "YouTube वीडियो का title भरें।" });
   if (!["private", "unlisted", "public"].includes(privacy)) return res.status(400).json({ error: "Privacy private/unlisted/public में से चुनें।" });
   if (!["video/mp4", "video/quicktime", "video/webm"].includes(mime)) return res.status(415).json({ error: "समर्थित फ़ाइल: MP4, MOV या WebM।" });
@@ -823,7 +840,7 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=UTF-8",
         "X-Upload-Content-Type": mime, "X-Upload-Content-Length": String(req.body.length) },
-      body: JSON.stringify({ snippet: { title, description }, status: { privacyStatus: privacy, selfDeclaredMadeForKids: false } })
+      body: JSON.stringify({ snippet: { title, description }, status: { privacyStatus: privacy, ...(publishAt ? { publishAt } : {}), selfDeclaredMadeForKids: false } })
     });
     if (!init.ok) {
       const details = await init.json().catch(() => ({}));
@@ -842,7 +859,7 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       safeLog("YouTube video transfer failed", { status: uploaded.status });
       return res.status(502).json({ error: result.error?.message || "YouTube वीडियो upload पूरा नहीं हुआ।" });
     }
-    return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy });
+    return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy, publishAt });
   } catch (error) {
     safeLog("YouTube upload failed", error);
     return res.status(502).json({ error: "YouTube upload विफल हुआ। Render logs में सुरक्षित status जाँचें।" });
