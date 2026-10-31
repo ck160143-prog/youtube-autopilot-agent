@@ -56,6 +56,41 @@ async function withTemporaryRetries(operation, maxRetries = 2) {
   }
 }
 
+/**
+ * Text generation gets one quota-aware fallback to a separately rate-limited,
+ * lighter model. Never loop across models: if both are quota-limited, stop cleanly.
+ */
+async function generateTextWithQuotaFallback(ai, prompt, primaryModel) {
+  try {
+    const response = await withTemporaryRetries(() => ai.models.generateContent({
+      model: primaryModel,
+      contents: prompt,
+    }));
+    return { response, model: primaryModel };
+  } catch (primaryError) {
+    if (!isQuotaError(primaryError)) throw primaryError;
+    const fallbackModel = process.env.GEMINI_SCRIPT_FALLBACK_MODEL || "gemini-2.5-flash-lite";
+    if (!fallbackModel || fallbackModel === primaryModel) {
+      primaryError.model = primaryModel;
+      throw primaryError;
+    }
+    try {
+      const response = await withTemporaryRetries(() => ai.models.generateContent({
+        model: fallbackModel,
+        contents: prompt,
+      }));
+      return { response, model: fallbackModel, usedFallback: true };
+    } catch (fallbackError) {
+      if (isQuotaError(fallbackError)) {
+        fallbackError.model = fallbackModel;
+        fallbackError.primaryModel = primaryModel;
+        fallbackError.message = "मुख्य मॉडल " + primaryModel + " पर quota (429) मिला और fallback मॉडल " + fallbackModel + " पर भी quota उपलब्ध नहीं है। " + String(fallbackError.message || "");
+      }
+      throw fallbackError;
+    }
+  }
+}
+
 function extractRetryHint(error) {
   // Google SDK errors may carry retryDelay in message/details. Return only a short hint,
   // never the raw provider payload.
@@ -134,7 +169,7 @@ function sendAPIError(res, error, fallbackMessage, kind) {
       ? (process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts")
       : operationKind === "images"
         ? (process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1")
-        : (process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash");
+        : (error.model || process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash");
     return res.status(429).json({ error: quotaMessage(operationKind, model, error) });
   }
   const status = getStatus(error);
@@ -275,10 +310,9 @@ app.post("/api/script", async (req, res) => {
 7. अंत में निष्कर्ष और लाइक तथा सब्सक्राइब करने का अनुरोध दें।
 8. आउटपुट ${videoLanguage} में दें।`;
 
-    const response = await withTemporaryRetries(() => ai.models.generateContent({
-      model: process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
-      contents: prompt,
-    }));
+    const primaryModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
+    const generated = await generateTextWithQuotaFallback(ai, prompt, primaryModel);
+    const response = generated.response;
 
     const scriptText = response.text;
 
@@ -330,10 +364,9 @@ app.post("/api/seo", async (req, res) => {
 
 उत्तर ${videoLanguage} में दें। कीवर्ड्स और हैशटैग्स अंग्रेज़ी में भी हो सकते हैं।`;
 
-    const response = await withTemporaryRetries(() => ai.models.generateContent({
-      model: process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash",
-      contents: prompt,
-    }));
+    const primaryModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
+    const generated = await generateTextWithQuotaFallback(ai, prompt, primaryModel);
+    const response = generated.response;
 
     const seoText = response.text;
 
@@ -977,4 +1010,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
