@@ -804,6 +804,38 @@ app.post("/api/youtube/disconnect", (req, res) => {
   clearYoutubeSession(res);
   return res.json({ success: true });
 });
+// Best-effort per-process upload cap in India time. Render Free has no durable local disk;
+// use a persistent database/Redis before claiming a restart-proof account-wide cap.
+let uploadCapDate = "";
+let successfulUploadsToday = 0;
+let uploadsInFlight = 0;
+function indiaCalendarDate() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(new Date());
+}
+function refreshDailyUploadCap() {
+  const today = indiaCalendarDate();
+  if (today !== uploadCapDate) {
+    uploadCapDate = today;
+    successfulUploadsToday = 0;
+    uploadsInFlight = 0;
+  }
+  return today;
+}
+app.get("/api/youtube/daily-cap", (req, res) => {
+  refreshDailyUploadCap();
+  return res.json({
+    timezone: "Asia/Kolkata",
+    date: uploadCapDate,
+    limit: 3,
+    successful: successfulUploadsToday,
+    inFlight: uploadsInFlight,
+    remaining: Math.max(0, 3 - successfulUploadsToday - uploadsInFlight),
+    durable: false
+  });
+});
+
 app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }), async (req, res) => {
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
   if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: "MP4 वीडियो फ़ाइल भेजें।" });
@@ -832,6 +864,12 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   if (!title) return res.status(400).json({ error: "YouTube वीडियो का title भरें।" });
   if (!["private", "unlisted", "public"].includes(privacy)) return res.status(400).json({ error: "Privacy private/unlisted/public में से चुनें।" });
   if (!["video/mp4", "video/quicktime", "video/webm"].includes(mime)) return res.status(415).json({ error: "समर्थित फ़ाइल: MP4, MOV या WebM।" });
+  refreshDailyUploadCap();
+  if (successfulUploadsToday + uploadsInFlight >= 3) {
+    return res.status(429).json({ error: "आज की अधिकतम 3 YouTube uploads की सीमा पूरी हो गई है। सीमा Asia/Kolkata समयानुसार रोज़ रीसेट होगी।" });
+  }
+  uploadsInFlight += 1;
+  let uploadSucceeded = false;
   try {
     const token = await getYoutubeAccessToken(req, res);
     if (!token) return;
@@ -859,10 +897,15 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       safeLog("YouTube video transfer failed", { status: uploaded.status });
       return res.status(502).json({ error: result.error?.message || "YouTube वीडियो upload पूरा नहीं हुआ।" });
     }
-    return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy, publishAt });
+    successfulUploadsToday += 1;
+    uploadSucceeded = true;
+    return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy, publishAt,
+      dailyCap: { limit: 3, successful: successfulUploadsToday, remaining: Math.max(0, 3 - successfulUploadsToday), timezone: "Asia/Kolkata" } });
   } catch (error) {
     safeLog("YouTube upload failed", error);
     return res.status(502).json({ error: "YouTube upload विफल हुआ। Render logs में सुरक्षित status जाँचें।" });
+  } finally {
+    uploadsInFlight = Math.max(0, uploadsInFlight - 1);
   }
 });
 
