@@ -796,7 +796,7 @@ async function generateAutoVideo() {
       var voiceResp=await fetch('/api/voice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:chunks[i]})});
       var voiceData=await readApiJson(voiceResp);
       if(!voiceResp.ok || !voiceData.audioBase64) throw new Error(voiceData.error || 'Voice generate नहीं हुई।');
-      if(!/^audio\/l16/i.test(voiceData.mimeType||'')) throw new Error('Auto render के लिए raw PCM (audio/L16) output चाहिए।');
+      if(!/^audio\/(?:l16|pcm)(?:\s*;|$)/i.test(String(voiceData.mimeType||'').trim())) throw new Error('Auto render के लिए raw PCM audio चाहिए। मिला हुआ format: '+String(voiceData.mimeType||'unknown')+'. WAV/MP3 को raw PCM समझकर render नहीं किया जाएगा।');
       mime=voiceData.mimeType||mime;
       var bin=atob(voiceData.audioBase64), bytes=new Uint8Array(bin.length);
       for(var j=0;j<bin.length;j++)bytes[j]=bin.charCodeAt(j);
