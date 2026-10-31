@@ -75,6 +75,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <label>YouTube पर प्रकाशित करने का समय (वैकल्पिक)</label>
 <input id="publishAt" type="datetime-local" aria-describedby="publishAtHelp">
 <p id="publishAtHelp" class="small">खाली छोड़ें तो वीडियो Private अपलोड होगा और शेड्यूल नहीं होगा। समय चुनने पर वीडियो Private अपलोड होकर YouTube पर शेड्यूल होगा। समय आपके मोबाइल के स्थानीय टाइमज़ोन में लिया जाएगा।</p>
+<p id="dailyUploadCapStatus" class="small" role="status">आज की YouTube upload सीमा जाँची जा रही है…</p>
 <p class="small">ध्यान दें: 5–30 मिनट का विकल्प पूरी स्क्रिप्ट के लिए है। अभी ऑटो MP4 रेंडर अधिकतम लगभग 3 मिनट का छोटा preview बनाता है; पूरी 30-मिनट की फिल्म अभी समर्थित नहीं है।</p>
 <button onclick="makeOutline()">📝 वीडियो की रूपरेखा बनाएँ</button>
 <button class="green" onclick="generateFullScript()" id="btnGenerateScript">🤖 पूरी AI स्क्रिप्ट बनाएँ</button>
@@ -184,6 +185,21 @@ async function refreshYouTubeStatus() {
       'अभी चैनल Connect नहीं है। Connect बटन दबाएँ।';
   } catch (_) { status.textContent = 'कनेक्शन स्थिति नहीं मिल सकी।'; }
 }
+async function refreshDailyUploadCap() {
+  var status = document.getElementById('dailyUploadCapStatus');
+  if (!status) return;
+  try {
+    var response = await fetch('/api/youtube/daily-cap');
+    var data = await readApiJson(response);
+    if (!response.ok) throw new Error(data.error || 'सीमा उपलब्ध नहीं');
+    status.textContent = 'आज की YouTube uploads: ' + data.successful + '/' + data.limit +
+      ' सफल · शेष ' + data.remaining + ' · समय क्षेत्र ' + data.timezone +
+      (data.durable === false ? ' · नोट: Render restart पर यह गणना रीसेट हो सकती है।' : '');
+  } catch (error) {
+    status.textContent = 'Upload सीमा की स्थिति उपलब्ध नहीं: ' + (error.message || 'कनेक्शन जाँचें');
+  }
+}
+
 function getPublishAtIso() {
   var field = document.getElementById('publishAt');
   if (!field || !field.value) return '';
@@ -1277,6 +1293,7 @@ try {
     var f=el('workflowImportFile');if(f)f.addEventListener('change',function(){var file=f.files&&f.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(){try{var d=JSON.parse(String(reader.result||'{}'));if(d.version!==1||typeof d.topic!=='string')throw Error('bad backup');localStorage.setItem(KEY,JSON.stringify(d));window.restoreWorkflowCheckpoint(true);}catch(_){setStatus('❌ Backup JSON सही नहीं है।');}f.value='';};reader.readAsText(file);});
     var observer=new MutationObserver(inspect);['result','featureStatus','seoResult'].forEach(function(id){if(el(id))observer.observe(el(id),{childList:true,subtree:true,characterData:true});});
     if(localStorage.getItem(KEY)){try{render(previous());setStatus('पिछला checkpoint मिला। “सेव काम वापस लाएँ” दबाकर जारी रखें।');}catch(_){}}else window.saveWorkflowCheckpoint(false);
+    refreshDailyUploadCap();
   });
 })();
 </script>
