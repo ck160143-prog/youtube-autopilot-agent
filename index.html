@@ -737,6 +737,32 @@ function createScriptSlides(script) {
   });
 }
 
+async function decodeAudioToPcm24k(audioBase64, mimeType) {
+  var binary=atob(audioBase64), raw=new Uint8Array(binary.length);
+  for(var i=0;i<binary.length;i++) raw[i]=binary.charCodeAt(i);
+  if(/^audio\/(?:l16|pcm)(?:\s*;|$)/i.test(String(mimeType||'').trim())) return raw;
+  if(!/^audio\/(?:wav|x-wav|wave)(?:\s*;|$)/i.test(String(mimeType||'').trim()))
+    throw new Error('आवाज़ का format audio/wav या raw PCM होना चाहिए। मिला: '+String(mimeType||'unknown'));
+  var AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC) throw new Error('इस browser में WAV conversion उपलब्ध नहीं है। Chrome में फिर कोशिश करें।');
+  var ctx=new AC();
+  try {
+    var decoded=await ctx.decodeAudioData(raw.buffer.slice(0)), channels=[];
+    for(var c=0;c<decoded.numberOfChannels;c++) channels.push(decoded.getChannelData(c));
+    var len=Math.max(1,Math.floor(decoded.duration*24000)), out=new Uint8Array(len*2), view=new DataView(out.buffer);
+    for(var n=0;n<len;n++){
+      var pos=n*decoded.sampleRate/24000, left=Math.floor(pos), frac=pos-left, sample=0;
+      for(var ch=0;ch<channels.length;ch++){
+        var a=channels[ch], v0=a[Math.min(left,a.length-1)]||0, v1=a[Math.min(left+1,a.length-1)]||0;
+        sample+=v0+(v1-v0)*frac;
+      }
+      sample=Math.max(-1,Math.min(1,sample/channels.length));
+      view.setInt16(n*2,sample<0?sample*32768:sample*32767,true);
+    }
+    return out;
+  } finally { if(ctx.close) await ctx.close().catch(function(){}); }
+}
+
 async function generateAutoVideo() {
   var scriptText = document.getElementById('script').value.trim();
   var status = document.getElementById('featureStatus');
@@ -796,11 +822,9 @@ async function generateAutoVideo() {
       var voiceResp=await fetch('/api/voice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:chunks[i]})});
       var voiceData=await readApiJson(voiceResp);
       if(!voiceResp.ok || !voiceData.audioBase64) throw new Error(voiceData.error || 'Voice generate नहीं हुई।');
-      if(!/^audio\/(?:l16|pcm)(?:\s*;|$)/i.test(String(voiceData.mimeType||'').trim())) throw new Error('Auto render के लिए raw PCM audio चाहिए। मिला हुआ format: '+String(voiceData.mimeType||'unknown')+'. WAV/MP3 को raw PCM समझकर render नहीं किया जाएगा।');
-      mime=voiceData.mimeType||mime;
-      var bin=atob(voiceData.audioBase64), bytes=new Uint8Array(bin.length);
-      for(var j=0;j<bin.length;j++)bytes[j]=bin.charCodeAt(j);
+      var bytes=await decodeAudioToPcm24k(voiceData.audioBase64,voiceData.mimeType||'');
       pcmParts.push(bytes);
+      mime='audio/L16;rate=24000';
     }
     var pcmLength=pcmParts.reduce(function(n,p){return n+p.length;},0);
     if(pcmLength>8*1024*1024) throw new Error('Narration बहुत बड़ी है। छोटी script से retry करें।');
