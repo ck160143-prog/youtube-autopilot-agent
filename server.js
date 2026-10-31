@@ -920,20 +920,23 @@ async function renderToFile(body) {
       throw Object.assign(new Error("Voice duration 0.5–180 seconds के बीच होनी चाहिए। छोटे narration से retry करें।"), { statusCode: 422 });
     }
     const clipDuration = duration / scenes.length;
-    const args = [];
-    for (const p of imagePaths) args.push("-loop", "1", "-framerate", "1", "-t", "1", "-i", p);
+    // Render within Render's 512 MiB memory limit: SD 480p, 15 fps, single encoder thread.
+    // High-resolution zoompan at 720p/25fps can OOM-kill the whole service and cause HTTP 502.
+    const renderWidth = 854, renderHeight = 480, renderFps = 15;
+    const args = ["-hide_banner", "-loglevel", "error", "-threads", "1"];
+    for (const p of imagePaths) args.push("-loop", "1", "-framerate", String(renderFps), "-t", String(clipDuration), "-i", p);
     if (isPcm) args.push("-f", "s16le", "-ar", "24000", "-ac", "1", "-i", audioPath);
     else args.push("-i", audioPath);
     const filters = imagePaths.map((_, i) =>
-      "[" + i + ":v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,zoompan=z='min(zoom+0.0004,1.06)':d=" +
-      Math.max(1, Math.round(clipDuration * 25)) + ":s=1280x720:fps=25,setsar=1,format=yuv420p[v" + i + "]"
+      "[" + i + ":v]scale=" + renderWidth + ":" + renderHeight + ":force_original_aspect_ratio=increase,crop=" + renderWidth + ":" + renderHeight +
+      ",fps=" + renderFps + ",setsar=1,format=yuv420p[v" + i + "]"
     );
     filters.push(imagePaths.map((_, i) => "[v" + i + "]").join("") +
       "concat=n=" + imagePaths.length + ":v=1:a=0[outv]");
     const outputPath = path.join(tempDir, "baba-video.mp4");
     args.push("-filter_complex", filters.join(";"), "-map", "[outv]", "-map", imagePaths.length + ":a:0",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
-      "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", outputPath);
+      "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1", "-crf", "28", "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "96k", "-max_muxing_queue_size", "512", "-shortest", "-movflags", "+faststart", outputPath);
     await execFileAsync(ffmpegPath, args, { timeout: 240000, maxBuffer: 4 * 1024 * 1024 });
     const stat = await fs.promises.stat(outputPath);
     if (!stat.size || stat.size > 90 * 1024 * 1024) throw Object.assign(new Error("Rendered video 90 MB से बड़ा है। छोटा/कम resolution वाला project बनाएँ।"), { statusCode: 413 });
