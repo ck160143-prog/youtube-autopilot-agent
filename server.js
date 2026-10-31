@@ -68,8 +68,10 @@ async function generateTextWithQuotaFallback(ai, prompt, primaryModel) {
     }));
     return { response, model: primaryModel };
   } catch (primaryError) {
-    if (!isQuotaError(primaryError)) throw primaryError;
-    const fallbackModel = process.env.GEMINI_SCRIPT_FALLBACK_MODEL || "gemini-2.5-flash-lite";
+    // A bad/stale Render model ID (404) and quota exhaustion (429) both get one safe fallback.
+    // Do not cascade on auth errors or transient server failures.
+    if (!isQuotaError(primaryError) && getStatus(primaryError) !== 404) throw primaryError;
+    const fallbackModel = process.env.GEMINI_SCRIPT_FALLBACK_MODEL || "gemini-3.5-flash-lite";
     if (!fallbackModel || fallbackModel === primaryModel) {
       primaryError.model = primaryModel;
       throw primaryError;
@@ -85,6 +87,10 @@ async function generateTextWithQuotaFallback(ai, prompt, primaryModel) {
         fallbackError.model = fallbackModel;
         fallbackError.primaryModel = primaryModel;
         fallbackError.message = "मुख्य मॉडल " + primaryModel + " पर quota (429) मिला और fallback मॉडल " + fallbackModel + " पर भी quota उपलब्ध नहीं है। " + String(fallbackError.message || "");
+      } else if (getStatus(fallbackError) === 404) {
+        fallbackError.model = fallbackModel;
+        fallbackError.primaryModel = primaryModel;
+        fallbackError.message = "मुख्य मॉडल " + primaryModel + " और fallback मॉडल " + fallbackModel + " में से कोई उपलब्ध नहीं मिला (404)। Render Environment में GEMINI_SCRIPT_MODEL और GEMINI_SCRIPT_FALLBACK_MODEL हटाएँ या सही model ID रखें।";
       }
       throw fallbackError;
     }
@@ -216,7 +222,7 @@ app.post("/api/voice", async (req, res) => {
       });
     }
 
-    const model = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
+    const model = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
     const voiceName = "Kore";
     const cacheKey = crypto.createHash("sha256")
       .update(JSON.stringify([model, voiceName, text]))
@@ -232,14 +238,29 @@ app.post("/api/voice", async (req, res) => {
     }
 
     const ai = getAIClient();
-    const response = await withTemporaryRetries(() => ai.models.generateContent({
-      model,
-      contents: [{ parts: [{ text: "नैचुरल और स्पष्ट हिंदी में यह टेक्स्ट बोलें: " + text }] }],
-      config: {
-        responseModalities: ["AUDIO"],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
-      },
-    }));
+    const ttsModels = [...new Set([model, "gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"])];
+    let response = null;
+    let lastTtsError = null;
+    for (let modelIndex = 0; modelIndex < ttsModels.length; modelIndex++) {
+      const candidateModel = ttsModels[modelIndex];
+      try {
+        response = await withTemporaryRetries(() => ai.models.generateContent({
+          model: candidateModel,
+          contents: [{ parts: [{ text: "नैचुरल और स्पष्ट हिंदी में यह टेक्स्ट बोलें: " + text }] }],
+          config: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+          },
+        }));
+        break;
+      } catch (ttsError) {
+        lastTtsError = ttsError;
+        // Quota is not a model-ID issue; stop immediately instead of spending more requests.
+        if (isQuotaError(ttsError)) throw ttsError;
+        if (getStatus(ttsError) !== 404 || modelIndex === ttsModels.length - 1) throw ttsError;
+      }
+    }
+    if (!response) throw lastTtsError || new Error("TTS model ने response नहीं दिया।");
 
     const parts = response.candidates?.[0]?.content?.parts || [];
     const audioPart = parts.find(part => part.inlineData?.data);
@@ -517,7 +538,7 @@ ${script.slice(0, 18000)}
       try {
         // A 429 is project/key quota exhaustion: never send more image requests to fallback models.
         // Only model-compatibility errors (400/404) may try one explicitly configured fallback.
-        const imageModels = [...new Set([imageModel, "gemini-2.5-flash-image"])];
+        const imageModels = [...new Set([imageModel, "gemini-3.1-flash-image"])];
         let imageResponse = null;
         let lastImageError = null;
         for (let modelIndex = 0; modelIndex < imageModels.length; modelIndex++) {
