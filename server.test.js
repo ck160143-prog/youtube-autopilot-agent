@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { app, getPcmDurationSeconds } = require("./server");
+const { app, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory } = require("./server");
 
 test("PCM duration uses decoded bytes and 24 kHz mono 16-bit defaults", () => {
   const oneSecondPcm = Buffer.alloc(24000 * 2);
@@ -30,6 +30,45 @@ test("health endpoint returns JSON without exposing credentials", async () => {
   assert.equal(body.status, "ok");
   assert.equal(typeof body.geminiKeyConfigured, "boolean");
   assert.equal(JSON.stringify(body).includes(process.env.GEMINI_API_KEY || "secret-value-not-present"), false);
+});
+
+test("script generation falls back once when primary Gemini model hits 429 quota", async () => {
+  const oldKey = process.env.GEMINI_API_KEY;
+  const oldPrimary = process.env.GEMINI_SCRIPT_MODEL;
+  const oldFallback = process.env.GEMINI_SCRIPT_FALLBACK_MODEL;
+  process.env.GEMINI_API_KEY = "test-key-not-real";
+  process.env.GEMINI_SCRIPT_MODEL = "gemini-3.8-flash";
+  process.env.GEMINI_SCRIPT_FALLBACK_MODEL = "gemini-2.5-flash-lite";
+  const called = [];
+  setAIClientFactoryForTests(() => ({
+    models: {
+      async generateContent(args) {
+        called.push(args.model);
+        if (args.model === "gemini-3.8-flash") {
+          const error = new Error("429 RESOURCE_EXHAUSTED: quota exhausted");
+          error.status = 429;
+          throw error;
+        }
+        return { text: "नई हिंदी स्क्रिप्ट" };
+      }
+    }
+  }));
+  try {
+    const response = await fetch(baseUrl + "/api/script", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ topic: "ताजमहल के रहस्य", duration: 5, language: "हिंदी" })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.script, "नई हिंदी स्क्रिप्ट");
+    assert.deepEqual(called, ["gemini-3.8-flash", "gemini-2.5-flash-lite"]);
+  } finally {
+    resetAIClientFactory();
+    if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey;
+    if (oldPrimary === undefined) delete process.env.GEMINI_SCRIPT_MODEL; else process.env.GEMINI_SCRIPT_MODEL = oldPrimary;
+    if (oldFallback === undefined) delete process.env.GEMINI_SCRIPT_FALLBACK_MODEL; else process.env.GEMINI_SCRIPT_FALLBACK_MODEL = oldFallback;
+  }
 });
 
 test("invalid render input returns a JSON 400, not an HTML proxy-style error", async () => {
