@@ -819,7 +819,6 @@ function refreshDailyUploadCap() {
   if (today !== uploadCapDate) {
     uploadCapDate = today;
     successfulUploadsToday = 0;
-    uploadsInFlight = 0;
   }
   return today;
 }
@@ -869,7 +868,6 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
     return res.status(429).json({ error: "आज की अधिकतम 3 YouTube uploads की सीमा पूरी हो गई है। सीमा Asia/Kolkata समयानुसार रोज़ रीसेट होगी।" });
   }
   uploadsInFlight += 1;
-  let uploadSucceeded = false;
   try {
     const token = await getYoutubeAccessToken(req, res);
     if (!token) return;
@@ -898,7 +896,6 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       return res.status(502).json({ error: result.error?.message || "YouTube वीडियो upload पूरा नहीं हुआ।" });
     }
     successfulUploadsToday += 1;
-    uploadSucceeded = true;
     return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy, publishAt,
       dailyCap: { limit: 3, successful: successfulUploadsToday, remaining: Math.max(0, 3 - successfulUploadsToday), timezone: "Asia/Kolkata" } });
   } catch (error) {
