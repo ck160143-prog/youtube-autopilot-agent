@@ -1188,7 +1188,7 @@ async function renderThumbnailToFile(body) {
       if (lines.length >= 2) break;
     }
     if (line && lines.length < 3) lines.push(line);
-    const text = (lines.length ? lines : ["BABA AI"]).join("\\n");
+    const text = (lines.length ? lines : ["BABA AI"]).join("\n");
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-thumbnail-"));
     const ffmpegPath = require("ffmpeg-static");
     if (!ffmpegPath) throw Object.assign(new Error("FFmpeg binary unavailable."), { statusCode: 503 });
