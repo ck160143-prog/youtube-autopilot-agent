@@ -1071,6 +1071,9 @@ function validBase64(value) {
     /^[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
 function validateRenderPayload(body) {
+  if (body?.captionsSrt !== undefined && (typeof body.captionsSrt !== "string" || body.captionsSrt.length > 150000)) {
+    return { status: 400, error: "Captions SRT must be text under 150 KB." };
+  }
   const scenes = body?.scenes;
   const audioBase64 = body?.audioBase64;
   if (!Array.isArray(scenes) || scenes.length < 1 || scenes.length > 3 ||
@@ -1106,6 +1109,8 @@ async function renderToFile(body) {
       await fs.promises.writeFile(p, Buffer.from(scenes[i].imageBase64, "base64"));
       imagePaths.push(p);
     }
+    const captionsPath = typeof body.captionsSrt === "string" && body.captionsSrt.trim() ? path.join(tempDir, "captions.srt") : null;
+    if (captionsPath) await fs.promises.writeFile(captionsPath, body.captionsSrt, "utf8");
     const isPcm = audioMime.includes("l16") || audioMime.includes("pcm");
     const audioPath = path.join(tempDir, isPcm ? "narration.pcm" : "narration.audio");
     await fs.promises.writeFile(audioPath, Buffer.from(audioBase64, "base64"));
@@ -1135,8 +1140,14 @@ async function renderToFile(body) {
     );
     filters.push(imagePaths.map((_, i) => "[v" + i + "]").join("") +
       "concat=n=" + imagePaths.length + ":v=1:a=0[outv]");
+    let videoMap = "[outv]";
+    if (captionsPath) {
+      const escapedPath = captionsPath.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/\x27/g, "\\\x27");
+      filters.push("[outv]subtitles=" + escapedPath + ":force_style=\x27FontName=DejaVu Sans,FontSize=20,Outline=2,Shadow=1,Alignment=2,MarginV=20\x27[captioned]");
+      videoMap = "[captioned]";
+    }
     const outputPath = path.join(tempDir, "baba-video.mp4");
-    args.push("-filter_complex", filters.join(";"), "-map", "[outv]", "-map", imagePaths.length + ":a:0",
+    args.push("-filter_complex", filters.join(";"), "-map", videoMap, "-map", imagePaths.length + ":a:0",
       "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1", "-crf", "28", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "96k", "-max_muxing_queue_size", "512", "-shortest", "-movflags", "+faststart", outputPath);
     await execFileAsync(ffmpegPath, args, { timeout: 240000, maxBuffer: 4 * 1024 * 1024 });
@@ -1258,4 +1269,4 @@ if (require.main === module) {
 }
 
 function resetGeminiCooldownForTests() { providerCooldownMemory.clear(); }
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, resetGeminiCooldownForTests, automationStore, automationStorage, automationWorker };
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, resetGeminiCooldownForTests, automationStore, automationStorage, automationWorker, renderToFile };
