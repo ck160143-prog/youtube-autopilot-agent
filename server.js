@@ -297,7 +297,7 @@ app.post("/api/voice", async (req, res) => {
 // 3. पूरी AI स्क्रिप्ट
 app.post("/api/script", async (req, res) => {
   try {
-    const { topic, duration, language } = req.body || {};
+    const { topic, duration, language, visualStyle } = req.body || {};
 
     if (typeof topic !== "string" || !topic.trim()) {
       return res.status(400).json({
@@ -309,6 +309,10 @@ app.post("/api/script", async (req, res) => {
       return res.status(400).json({ error: "विषय 500 अक्षरों से छोटा रखें।" });
     }
     const videoLanguage = language === "English" ? "English" : "हिंदी";
+    const style = ["3d-cartoon", "cinematic", "realistic"].includes(visualStyle) ? visualStyle : "3d-cartoon";
+    const styleInstructions = style === "3d-cartoon"
+      ? `यह 3D कार्टून कॉमेडी वीडियो है। स्क्रिप्ट में 2-4 भारतीय दोस्त/किरदार, छोटे स्वाभाविक हिंदी संवाद, चेहरे के स्पष्ट भाव, मजेदार प्रतिक्रिया, और हर दृश्य के लिए स्थान/एक्शन लिखें। पात्रों के नाम, कपड़े, बाल और पहचान पूरी कहानी में एक-जैसी रखें। दृश्य निर्देश AI 3D cartoon visuals के अनुकूल हों।`
+      : style === "cinematic" ? "सिनेमैटिक वीडियो के लिए दृश्य निर्देश, कैमरा एंगल और ट्रांज़िशन दें।" : "वास्तविक तस्वीरों/फुटेज के लिए व्यावहारिक दृश्य निर्देश दें।";
     const parsedDuration = Number(duration);
     const videoDuration = Number.isFinite(parsedDuration) && parsedDuration >= 1 && parsedDuration <= 30
       ? parsedDuration : 30;
@@ -320,6 +324,8 @@ app.post("/api/script", async (req, res) => {
 विषय: ${topic}
 भाषा: ${videoLanguage}
 वीडियो अवधि: ${videoDuration} मिनट
+विज़ुअल स्टाइल: ${style}
+${styleInstructions}
 
 निर्देश:
 1. पहले 30 सेकंड के लिए आकर्षक शुरुआत लिखें।
@@ -467,6 +473,10 @@ app.post("/api/images", async (req, res) => {
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
     const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
+    const visualStyle = ["3d-cartoon", "cinematic", "realistic"].includes(req.body?.visualStyle) ? req.body.visualStyle : "3d-cartoon";
+    const stylePrompt = visualStyle === "3d-cartoon"
+      ? "High-quality polished 3D animated Indian comedy cartoon, stylized expressive characters, detailed Indian roadside tea stall or village street when appropriate, cinematic soft lighting, vibrant but natural colors, family-friendly, consistent character designs across every scene. Same characters must keep identical face, hairstyle, outfit and body proportions in all scenes. Clearly 3D CGI animation render, not a real photograph, not live-action. "
+      : visualStyle === "cinematic" ? "Polished cinematic visual, detailed environment, cinematic lighting, consistent visual continuity. " : "Photorealistic real-world scene, documentary style, natural lighting. ";
     let scenes;
     // Failed-scene retries reuse the original prompts; they do not re-plan or regenerate successful scenes.
     if (Array.isArray(req.body?.scenePrompts) && req.body.scenePrompts.length) {
@@ -483,7 +493,8 @@ app.post("/api/images", async (req, res) => {
         planResponse = await withTemporaryRetries(() => ai.models.generateContent({
           model: scriptModel,
           contents: `इस वीडियो स्क्रिप्ट से 3 मुख्य दृश्य चुनें और हर दृश्य के लिए एक विस्तृत image prompt लिखें।
-सभी दृश्य एक ही visual style में हों: cinematic, polished, YouTube-friendly, 16:9 landscape, कोई लिखावट/टेक्स्ट/वॉटरमार्क नहीं।
+Visual style: ${visualStyle}. ${stylePrompt}
+सभी दृश्य एक ही visual style में हों: polished, YouTube-friendly, 9:16 vertical composition, कोई लिखावट/टेक्स्ट/वॉटरमार्क नहीं। यदि पात्र हों तो हर दृश्य में उनका character design समान रखें।
 स्क्रिप्ट:
 ${script.slice(0, 18000)}
 
@@ -547,7 +558,7 @@ ${script.slice(0, 18000)}
           try {
             imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
               model: candidateModel,
-              contents: scene.prompt,
+              contents: stylePrompt + scene.prompt + (visualStyle === "3d-cartoon" ? " Keep the same recurring Indian cartoon friends and their outfits consistent; portrait 9:16 composition." : ""),
               config: { responseModalities: ["TEXT", "IMAGE"] }
             }));
             break;
