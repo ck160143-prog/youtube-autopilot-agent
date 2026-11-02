@@ -219,11 +219,21 @@ class AutomationStore {
     const c=await this.pool.connect();
     try{
       await c.query("BEGIN");
-      const r=await c.query("UPDATE baba_automation_jobs SET upload_authorized=TRUE,status=CASE WHEN status='paused' THEN 'queued' ELSE status END,pause_requested=FALSE,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_confirmed=FALSE RETURNING *",[owner,id]);
+      const found=await c.query("SELECT status,upload_confirmed FROM baba_automation_jobs WHERE owner_channel_id=$1 AND id=$2 FOR UPDATE",[owner,id]);
+      if(!found.rows[0]||found.rows[0].upload_confirmed){await c.query("ROLLBACK");return null;}
+      const preview=await c.query("SELECT status FROM baba_automation_steps WHERE job_id=$1 AND step_name='preview'",[id]);
+      if(preview.rows[0]?.status!=="succeeded"){const e=new Error("Preview must succeed before authorizing upload");e.code="PREVIEW_REQUIRED";throw e;}
+      if(found.rows[0].status==="failed"){
+        await c.query("UPDATE baba_automation_steps SET status='pending',error_message=NULL,retry_after=NULL,finished_at=NULL,updated_at=NOW() WHERE job_id=$1 AND step_name='youtube_upload' AND status='failed'",[id]);
+      }
+      const r=await c.query("UPDATE baba_automation_jobs SET upload_authorized=TRUE,status=CASE WHEN status IN ('paused','failed') THEN 'queued' ELSE status END,pause_requested=FALSE,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_confirmed=FALSE RETURNING *",[owner,id]);
       if(!r.rows[0]){await c.query("ROLLBACK");return null;}
       await this.event(c,id,"private_upload_authorized","User explicitly authorized a private YouTube upload","youtube_upload",{visibility:"private"});
       await c.query("COMMIT");return r.rows[0];
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
+  async eventForJob(id,type,message,details={}){
+    await this.pool.query("INSERT INTO baba_automation_events(job_id,event_type,message,details) VALUES($1,$2,$3,$4::jsonb)",[id,type,String(message).slice(0,1000),JSON.stringify(details||{})]);
   }
   async setJobTopic(owner,id,topic){
     if(typeof topic!=="string"||!topic.trim()||topic.trim().length>500)throw new TypeError("Generated topic must contain 1–500 characters");
