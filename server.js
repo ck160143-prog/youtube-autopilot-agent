@@ -241,7 +241,7 @@ app.get("/api/automation/status", async (req, res) => {
       databaseConfigured: true,
       databaseReady: true,
       durableJobMetadata: true,
-      persistentObjectStorageConfigured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+      objectStorageCredentialsPresent: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
       workerConfigured: false,
       durableRenderConfigured: false,
       message: "Job metadata persistence is ready. Background pipeline worker and persistent video storage are not yet enabled."
@@ -250,7 +250,7 @@ app.get("/api/automation/status", async (req, res) => {
     if (error.code === "AUTOMATION_DB_NOT_CONFIGURED") {
       return res.json({
         databaseConfigured: false, databaseReady: false, durableJobMetadata: false,
-        persistentObjectStorageConfigured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+        objectStorageCredentialsPresent: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
         workerConfigured: false, durableRenderConfigured: false,
         message: "PostgreSQL is not configured; automation drafts/history cannot be persisted."
       });
