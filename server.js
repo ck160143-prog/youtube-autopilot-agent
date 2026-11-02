@@ -1150,7 +1150,8 @@ async function renderToFile(body) {
     args.push("-filter_complex", filters.join(";"), "-map", videoMap, "-map", imagePaths.length + ":a:0",
       "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1", "-crf", "28", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "96k", "-max_muxing_queue_size", "512", "-shortest", "-movflags", "+faststart", outputPath);
-    await execFileAsync(ffmpegPath, args, { timeout: 240000, maxBuffer: 4 * 1024 * 1024 });
+    const renderTimeoutMs = Math.max(10000, Number(process.env.FFMPEG_RENDER_TIMEOUT_MS) || 240000);
+    await execFileAsync(ffmpegPath, args, { timeout: renderTimeoutMs, maxBuffer: 4 * 1024 * 1024 });
     const stat = await fs.promises.stat(outputPath);
     if (!stat.size || stat.size > 90 * 1024 * 1024) throw Object.assign(new Error("Rendered video 90 MB से बड़ा है। छोटा/कम resolution वाला project बनाएँ।"), { statusCode: 413 });
     return { tempDir, outputPath, size: stat.size };
