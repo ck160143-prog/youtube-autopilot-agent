@@ -223,7 +223,7 @@ class AutomationStore {
     await this.pool.query("UPDATE baba_automation_jobs SET oauth_session_ciphertext=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2",[owner,id,ciphertext]);
   }
   async saveUploadSession(owner,id,url){
-    await this.pool.query("UPDATE baba_automation_jobs SET upload_session_url=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_video_id IS NULL",[id,owner,url]);
+    await this.pool.query("UPDATE baba_automation_jobs SET upload_session_url=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_video_id IS NULL",[owner,id,url]);
   }
   async markUploadConfirmed(owner,id,videoId,visibility="private"){
     if(!videoId||typeof videoId!=="string")throw new TypeError("YouTube video ID is required");
