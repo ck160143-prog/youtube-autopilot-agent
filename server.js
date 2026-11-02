@@ -504,8 +504,17 @@ ${script.slice(0, 18000)}
           config: { responseMimeType: "application/json" }
         }));
       } catch (planningError) {
-        // If scene planning itself is quota-limited, still try real, attributed Commons photos.
+        // In 3D-cartoon mode, never silently substitute real photos for requested cartoon artwork.
         if (!isQuotaError(planningError)) throw planningError;
+        if (visualStyle === "3d-cartoon") {
+          return res.status(429).json({
+            success: false,
+            error: quotaMessage("script", scriptModel, planningError) + " 3D कार्टून दृश्य बनाने के लिए image quota उपलब्ध होना चाहिए; इस मोड में वास्तविक फोटो को कार्टून बताकर नहीं दिखाया जाएगा।",
+            images: [],
+            failedScenes: [],
+            model: scriptModel
+          });
+        }
         const topic = /ताजमहल|taj\s*mahal/i.test(script) ? "Taj Mahal India" :
           ((script.match(/(?:विषय|title|शीर्षक)\s*[:：-]\s*([^\n.!]{3,100})/i) || [])[1] || script.slice(0, 100)).trim();
         const fallbackScenes = [
@@ -605,7 +614,7 @@ ${script.slice(0, 18000)}
     }
 
     // When Gemini returns 429, do not retry another paid model. Try free, real, license-attributed Wikimedia Commons photos instead.
-    if (imageQuota && failedScenes.length) {
+    if (imageQuota && failedScenes.length && visualStyle !== "3d-cartoon") {
       const remainingFailures = [];
       for (const failed of failedScenes) {
         try {
