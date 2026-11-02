@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { app, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory } = require("./server");
+const { app, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, resetGeminiCooldownForTests } = require("./server");
 
 test("PCM duration uses decoded bytes and 24 kHz mono 16-bit defaults", () => {
   const oneSecondPcm = Buffer.alloc(24000 * 2);
@@ -32,7 +32,8 @@ test("health endpoint returns JSON without exposing credentials", async () => {
   assert.equal(JSON.stringify(body).includes(process.env.GEMINI_API_KEY || "secret-value-not-present"), false);
 });
 
-test("script generation falls back once when primary Gemini model hits 429 quota", async () => {
+test("script generation stops immediately when primary Gemini model hits 429 quota", async () => {
+  resetGeminiCooldownForTests();
   const oldKey = process.env.GEMINI_API_KEY;
   const oldPrimary = process.env.GEMINI_SCRIPT_MODEL;
   const oldFallback = process.env.GEMINI_SCRIPT_FALLBACK_MODEL;
@@ -60,9 +61,9 @@ test("script generation falls back once when primary Gemini model hits 429 quota
       body: JSON.stringify({ topic: "ताजमहल के रहस्य", duration: 5, language: "हिंदी" })
     });
     const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(body.script, "नई हिंदी स्क्रिप्ट");
-    assert.deepEqual(called, ["gemini-3.8-flash", "gemini-2.5-flash-lite"]);
+    assert.equal(response.status, 429);
+    assert.match(body.error, /quota/i);
+    assert.deepEqual(called, ["gemini-3.8-flash"]);
   } finally {
     resetAIClientFactory();
     if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey;
@@ -72,6 +73,7 @@ test("script generation falls back once when primary Gemini model hits 429 quota
 });
 
 test("script generation falls back when a configured Gemini model ID returns 404", async () => {
+  resetGeminiCooldownForTests();
   const oldKey = process.env.GEMINI_API_KEY;
   const oldPrimary = process.env.GEMINI_SCRIPT_MODEL;
   const oldFallback = process.env.GEMINI_SCRIPT_FALLBACK_MODEL;
