@@ -10,7 +10,7 @@ test("YouTube chunk upload persists monotonic progress and requires final API re
  const result=await transferChunks(fetchImpl,"https://upload.example/session","token",video,0,store,"channel","job");
  assert.equal(result.id,"yt-video-123");
  assert.deepEqual(ranges,["bytes 0-8388607/8388618","bytes 8388608-8388617/8388618"]);
- assert.deepEqual(updates.map(x=>x[0]),[0,8388608,video.length,video.length]);
+ assert.deepEqual(updates.map(x=>x[0]),[0,8388608,video.length]);
 });
 test("YouTube chunk upload does not claim success when final API response is missing",async()=>{
  const video=Buffer.from("video"),store={async updateUploadProgress(){}};
