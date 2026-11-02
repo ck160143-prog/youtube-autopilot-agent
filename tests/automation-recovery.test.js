@@ -17,7 +17,7 @@ test("restart recovery requeues interrupted jobs and resets only in-flight steps
  assert.equal(count,1);
  assert.ok(calls.some(c=>c.sql.includes("SET status='pending'")&&c.sql.includes("status='running'")));
  assert.ok(calls.some(c=>c.sql.includes("SET status='queued'")));
- assert.ok(calls.some(c=>c.sql.includes("worker_recovery")));
+ assert.ok(calls.some(c=>c.sql.includes("INSERT INTO baba_automation_events")&&c.params?.includes("worker_recovery")));
 });
 test("queue claiming uses row locks to avoid two workers claiming the same job",async()=>{
  const {pool,calls}=mockPool(),store=new AutomationStore({pool});
