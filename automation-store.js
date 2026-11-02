@@ -248,6 +248,20 @@ class AutomationStore {
   async saveUploadSession(owner,id,url){
     await this.pool.query("UPDATE baba_automation_jobs SET upload_session_url=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_video_id IS NULL",[owner,id,url]);
   }
+  async resetExpiredUploadSession(owner,id,confirmed){
+    if(confirmed!==true){const e=new Error("Explicit confirmation that YouTube Studio has no matching upload is required");e.code="UPLOAD_RECONCILIATION_REQUIRED";throw e;}
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const r=await c.query("SELECT * FROM baba_automation_jobs WHERE owner_channel_id=$1 AND id=$2 FOR UPDATE",[owner,id]);
+      const job=r.rows[0];
+      if(!job||job.upload_confirmed||!job.upload_session_url||job.status!=="failed"){await c.query("ROLLBACK");return null;}
+      await c.query("UPDATE baba_automation_steps SET status='pending',error_message=NULL,retry_after=NULL,finished_at=NULL,updated_at=NOW() WHERE job_id=$1 AND step_name='youtube_upload' AND status='failed'",[id]);
+      const updated=await c.query("UPDATE baba_automation_jobs SET upload_session_url=NULL,upload_progress_bytes=0,upload_total_bytes=0,status='queued',pause_requested=FALSE,upload_authorized=TRUE,last_error=NULL,updated_at=NOW() WHERE id=$1 RETURNING *",[id]);
+      await this.event(c,id,"upload_session_reset","User confirmed no matching video exists in YouTube Studio; expired session reset","youtube_upload",{confirmed:true});
+      await c.query("COMMIT");return updated.rows[0];
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
   async updateUploadProgress(owner,id,bytes,total){
     const sent=Math.max(0,Number(bytes)||0),size=Math.max(0,Number(total)||0);
     await this.pool.query("UPDATE baba_automation_jobs SET upload_progress_bytes=$3,upload_total_bytes=$4,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_confirmed=FALSE",[owner,id,sent,size]);
