@@ -95,3 +95,36 @@ The `feature/baba-ai-durable-automation` branch adds a PostgreSQL-backed persist
 ### PostgreSQL setup (only after review)
 
 Add `DATABASE_URL` to the intended Render service's Environment, using a managed PostgreSQL database. Keep the connection string secret. `DATABASE_SSL` defaults to SSL enabled; use `disable` only for a trusted local database. `AUTOMATION_DB_POOL_MAX` defaults to 3. This branch does not create a database or alter Render settings.
+
+
+## Phase 2 durable worker (feature branch; integration testing required)
+
+The feature branch now contains a PostgreSQL queue worker, per-step state/event persistence, restart recovery, Supabase Storage REST adapter, a Hindi mobile job dashboard, and explicit private-upload authorization. The worker only starts when both `DATABASE_URL` and the Supabase Storage credentials are configured. It stores generated assets under `jobs/{job-id}/...` and creates short-lived signed preview URLs.
+
+### Required environment on the intended Render service
+
+- `DATABASE_URL`: PostgreSQL connection string. Keep it in Render Environment, never GitHub.
+- `SUPABASE_URL`: Supabase project URL.
+- `SUPABASE_SERVICE_ROLE_KEY`: **secret** server-side service role key; never expose it in the browser or logs.
+- `SUPABASE_STORAGE_BUCKET`: private bucket name; defaults to `baba-ai-assets`.
+- Existing `GEMINI_API_KEY`, `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REDIRECT_URI`, and `APP_SESSION_SECRET` remain required for their respective features. OAuth redirect URI must not be changed for this branch.
+- Optional `AUTOMATION_POLL_MS` (default 2500) and `AUTOMATION_INTERNAL_BASE_URL` (default localhost + Render PORT).
+
+On first API use, PostgreSQL tables are created/migrated automatically. Create the private Supabase Storage bucket in the Supabase dashboard before enabling the worker. Database job metadata includes an encrypted OAuth session for that specific job; it is encrypted with the existing `APP_SESSION_SECRET` and the API does not return the ciphertext.
+
+### Mobile job flow
+
+1. Connect the existing YouTube channel.
+2. In the Durable Automation card, enter a topic or leave it blank for AI topic selection, then tap Start Job.
+3. Watch Job History and per-step attempt/error details. Pause/Resume and Retry Failed Step act on the stored job.
+4. After preview is ready, inspect it and tap **Upload Private** to explicitly authorize the upload. Public upload is not enabled in this worker.
+5. Check the YouTube video ID/result in Job History.
+
+### Known limits
+
+- The hosted renderer still creates a narrated still-image MP4 preview (maximum 180 seconds); it is **not** real 3D character animation and does not provide dialogue lip-sync. No Blender/Godot/Unreal or lip-sync engine has been integrated in this branch. Genuine 3D animation needs a separately provisioned renderer and character/rig/viseme assets, which this Render service does not currently provide.
+- Captions are generated as an approximate-timing SRT sidecar; they are not burned into the MP4 and are not uploaded to YouTube as a caption track.
+- The thumbnail step uses the first generated scene image as a thumbnail candidate; it does not yet create a text-composited thumbnail design.
+- The automatic narration is capped at a short excerpt because the hosted renderer is limited to 180 seconds. Full 5–30 minute film production is not implemented.
+- Upload progress is persisted at chunk boundaries. If a saved YouTube resumable session expires, the worker refuses to silently start a new session to avoid an accidental duplicate. Check YouTube Studio before deciding how to recover that job.
+- A successful code build/test does not prove real Google/Gemini/PostgreSQL/Supabase end-to-end operation. Those integrations must be tested with the user's configured services before calling the system production-ready.
