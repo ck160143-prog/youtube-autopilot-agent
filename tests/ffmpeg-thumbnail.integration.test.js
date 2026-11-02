@@ -10,7 +10,7 @@ test("FFmpeg creates a real JPEG thumbnail with composited title text", {
   skip: !enabled ? "Set RUN_FFMPEG_THUMBNAIL_INTEGRATION=1 to run the FFmpeg thumbnail integration test" : false,
   timeout: 60000
 }, async () => {
-  const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+  const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwJfOOGYyqiH8OITBAtxm7fN1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFjWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFjWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFjSgBQ1oQQNa0IAWPHYBm4BBPKP3aYAAAAAASUVORK5CYII=";
   let rendered;
   try {
     rendered = await renderThumbnailToFile({
