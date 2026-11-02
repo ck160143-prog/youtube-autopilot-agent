@@ -23,6 +23,11 @@ jobs:
         run: node --test tests/ffmpeg-thumbnail.integration.test.js
         env:
           RUN_FFMPEG_THUMBNAIL_INTEGRATION: "1"
+      - name: Verify captioned MP4 rendering with FFmpeg
+        run: node --test tests/ffmpeg-captions.integration.test.js
+        env:
+          RUN_FFMPEG_INTEGRATION: "1"
+          FFMPEG_RENDER_TIMEOUT_MS: "45000"
 
   postgres-integration:
     runs-on: ubuntu-latest
