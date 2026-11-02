@@ -362,6 +362,12 @@ app.post("/api/automation/jobs/:jobId/retry/:step", async (req,res)=>{
   try{const st=await readyAutomationStore();const step=await st.retryFailedStep(owner,req.params.jobId,req.params.step);if(!step)return res.status(404).json({error:"Job नहीं मिली।"});return res.json({success:true,step,message:"केवल चुना हुआ failed step queue में वापस रखा गया।"});}
   catch(e){if(["STEP_NOT_FAILED","JOB_TERMINAL"].includes(e.code))return res.status(409).json({error:e.message});return automationDbError(res,e);}
 });
+app.post("/api/automation/jobs/:jobId/reset-expired-upload", async (req,res)=>{
+  const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
+  if(req.body?.confirmNoExistingUpload!==true)return res.status(400).json({error:"पहले YouTube Studio में जाँचकर पुष्टि करनी होगी कि इस job का वीडियो मौजूद नहीं है।"});
+  try{const st=await readyAutomationStore();const job=await st.resetExpiredUploadSession(owner,req.params.jobId,true);if(!job)return res.status(409).json({error:"Job failed state में नहीं है, session उपलब्ध नहीं है, या upload पहले ही confirm हो चुका है।"});return res.json({success:true,job:sanitizeAutomationJob(job),message:"Expired upload session reset हुआ; worker नई private session शुरू कर सकता है।"});}
+  catch(e){if(e.code==="UPLOAD_RECONCILIATION_REQUIRED")return res.status(400).json({error:e.message});return automationDbError(res,e);}
+});
 app.post("/api/automation/jobs/:jobId/upload-private", async (req,res)=>{
   const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
   try{const st=await readyAutomationStore();const job=await st.authorizePrivateUpload(owner,req.params.jobId);if(!job)return res.status(404).json({error:"Job नहीं मिली या upload पहले ही confirm हो चुका है।"});return res.json({success:true,job:sanitizeAutomationJob(job),message:"Private upload की स्पष्ट अनुमति सेव हुई। Worker अब YouTube upload शुरू/जारी करेगा।"});}
