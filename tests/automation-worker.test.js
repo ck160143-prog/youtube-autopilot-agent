@@ -5,7 +5,7 @@ const {AutomationWorker}=require("../automation-worker");
 const {STEP_NAMES}=require("../automation-store");
 
 function fakeStore(){
- const job={id:"job-1",owner_channel_id:"channel-1",status:"running",pause_requested:false,steps:STEP_NAMES.map(step_name=>({step_name,status:"pending",attempt_count:0}))};
+ const job={id:"job-1",owner_channel_id:"channel-1",status:"running",pause_requested:false,upload_authorized:true,steps:STEP_NAMES.map(step_name=>({step_name,status:"pending",attempt_count:0}))};
  return {
   job,configured:true,events:[],outputs:{},
   async initialize(){return true;},async recoverInterruptedJobs(){return 0;},
