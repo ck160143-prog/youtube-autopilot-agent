@@ -84,3 +84,14 @@ Render should run the Node server with `npm start`. The static frontend is serve
 ## Tests
 
 Run `npm test` (Node.js 18+). Tests cover quota classification, retry hints, no retries on 429, and bounded retries for temporary 5xx errors.
+
+
+## Durable automation foundation (feature branch)
+
+The `feature/baba-ai-durable-automation` branch adds a PostgreSQL-backed persistence module for job metadata, per-step attempt counters, step results/errors, event history and provider quota cooldowns. It requires `DATABASE_URL`; the database schema is initialized lazily when the automation status/jobs API is first used. The app continues to start without this optional database, and the existing YouTube OAuth endpoints/cookie token handling are not changed by this feature.
+
+**This is not yet the completed automation worker.** The new API can create durable job drafts and show persisted history, but it does not yet execute the entire pipeline in a server-side worker. Existing `/api/render` status and output still depend on process memory and temporary files. Persistent object storage, safe upload-resume/idempotency at the YouTube boundary, durable worker scheduling/recovery, captions integration, and a complete mobile control dashboard remain unfinished. Do not deploy this branch as a claim of end-to-end durable automation.
+
+### PostgreSQL setup (only after review)
+
+Add `DATABASE_URL` to the intended Render service's Environment, using a managed PostgreSQL database. Keep the connection string secret. `DATABASE_SSL` defaults to SSL enabled; use `disable` only for a trusted local database. `AUTOMATION_DB_POOL_MAX` defaults to 3. This branch does not create a database or alter Render settings.
