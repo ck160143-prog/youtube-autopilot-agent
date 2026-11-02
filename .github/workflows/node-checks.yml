@@ -28,6 +28,18 @@ jobs:
         env:
           RUN_FFMPEG_INTEGRATION: "1"
           FFMPEG_RENDER_TIMEOUT_MS: "45000"
+      - name: Live Supabase private storage integration (only when configured)
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
+        run: |
+          if [[ -z "${SUPABASE_URL:-}" || -z "${SUPABASE_SERVICE_ROLE_KEY:-}" || -z "${SUPABASE_STORAGE_BUCKET:-}" ]]; then
+            echo "::notice::Supabase integration skipped because protected test credentials/bucket are not configured."
+            exit 0
+          fi
+          node --test tests/supabase-storage.integration.test.js
 
   postgres-integration:
     runs-on: ubuntu-latest
