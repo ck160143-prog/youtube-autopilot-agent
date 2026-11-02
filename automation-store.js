@@ -46,11 +46,13 @@ class AutomationStore {
   get configured(){return Boolean(this.pool);}
   async initialize(){
     if(!this.pool)return false;
-    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, upload_authorized BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
+    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, upload_authorized BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, upload_progress_bytes BIGINT NOT NULL DEFAULT 0, upload_total_bytes BIGINT NOT NULL DEFAULT 0, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_authorized BOOLEAN NOT NULL DEFAULT FALSE");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS oauth_session_ciphertext TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_idempotency_key TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_session_url TEXT");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_progress_bytes BIGINT NOT NULL DEFAULT 0");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_total_bytes BIGINT NOT NULL DEFAULT 0");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS asset_prefix TEXT");
     await this.pool.query("CREATE INDEX IF NOT EXISTS baba_automation_jobs_owner_created ON baba_automation_jobs(owner_channel_id,created_at DESC)");
     await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_steps (job_id UUID NOT NULL REFERENCES baba_automation_jobs(id) ON DELETE CASCADE, step_name TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','skipped')), attempt_count INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, retry_after TIMESTAMPTZ, output_ref TEXT, output_metadata JSONB NOT NULL DEFAULT '{}'::jsonb, error_message TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(job_id,step_name))");
@@ -93,7 +95,7 @@ class AutomationStore {
   }
   async listJobs(owner,limit=30){
     const n=Math.max(1,Math.min(100,Number(limit)||30));
-    const r=await this.pool.query("SELECT id,topic,duration,language,visual_style,status,current_step,last_error,upload_video_id,upload_visibility,upload_confirmed,created_at,updated_at FROM baba_automation_jobs WHERE owner_channel_id=$1 ORDER BY created_at DESC LIMIT $2",[owner,n]);
+    const r=await this.pool.query("SELECT id,topic,duration,language,visual_style,status,current_step,last_error,upload_video_id,upload_visibility,upload_confirmed,upload_progress_bytes,upload_total_bytes,created_at,updated_at FROM baba_automation_jobs WHERE owner_channel_id=$1 ORDER BY created_at DESC LIMIT $2",[owner,n]);
     return r.rows;
   }
   async transition(owner,id,target){
@@ -245,6 +247,10 @@ class AutomationStore {
   }
   async saveUploadSession(owner,id,url){
     await this.pool.query("UPDATE baba_automation_jobs SET upload_session_url=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_video_id IS NULL",[owner,id,url]);
+  }
+  async updateUploadProgress(owner,id,bytes,total){
+    const sent=Math.max(0,Number(bytes)||0),size=Math.max(0,Number(total)||0);
+    await this.pool.query("UPDATE baba_automation_jobs SET upload_progress_bytes=$3,upload_total_bytes=$4,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_confirmed=FALSE",[owner,id,sent,size]);
   }
   async markUploadConfirmed(owner,id,videoId,visibility="private"){
     if(!videoId||typeof videoId!=="string")throw new TypeError("YouTube video ID is required");
