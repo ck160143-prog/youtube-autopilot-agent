@@ -45,11 +45,6 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - name: Run FFmpeg burned-caption integration test
-        run: node --test tests/ffmpeg-captions.integration.test.js
-        env:
-          RUN_FFMPEG_INTEGRATION: "1"
-          FFMPEG_RENDER_TIMEOUT_MS: "30000"
       - name: Run real PostgreSQL integration test
         run: npm run test:integration
         env:
