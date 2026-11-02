@@ -171,7 +171,7 @@ class AutomationStore {
     const c=await this.pool.connect();
     try{
       await c.query("BEGIN");
-      const r=await c.query("SELECT * FROM baba_automation_jobs WHERE status='queued' AND NOT pause_requested ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1");
+      const r=await c.query("SELECT * FROM baba_automation_jobs WHERE status='queued' AND NOT pause_requested ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED");
       const job=r.rows[0];
       if(!job){await c.query("COMMIT");return null;}
       const u=await c.query("UPDATE baba_automation_jobs SET status='running',updated_at=NOW() WHERE id=$1 RETURNING *",[job.id]);
