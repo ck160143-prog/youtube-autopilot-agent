@@ -265,13 +265,14 @@ app.get("/api/automation/status", async (req, res) => {
       workerConfigured: Boolean(automationStorage.configured && automationWorker?.running),
       durableRenderConfigured: Boolean(automationStorage.configured && automationWorker?.running),
       persistentObjectStorageConfigured: automationStorage.configured,
-      message: "Job metadata persistence is ready. Background pipeline worker and persistent video storage are not yet enabled."
+      message: automationWorker?.running ? "Durable worker is running. Render remains an FFmpeg narrated still-image preview, not full 3D animation." : "PostgreSQL is ready but the worker is disabled; configure Supabase storage and inspect server logs."
     });
   } catch (error) {
     if (error.code === "AUTOMATION_DB_NOT_CONFIGURED") {
       return res.json({
         databaseConfigured: false, databaseReady: false, durableJobMetadata: false,
         objectStorageCredentialsPresent: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+        persistentObjectStorageConfigured: automationStorage.configured,
         workerConfigured: false, durableRenderConfigured: false,
         message: "PostgreSQL is not configured; automation drafts/history cannot be persisted."
       });
