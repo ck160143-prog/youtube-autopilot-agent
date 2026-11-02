@@ -6,13 +6,15 @@ const JOB_STATES = new Set(["draft","queued","running","paused","failed","comple
 const TERMINAL = new Set(["completed","cancelled"]);
 
 function validateJobInput(input = {}) {
+  const autoTopic = input.autoTopic === true;
   const topic = typeof input.topic === "string" ? input.topic.trim() : "";
-  if (!topic || topic.length > 500) throw new TypeError("topic must contain 1–500 characters");
+  if ((!topic && !autoTopic) || topic.length > 500) throw new TypeError("topic must contain 1–500 characters, or set autoTopic=true");
+  const storedTopic = topic || "__AUTO_TOPIC_PENDING__";
   const duration = Number(input.duration ?? 3);
   if (!Number.isInteger(duration) || duration < 1 || duration > 30) throw new TypeError("duration must be an integer from 1 to 30");
   const idempotencyKey = typeof input.idempotencyKey === "string" && /^[a-zA-Z0-9:_-]{8,128}$/.test(input.idempotencyKey)
     ? input.idempotencyKey : crypto.randomUUID();
-  return { topic, duration, language: input.language === "English" ? "English" : "Hindi",
+  return { topic: storedTopic, autoTopic, duration, language: input.language === "English" ? "English" : "Hindi",
     visualStyle: ["3d-cartoon","cinematic","realistic"].includes(input.visualStyle) ? input.visualStyle : "3d-cartoon", idempotencyKey };
 }
 function canTransitionJob(from, to) {
@@ -44,7 +46,11 @@ class AutomationStore {
   get configured(){return Boolean(this.pool);}
   async initialize(){
     if(!this.pool)return false;
-    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
+    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS oauth_session_ciphertext TEXT");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_idempotency_key TEXT");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_session_url TEXT");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS asset_prefix TEXT");
     await this.pool.query("CREATE INDEX IF NOT EXISTS baba_automation_jobs_owner_created ON baba_automation_jobs(owner_channel_id,created_at DESC)");
     await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_steps (job_id UUID NOT NULL REFERENCES baba_automation_jobs(id) ON DELETE CASCADE, step_name TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','skipped')), attempt_count INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, retry_after TIMESTAMPTZ, output_ref TEXT, output_metadata JSONB NOT NULL DEFAULT '{}'::jsonb, error_message TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(job_id,step_name))");
     await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_events (id BIGSERIAL PRIMARY KEY, job_id UUID NOT NULL REFERENCES baba_automation_jobs(id) ON DELETE CASCADE, step_name TEXT, event_type TEXT NOT NULL, message TEXT NOT NULL, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
@@ -56,15 +62,15 @@ class AutomationStore {
     await client.query("INSERT INTO baba_automation_events(job_id,step_name,event_type,message,details) VALUES($1,$2,$3,$4,$5::jsonb)",
       [id,step,type,String(message).slice(0,1000),JSON.stringify(details||{})]);
   }
-  async createJob(owner,input){
+  async createJob(owner,input,oauthSessionCiphertext=null){
     if(!this.pool)throw new Error("DATABASE_URL is required for durable automation jobs");
     if(typeof owner!=="string"||!owner.trim()||owner.length>256)throw new TypeError("A verified YouTube channel is required");
     const v=validateJobInput(input), c=await this.pool.connect();
     try{
       await c.query("BEGIN");
       const id=crypto.randomUUID();
-      const ins=await c.query("INSERT INTO baba_automation_jobs(id,owner_channel_id,idempotency_key,topic,duration,language,visual_style,status) VALUES($1,$2,$3,$4,$5,$6,$7,'draft') ON CONFLICT(owner_channel_id,idempotency_key) DO NOTHING RETURNING *",
-        [id,owner,v.idempotencyKey,v.topic,v.duration,v.language,v.visualStyle]);
+      const ins=await c.query("INSERT INTO baba_automation_jobs(id,owner_channel_id,idempotency_key,topic,duration,language,visual_style,status,oauth_session_ciphertext,upload_idempotency_key,asset_prefix) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10) ON CONFLICT(owner_channel_id,idempotency_key) DO NOTHING RETURNING *",
+        [id,owner,v.idempotencyKey,v.topic,v.duration,v.language,v.visualStyle,oauthSessionCiphertext,crypto.randomUUID(),"jobs/"+id]);
       let job=ins.rows[0];
       if(job){
         for(const step of STEP_NAMES)await c.query("INSERT INTO baba_automation_steps(job_id,step_name,status) VALUES($1,$2,'pending')",[job.id,step]);
@@ -206,6 +212,29 @@ class AutomationStore {
   async artifact(jobId,step){
     const r=await this.pool.query("SELECT output_ref,output_metadata,status FROM baba_automation_steps WHERE job_id=$1 AND step_name=$2",[jobId,step]);
     return r.rows[0]||null;
+  }
+
+  async setJobTopic(owner,id,topic){
+    if(typeof topic!=="string"||!topic.trim()||topic.trim().length>500)throw new TypeError("Generated topic must contain 1–500 characters");
+    const r=await this.pool.query("UPDATE baba_automation_jobs SET topic=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND topic='__AUTO_TOPIC_PENDING__' RETURNING *",[owner,id,topic.trim()]);
+    return r.rows[0]||null;
+  }
+  async saveOAuthSession(owner,id,ciphertext){
+    await this.pool.query("UPDATE baba_automation_jobs SET oauth_session_ciphertext=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2",[owner,id,ciphertext]);
+  }
+  async saveUploadSession(owner,id,url){
+    await this.pool.query("UPDATE baba_automation_jobs SET upload_session_url=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_video_id IS NULL",[id,owner,url]);
+  }
+  async markUploadConfirmed(owner,id,videoId,visibility="private"){
+    if(!videoId||typeof videoId!=="string")throw new TypeError("YouTube video ID is required");
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const r=await c.query("UPDATE baba_automation_jobs SET upload_video_id=$3,upload_visibility=$4,upload_confirmed=TRUE,upload_session_url=NULL,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_confirmed=FALSE RETURNING *",[owner,id,videoId,visibility]);
+      if(!r.rows[0]){const e=new Error("Upload already confirmed or job not found; refusing duplicate confirmation");e.code="UPLOAD_ALREADY_CONFIRMED";throw e;}
+      await this.event(c,id,"youtube_upload_confirmed","YouTube API confirmed upload","youtube_upload",{videoId,visibility});
+      await c.query("COMMIT");return r.rows[0];
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
   }
   async close(){if(this.pool?.end)await this.pool.end();}
 }
