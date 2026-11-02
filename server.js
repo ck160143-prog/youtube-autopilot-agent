@@ -1193,16 +1193,13 @@ async function renderThumbnailToFile(body) {
     const ffmpegPath = require("ffmpeg-static");
     if (!ffmpegPath) throw Object.assign(new Error("FFmpeg binary unavailable."), { statusCode: 503 });
     const sourcePath = path.join(tempDir, "source." + ext);
-    const textPath = path.join(tempDir, "title.txt");
+    const captionsPath = path.join(tempDir, "title.srt");
     const outputPath = path.join(tempDir, "thumbnail.jpg");
     await fs.promises.writeFile(sourcePath, sourceBytes);
-    await fs.promises.writeFile(textPath, text, "utf8");
-    const escapedTextPath = textPath.replace(/\\\\/g, "/").replace(/:/g, "\\\\:").replace(/'/g, "\\\\'");
+    await fs.promises.writeFile(captionsPath, "1\\n00:00:00,000 --> 00:00:05,000\\n" + text + "\\n", "utf8");
+    const escapedCaptionsPath = captionsPath.replace(/\\\\/g, "/").replace(/:/g, "\\\\:").replace(/'/g, "\\\\'");
     const filter = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720," +
-      "drawbox=x=0:y=ih*0.55:w=iw:h=ih*0.45:color=black@0.62:t=fill," +
-      "drawtext=textfile='" + escapedTextPath + "':fontcolor=white:fontsize=54:line_spacing=8:" +
-      "borderw=3:bordercolor=black:box=1:boxcolor=black@0.25:boxborderw=18:" +
-      "x=(w-text_w)/2:y=h-text_h-55";
+      "subtitles='" + escapedCaptionsPath + "':force_style='FontName=DejaVu Sans,FontSize=38,Outline=3,Shadow=1,Alignment=2,MarginV=45,BorderStyle=3,BackColour=&H99000000'";
     await execFileAsync(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-threads", "1", "-y",
       "-i", sourcePath, "-vf", filter, "-frames:v", "1", "-q:v", "2", outputPath],
       { timeout: 30000, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 });
