@@ -133,7 +133,7 @@ class AutomationStore {
       await c.query("BEGIN");
       const jr=await c.query("SELECT id FROM baba_automation_jobs WHERE owner_channel_id=$1 AND id=$2 FOR UPDATE",[owner,id]);
       if(!jr.rows[0]){await c.query("ROLLBACK");return null;}
-      const sr=await c.query("UPDATE baba_automation_steps SET status=$3,finished_at=NOW(),updated_at=NOW(),output_ref=$4,output_metadata=$5::jsonb,error_message=$6,retry_after=$7,retry_count=retry_count+CASE WHEN $3='failed' THEN 1 ELSE 0 END WHERE job_id=$1 AND step_name=$2 AND status='running' RETURNING *",
+      const sr=await c.query("UPDATE baba_automation_steps SET status=$3,finished_at=NOW(),updated_at=NOW(),output_ref=COALESCE($4,output_ref),output_metadata=CASE WHEN $5::jsonb='{}'::jsonb THEN output_metadata ELSE $5::jsonb END,error_message=$6,retry_after=$7,retry_count=retry_count+CASE WHEN $3='failed' THEN 1 ELSE 0 END WHERE job_id=$1 AND step_name=$2 AND status='running' RETURNING *",
         [id,step,failed?"failed":"succeeded",outputRef,meta,failed?String(errorMessage).slice(0,1000):null,retryAfter]);
       if(!sr.rows[0]){const e=new Error("Step was not running; refusing to overwrite its result");e.code="STEP_NOT_RUNNING";throw e;}
       await c.query("UPDATE baba_automation_jobs SET last_error=$2,status=CASE WHEN $3 THEN 'failed' ELSE status END,updated_at=NOW() WHERE id=$1",[id,failed?String(errorMessage).slice(0,1000):null,failed]);
