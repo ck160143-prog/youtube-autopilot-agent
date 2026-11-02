@@ -127,8 +127,8 @@ function quotaInfo(error, model, operation = "image generation") {
 
 function quotaCooldownUntil(error) {
   const hint = String(extractRetryHint(error) || "");
-  const match = hint.match(/([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)/i);
-  if (match) { const n=Number(match[1]); const unit=match[2].toLowerCase(); return new Date(Date.now()+n*(unit==="ms"?1:unit==="s"?1000:unit==="m"?60000:3600000)); }
+  const parts = Array.from(hint.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)/ig));
+  if (parts.length) { const ms=parts.reduce((sum,p)=>sum+Number(p[1])*(p[2].toLowerCase()==="ms"?1:p[2].toLowerCase()==="s"?1000:p[2].toLowerCase()==="m"?60000:3600000),0); if(ms>0)return new Date(Date.now()+ms); }
   const absolute=Date.parse(hint); if (hint && Number.isFinite(absolute) && absolute>Date.now()) return new Date(absolute);
   return new Date(Date.now()+15*60*1000);
 }
@@ -680,6 +680,7 @@ ${script.slice(0, 18000)}
       } catch (planningError) {
         // In 3D-cartoon mode, never silently substitute real photos for requested cartoon artwork.
         if (!isQuotaError(planningError)) throw planningError;
+        rememberGeminiQuota(planningError, "images");
         if (visualStyle === "3d-cartoon") {
           return res.status(429).json({
             success: false,
