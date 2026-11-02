@@ -148,6 +148,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div class="grid"><button type="button" onclick="controlDurableJob('pause')">⏸ Pause</button><button type="button" onclick="controlDurableJob('resume')">▶ Resume</button></div>
 <div class="grid"><button type="button" class="secondary" onclick="retryDurableStep()">🔁 Retry Failed Step</button><button type="button" class="secondary" onclick="openDurablePreview()">👁 Preview</button></div>
 <button type="button" class="green" onclick="authorizeDurablePrivateUpload()">🔒 Upload Private</button>
+<button type="button" class="secondary" onclick="resetExpiredDurableUpload()">⚠️ Expired upload session reset</button>
 <p class="small">Public upload इस workflow से नहीं होगा। Upload Private तभी शुरू होगा जब preview सफल हो और आप इस बटन को दबाएँ।</p>
 <div id="durableJobSteps" class="small"></div></div></div>
 <div class="card">
@@ -1300,6 +1301,7 @@ async function openDurablePreview(){if(!durableSelectedJobId)return alert('प�
 async function authorizeDurablePrivateUpload(){if(!durableSelectedJobId)return alert('पहले job चुनें।');if(!confirm('क्या आप तैयार वीडियो को अपने जुड़े हुए YouTube चैनल पर PRIVATE रूप में upload करने की अनुमति देते हैं? यह सार्वजनिक नहीं होगा।'))return;try{var d=await durableApi('/api/automation/jobs/'+encodeURIComponent(durableSelectedJobId)+'/upload-private',{method:'POST',body:'{}'});document.getElementById('durableAutomationStatus').textContent=d.message||'Private upload queue में है।';await selectDurableJob(durableSelectedJobId);}catch(e){document.getElementById('durableAutomationStatus').textContent='Private upload शुरू नहीं हुआ: '+e.message;}}
 document.addEventListener('DOMContentLoaded',function(){refreshDurableStatus();refreshDurableJobs();});
 
+async function resetExpiredDurableUpload(){if(!durableSelectedJobId)return alert('पहले job चुनें।');if(!confirm('केवल तभी जारी रखें जब आपने YouTube Studio जाँच लिया हो और इस job का वीडियो वहाँ मौजूद न हो। पुष्टि करने पर नई PRIVATE upload session शुरू हो सकती है।'))return;try{var d=await durableApi('/api/automation/jobs/'+encodeURIComponent(durableSelectedJobId)+'/reset-expired-upload',{method:'POST',body:JSON.stringify({confirmNoExistingUpload:true})});document.getElementById('durableAutomationStatus').textContent=d.message||'Session reset हुई।';await selectDurableJob(durableSelectedJobId);}catch(e){document.getElementById('durableAutomationStatus').textContent='Session reset नहीं हुई: '+e.message;}}
 </script>
 \n</body>
 </html>
