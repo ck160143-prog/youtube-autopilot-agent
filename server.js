@@ -203,6 +203,100 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// Optional durable automation metadata store. Existing app and OAuth continue to work without DATABASE_URL.
+const { AutomationStore } = require("./automation-store");
+const automationStore = new AutomationStore();
+app.locals.automationStore = automationStore;
+let automationSchemaPromise = null;
+async function readyAutomationStore() {
+  if (!automationStore.configured) {
+    const error = new Error("DATABASE_URL is not configured; durable job history is disabled.");
+    error.code = "AUTOMATION_DB_NOT_CONFIGURED";
+    throw error;
+  }
+  if (!automationSchemaPromise) {
+    automationSchemaPromise = automationStore.initialize().catch(error => {
+      automationSchemaPromise = null;
+      throw error;
+    });
+  }
+  await automationSchemaPromise;
+  return automationStore;
+}
+function automationOwner(req) {
+  const session = decryptSession(req);
+  return typeof session.channel?.id === "string" ? session.channel.id : null;
+}
+function automationDbError(res, error) {
+  if (error.code === "AUTOMATION_DB_NOT_CONFIGURED") {
+    return res.status(503).json({ error: "स्थायी job history के लिए Render Environment में DATABASE_URL और PostgreSQL database आवश्यक है।" });
+  }
+  safeLog("Automation database operation failed", error);
+  return res.status(503).json({ error: "Automation database अभी उपलब्ध नहीं है। Render database connection और logs जाँचें।" });
+}
+app.get("/api/automation/status", async (req, res) => {
+  try {
+    await readyAutomationStore();
+    return res.json({
+      databaseConfigured: true,
+      databaseReady: true,
+      durableJobMetadata: true,
+      persistentObjectStorageConfigured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+      workerConfigured: false,
+      durableRenderConfigured: false,
+      message: "Job metadata persistence is ready. Background pipeline worker and persistent video storage are not yet enabled."
+    });
+  } catch (error) {
+    if (error.code === "AUTOMATION_DB_NOT_CONFIGURED") {
+      return res.json({
+        databaseConfigured: false, databaseReady: false, durableJobMetadata: false,
+        persistentObjectStorageConfigured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+        workerConfigured: false, durableRenderConfigured: false,
+        message: "PostgreSQL is not configured; automation drafts/history cannot be persisted."
+      });
+    }
+    return automationDbError(res, error);
+  }
+});
+app.get("/api/automation/jobs", async (req, res) => {
+  const owner = automationOwner(req);
+  if (!owner) return res.status(401).json({ error: "पहले अपने YouTube चैनल को Connect करें। Job history चैनल के साथ सुरक्षित की जाती है।" });
+  try {
+    const store = await readyAutomationStore();
+    return res.json({ jobs: await store.listJobs(owner, req.query.limit) });
+  } catch (error) { return automationDbError(res, error); }
+});
+app.post("/api/automation/jobs", async (req, res) => {
+  const owner = automationOwner(req);
+  if (!owner) return res.status(401).json({ error: "पहले अपने YouTube चैनल को Connect करें।" });
+  try {
+    const store = await readyAutomationStore();
+    const input = req.body || {};
+    const result = await store.createJob(owner, {
+      topic: input.topic, duration: input.duration, language: input.language,
+      visualStyle: input.visualStyle, idempotencyKey: req.get("Idempotency-Key") || input.idempotencyKey
+    });
+    return res.status(result.created ? 201 : 200).json({
+      success: true, created: result.created, job: result.job,
+      executionStarted: false,
+      message: "Job draft database में सुरक्षित है। यह branch अभी background pipeline execute नहीं करती; Start/Resume को complete worker से जोड़ना बाकी है।"
+    });
+  } catch (error) {
+    if (error instanceof TypeError) return res.status(400).json({ error: error.message });
+    return automationDbError(res, error);
+  }
+});
+app.get("/api/automation/jobs/:jobId", async (req, res) => {
+  const owner = automationOwner(req);
+  if (!owner) return res.status(401).json({ error: "पहले अपने YouTube चैनल को Connect करें।" });
+  try {
+    const store = await readyAutomationStore();
+    const job = await store.getJob(owner, req.params.jobId);
+    if (!job) return res.status(404).json({ error: "इस चैनल के लिए job नहीं मिली।" });
+    return res.json({ job });
+  } catch (error) { return automationDbError(res, error); }
+});
+
 // 2. हिंदी आवाज़ बनाना
 app.post("/api/voice", async (req, res) => {
   try {
