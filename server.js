@@ -1213,7 +1213,8 @@ async function renderThumbnailToFile(body) {
     if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     if (error.statusCode) throw error;
     safeLog("FFmpeg text thumbnail failed", error);
-    throw Object.assign(new Error("Text thumbnail render failed; verify FFmpeg drawtext/font support."), { statusCode: 503 });
+    const diagnostic = String(error?.stderr || error?.message || "").replace(/\\s+/g, " ").slice(0, 500);
+    throw Object.assign(new Error("Text thumbnail render failed: " + diagnostic), { statusCode: 503 });
   }
 }
 
