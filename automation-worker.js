@@ -29,6 +29,7 @@ class AutomationWorker {
       if(!fresh)return;
       if(fresh.status==="paused"||fresh.pause_requested)return;
       if(["completed","cancelled"].includes(fresh.status))return;
+      if(step==="youtube_upload"&&!fresh.upload_authorized){await this.store.transition(job.owner_channel_id,job.id,"paused").catch(()=>{});await this.store.eventForJob?.(job.id,"waiting_upload_confirmation","Waiting for explicit private-upload confirmation");return;}
       const state=fresh.steps.find(s=>s.step_name===step);
       if(!state||state.status==="succeeded"||state.status==="skipped")continue;
       if(state.status==="failed") {await this.store.transition(job.owner_channel_id,job.id,"failed").catch(()=>{});return;}
@@ -47,7 +48,7 @@ class AutomationWorker {
         await this.store.startStep(job.owner_channel_id,job.id,step);
         output=await handler({job:fresh,step,storage:this.storage,store:this.store});
         outputRef=output?.buffer?await this.storage.put("jobs/"+job.id+"/"+step+"/"+(output.filename||"output.bin"),output.buffer,{contentType:output.contentType||"application/octet-stream",upsert:true}):output?.outputRef||null;
-        const metadata=output?.metadata||{};
+        const metadata={...(output?.metadata||{}),...(output?.contentType?{contentType:output.contentType}:{})};
         if(metadata.partialFailure){
           await this.store.finishStep(job.owner_channel_id,job.id,step,{outputRef:typeof outputRef==="string"?outputRef:outputRef?.key||null,outputMetadata:metadata,errorMessage:metadata.partialFailure});
           await this.store.transition(job.owner_channel_id,job.id,"failed").catch(()=>{});
