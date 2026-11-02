@@ -4,7 +4,8 @@
   "scripts": {
     "start": "node server.js",
     "build": "node build.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:integration": "RUN_POSTGRES_INTEGRATION=1 node --test tests/automation-postgres.integration.test.js"
   },
   "dependencies": {
     "@google/genai": "^1.11.0",
