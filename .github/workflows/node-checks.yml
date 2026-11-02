@@ -1,4 +1,7 @@
 name: Node checks
+concurrency:
+  group: node-checks-${{ github.ref }}
+  cancel-in-progress: true
 on:
   pull_request:
     branches: [main]
