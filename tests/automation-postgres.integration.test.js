@@ -64,6 +64,27 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     assert.equal((await store.getJob(owner, jobId)).status, "paused");
     await store.transition(owner, jobId, "queued");
     assert.equal((await store.getJob(owner, jobId)).status, "queued");
+
+    assert.equal(await store.markUploadSessionCreationStarted(owner, jobId), true);
+    assert.equal(await store.markUploadSessionCreationStarted(owner, jobId), false, "session creation must be one-shot until explicitly reconciled");
+    await store.transition(owner, jobId, "failed");
+    await assert.rejects(
+      () => store.resetExpiredUploadSession(owner, jobId, false),
+      error => error && error.code === "UPLOAD_RECONCILIATION_REQUIRED"
+    );
+    const reconciledUncertain = await store.resetExpiredUploadSession(owner, jobId, true);
+    assert.equal(reconciledUncertain.upload_session_creation_started, false);
+    assert.equal(reconciledUncertain.upload_session_url, null);
+
+    assert.equal(await store.markUploadSessionCreationStarted(owner, jobId), true);
+    await store.saveUploadSession(owner, jobId, "https://upload.example/session");
+    const savedSession = await store.getJob(owner, jobId);
+    assert.equal(savedSession.upload_session_url, "https://upload.example/session");
+    assert.equal(savedSession.upload_session_creation_started, true);
+    await store.transition(owner, jobId, "failed");
+    const reconciledExpired = await store.resetExpiredUploadSession(owner, jobId, true);
+    assert.equal(reconciledExpired.upload_session_url, null);
+    assert.equal(reconciledExpired.upload_session_creation_started, false);
   } finally {
     if (jobId) await pool.query("DELETE FROM baba_automation_jobs WHERE id=$1", [jobId]).catch(() => {});
     await pool.query("DELETE FROM baba_automation_jobs WHERE owner_channel_id=$1", [owner]).catch(() => {});
