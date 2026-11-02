@@ -83,7 +83,7 @@ Render should run the Node server with `npm start`. The static frontend is serve
 
 ## Tests
 
-Run `npm ci`, `npm run build`, and `npm test` (Node.js 24 is used in CI). CI also runs a real PostgreSQL integration test against a temporary PostgreSQL 16 service, plus an FFmpeg caption burn-in integration test. An opt-in Supabase private-bucket integration test is available in `tests/supabase-storage.integration.test.js` and requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a dedicated private `SUPABASE_STORAGE_BUCKET`; it is not run without those credentials. These tests do not constitute a live Google OAuth/Gemini/YouTube end-to-end test.
+Run `npm ci`, `npm run build`, and `npm test` (Node.js 24 is used in CI). CI also runs a real PostgreSQL integration test against a temporary PostgreSQL 16 service. An opt-in FFmpeg caption burn-in test is available in `tests/ffmpeg-captions.integration.test.js`, but its first hosted run did not complete in the runner, so burned-caption rendering is **not yet verified**. An opt-in Supabase private-bucket integration test is available in `tests/supabase-storage.integration.test.js` and requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a dedicated private `SUPABASE_STORAGE_BUCKET`; it is not run without those credentials. These tests do not constitute a live Google OAuth/Gemini/YouTube end-to-end test.
 
 
 ## Durable automation foundation (feature branch)
