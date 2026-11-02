@@ -42,18 +42,24 @@ class AutomationWorker {
         await this.store.deferStep(job.owner_channel_id,job.id,step,cooldown.retry_after,"Provider cooldown active");
         return;
       }
+      let output=null, outputRef=null;
       try{
         await this.store.startStep(job.owner_channel_id,job.id,step);
-        const output=await handler({job: fresh,step,storage:this.storage,store:this.store});
-        const outputRef=output?.buffer?await this.storage.put("jobs/"+job.id+"/"+step+"/"+(output.filename||"output.bin"),output.buffer,{contentType:output.contentType||"application/octet-stream",upsert:true}):output?.outputRef||null;
+        output=await handler({job:fresh,step,storage:this.storage,store:this.store});
+        outputRef=output?.buffer?await this.storage.put("jobs/"+job.id+"/"+step+"/"+(output.filename||"output.bin"),output.buffer,{contentType:output.contentType||"application/octet-stream",upsert:true}):output?.outputRef||null;
         const metadata=output?.metadata||{};
+        if(metadata.partialFailure){
+          await this.store.finishStep(job.owner_channel_id,job.id,step,{outputRef:typeof outputRef==="string"?outputRef:outputRef?.key||null,outputMetadata:metadata,errorMessage:metadata.partialFailure});
+          await this.store.transition(job.owner_channel_id,job.id,"failed").catch(()=>{});
+          return;
+        }
         await this.store.finishStep(job.owner_channel_id,job.id,step,{outputRef:typeof outputRef==="string"?outputRef:outputRef?.key||null,outputMetadata:metadata});
       }catch(error){
         const retryAfter=error?.retryAfter?new Date(error.retryAfter):null;
         if(error?.quotaProvider==="gemini"&&retryAfter){
           await this.store.setCooldown("gemini",step,retryAfter,error.message||"Gemini quota limit");
         }
-        await this.store.finishStep(job.owner_channel_id,job.id,step,{errorMessage:error?.message||"Step failed",retryAfter}).catch(()=>{});
+        await this.store.finishStep(job.owner_channel_id,job.id,step,{outputRef:typeof outputRef==="string"?outputRef:outputRef?.key||null,outputMetadata:output?.metadata||{},errorMessage:error?.message||"Step failed",retryAfter}).catch(()=>{});
         await this.store.transition(job.owner_channel_id,job.id,"failed").catch(()=>{});
         return;
       }
