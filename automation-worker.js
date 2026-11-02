@@ -38,7 +38,7 @@ class AutomationWorker {
         await this.store.markJobFailed(job.owner_channel_id,job.id,step,"Pipeline handler not configured: "+step);
         return;
       }
-      const cooldown=await this.store.getCooldown("gemini",step);
+      const cooldown=await this.store.getCooldown("gemini","all") || await this.store.getCooldown("gemini",step);
       if(cooldown&&["script","seo","scene_plan","images","voice"].includes(step)){
         await this.store.deferStep(job.owner_channel_id,job.id,step,cooldown.retry_after,"Provider cooldown active");
         return;
