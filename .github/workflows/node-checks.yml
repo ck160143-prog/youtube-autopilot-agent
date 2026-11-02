@@ -46,6 +46,7 @@ jobs:
         run: node --test tests/ffmpeg-captions.integration.test.js
         env:
           RUN_FFMPEG_INTEGRATION: "1"
+          FFMPEG_RENDER_TIMEOUT_MS: "30000"
       - name: Run real PostgreSQL integration test
         run: npm run test:integration
         env:
