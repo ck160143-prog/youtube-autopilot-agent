@@ -46,11 +46,12 @@ class AutomationStore {
   get configured(){return Boolean(this.pool);}
   async initialize(){
     if(!this.pool)return false;
-    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, upload_authorized BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, upload_progress_bytes BIGINT NOT NULL DEFAULT 0, upload_total_bytes BIGINT NOT NULL DEFAULT 0, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
+    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, upload_authorized BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, upload_session_creation_started BOOLEAN NOT NULL DEFAULT FALSE, upload_progress_bytes BIGINT NOT NULL DEFAULT 0, upload_total_bytes BIGINT NOT NULL DEFAULT 0, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_authorized BOOLEAN NOT NULL DEFAULT FALSE");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS oauth_session_ciphertext TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_idempotency_key TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_session_url TEXT");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_session_creation_started BOOLEAN NOT NULL DEFAULT FALSE");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_progress_bytes BIGINT NOT NULL DEFAULT 0");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_total_bytes BIGINT NOT NULL DEFAULT 0");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS asset_prefix TEXT");
@@ -245,8 +246,12 @@ class AutomationStore {
   async saveOAuthSession(owner,id,ciphertext){
     await this.pool.query("UPDATE baba_automation_jobs SET oauth_session_ciphertext=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2",[owner,id,ciphertext]);
   }
+  async markUploadSessionCreationStarted(owner,id){
+    const r=await this.pool.query("UPDATE baba_automation_jobs SET upload_session_creation_started=TRUE,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_confirmed=FALSE AND upload_video_id IS NULL AND upload_session_url IS NULL AND upload_session_creation_started=FALSE RETURNING id",[owner,id]);
+    return Boolean(r.rows[0]);
+  }
   async saveUploadSession(owner,id,url){
-    await this.pool.query("UPDATE baba_automation_jobs SET upload_session_url=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_video_id IS NULL",[owner,id,url]);
+    await this.pool.query("UPDATE baba_automation_jobs SET upload_session_url=$3,upload_session_creation_started=TRUE,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_video_id IS NULL",[owner,id,url]);
   }
   async resetExpiredUploadSession(owner,id,confirmed){
     if(confirmed!==true){const e=new Error("Explicit confirmation that YouTube Studio has no matching upload is required");e.code="UPLOAD_RECONCILIATION_REQUIRED";throw e;}
@@ -255,9 +260,9 @@ class AutomationStore {
       await c.query("BEGIN");
       const r=await c.query("SELECT * FROM baba_automation_jobs WHERE owner_channel_id=$1 AND id=$2 FOR UPDATE",[owner,id]);
       const job=r.rows[0];
-      if(!job||job.upload_confirmed||!job.upload_session_url||job.status!=="failed"){await c.query("ROLLBACK");return null;}
+      if(!job||job.upload_confirmed||(!job.upload_session_url&&!job.upload_session_creation_started)||job.status!=="failed"){await c.query("ROLLBACK");return null;}
       await c.query("UPDATE baba_automation_steps SET status='pending',error_message=NULL,retry_after=NULL,finished_at=NULL,updated_at=NOW() WHERE job_id=$1 AND step_name='youtube_upload' AND status='failed'",[id]);
-      const updated=await c.query("UPDATE baba_automation_jobs SET upload_session_url=NULL,upload_progress_bytes=0,upload_total_bytes=0,status='queued',pause_requested=FALSE,upload_authorized=TRUE,last_error=NULL,updated_at=NOW() WHERE id=$1 RETURNING *",[id]);
+      const updated=await c.query("UPDATE baba_automation_jobs SET upload_session_url=NULL,upload_session_creation_started=FALSE,upload_progress_bytes=0,upload_total_bytes=0,status='queued',pause_requested=FALSE,upload_authorized=TRUE,last_error=NULL,updated_at=NOW() WHERE id=$1 RETURNING *",[id]);
       await this.event(c,id,"upload_session_reset","User confirmed no matching video exists in YouTube Studio; expired session reset","youtube_upload",{confirmed:true});
       await c.query("COMMIT");return updated.rows[0];
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
