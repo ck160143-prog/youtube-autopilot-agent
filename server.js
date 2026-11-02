@@ -17,6 +17,7 @@ const ttsCache = new Map();
 const TTS_CACHE_MAX = 12;
 const TTS_CACHE_MAX_BYTES = 24 * 1024 * 1024;
 let ttsCacheBytes = 0;
+const providerCooldownMemory = new Map();
 
 function getStatus(error) {
   const raw = error?.status ?? error?.statusCode ?? error?.code;
@@ -68,9 +69,8 @@ async function generateTextWithQuotaFallback(ai, prompt, primaryModel) {
     }));
     return { response, model: primaryModel };
   } catch (primaryError) {
-    // A bad/stale Render model ID (404) and quota exhaustion (429) both get one safe fallback.
-    // Do not cascade on auth errors or transient server failures.
-    if (!isQuotaError(primaryError) && getStatus(primaryError) !== 404) throw primaryError;
+    // A quota/rate-limit response must not trigger a second model request. Only 404 may use fallback.
+    if (isQuotaError(primaryError) || getStatus(primaryError) !== 404) throw primaryError;
     const fallbackModel = process.env.GEMINI_SCRIPT_FALLBACK_MODEL || "gemini-3.5-flash-lite";
     if (!fallbackModel || fallbackModel === primaryModel) {
       primaryError.model = primaryModel;
@@ -125,6 +125,25 @@ function quotaInfo(error, model, operation = "image generation") {
   return { model, retryHint, message };
 }
 
+function quotaCooldownUntil(error) {
+  const hint = String(extractRetryHint(error) || "");
+  const match = hint.match(/([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)/i);
+  if (match) { const n=Number(match[1]); const unit=match[2].toLowerCase(); return new Date(Date.now()+n*(unit==="ms"?1:unit==="s"?1000:unit==="m"?60000:3600000)); }
+  const absolute=Date.parse(hint); if (hint && Number.isFinite(absolute) && absolute>Date.now()) return new Date(absolute);
+  return new Date(Date.now()+15*60*1000);
+}
+async function assertGeminiAvailable(kind) {
+  const until=providerCooldownMemory.get("all") || providerCooldownMemory.get(kind) || 0;
+  if (until>Date.now()) { const e=new Error("Gemini quota cooldown active until "+new Date(until).toISOString()+"; no API request was sent."); e.status=429; e.code="PROVIDER_COOLDOWN"; throw e; }
+  if (typeof automationStore!=="undefined" && automationStore.configured) {
+    const row=await automationStore.getCooldown("gemini","all").catch(()=>null);
+    if (row && new Date(row.retry_after).getTime()>Date.now()) { providerCooldownMemory.set("all",new Date(row.retry_after).getTime()); const e=new Error("Gemini quota cooldown active; no API request was sent."); e.status=429; e.code="PROVIDER_COOLDOWN"; throw e; }
+  }
+}
+function rememberGeminiQuota(error,kind) {
+  const until=quotaCooldownUntil(error); providerCooldownMemory.set("all",until.getTime()); providerCooldownMemory.set(kind,until.getTime());
+  if (typeof automationStore!=="undefined" && automationStore.configured) Promise.all(["all",kind].map(scope=>automationStore.setCooldown("gemini",scope,until,"Quota/rate-limit response; local cooldown prevents repeated API calls"))).catch(()=>{});
+}
 function quotaMessage(kind, model, error) {
   const hint = extractRetryHint(error);
   if (kind === "voice") {
@@ -171,6 +190,7 @@ function sendAPIError(res, error, fallbackMessage, kind) {
   }
   if (isQuotaError(error)) {
     const operationKind = kind || "script";
+    rememberGeminiQuota(error, operationKind);
     const model = operationKind === "voice"
       ? (process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts")
       : operationKind === "images"
@@ -387,6 +407,7 @@ app.post("/api/voice", async (req, res) => {
       return res.json({ success: true, ...cachedAudio, cached: true });
     }
 
+    await assertGeminiAvailable("voice");
     const ai = getAIClient();
     const ttsModels = [...new Set([model, "gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"])];
     let response = null;
@@ -487,6 +508,7 @@ ${styleInstructions}
 7. अंत में निष्कर्ष और लाइक तथा सब्सक्राइब करने का अनुरोध दें।
 8. आउटपुट ${videoLanguage} में दें।`;
 
+    await assertGeminiAvailable("script");
     const primaryModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
     const generated = await generateTextWithQuotaFallback(ai, prompt, primaryModel);
     const response = generated.response;
@@ -541,6 +563,7 @@ app.post("/api/seo", async (req, res) => {
 
 उत्तर ${videoLanguage} में दें। कीवर्ड्स और हैशटैग्स अंग्रेज़ी में भी हो सकते हैं।`;
 
+    await assertGeminiAvailable("seo");
     const primaryModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
     const generated = await generateTextWithQuotaFallback(ai, prompt, primaryModel);
     const response = generated.response;
@@ -620,6 +643,7 @@ app.post("/api/images", async (req, res) => {
       return res.status(413).json({ error: "स्क्रिप्ट बहुत लंबी है। पहले छोटा भाग चुनें (30,000 अक्षरों तक)।" });
     }
 
+    await assertGeminiAvailable("images");
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
     const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
