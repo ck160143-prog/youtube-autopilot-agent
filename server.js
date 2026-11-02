@@ -205,7 +205,11 @@ app.get("/api/health", (req, res) => {
 
 // Optional durable automation metadata store. Existing app and OAuth continue to work without DATABASE_URL.
 const { AutomationStore } = require("./automation-store");
+const { SupabaseObjectStorage } = require("./object-storage");
+const { AutomationWorker } = require("./automation-worker");
+const { makeHandlers } = require("./automation-pipeline");
 const automationStore = new AutomationStore();
+const automationStorage = new SupabaseObjectStorage();
 app.locals.automationStore = automationStore;
 let automationSchemaPromise = null;
 async function readyAutomationStore() {
@@ -227,6 +231,22 @@ function automationOwner(req) {
   const session = decryptSession(req);
   return typeof session.channel?.id === "string" ? session.channel.id : null;
 }
+function sanitizeAutomationJob(job) {
+  if (!job) return job;
+  const { oauth_session_ciphertext, upload_session_url, ...safe } = job;
+  return safe;
+}
+function decryptSessionValue(value) {
+  try {
+    if (!value || !process.env.APP_SESSION_SECRET) return {};
+    const packed = Buffer.from(String(value), "base64url");
+    if (packed.length < 29) return {};
+    const key = crypto.createHash("sha256").update(process.env.APP_SESSION_SECRET).digest();
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, packed.subarray(0, 12));
+    decipher.setAuthTag(packed.subarray(12, 28));
+    return JSON.parse(Buffer.concat([decipher.update(packed.subarray(28)), decipher.final()]).toString("utf8"));
+  } catch (_) { return {}; }
+}
 function automationDbError(res, error) {
   if (error.code === "AUTOMATION_DB_NOT_CONFIGURED") {
     return res.status(503).json({ error: "स्थायी job history के लिए Render Environment में DATABASE_URL और PostgreSQL database आवश्यक है।" });
@@ -242,8 +262,9 @@ app.get("/api/automation/status", async (req, res) => {
       databaseReady: true,
       durableJobMetadata: true,
       objectStorageCredentialsPresent: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
-      workerConfigured: false,
-      durableRenderConfigured: false,
+      workerConfigured: Boolean(automationStorage.configured && automationWorker?.running),
+      durableRenderConfigured: Boolean(automationStorage.configured && automationWorker?.running),
+      persistentObjectStorageConfigured: automationStorage.configured,
       message: "Job metadata persistence is ready. Background pipeline worker and persistent video storage are not yet enabled."
     });
   } catch (error) {
@@ -272,14 +293,16 @@ app.post("/api/automation/jobs", async (req, res) => {
   try {
     const store = await readyAutomationStore();
     const input = req.body || {};
+    const session = decryptSession(req);
+    if (!session.refresh_token && !session.access_token) return res.status(401).json({ error: "YouTube OAuth session उपलब्ध नहीं है; चैनल दोबारा Connect करें।" });
     const result = await store.createJob(owner, {
-      topic: input.topic, duration: input.duration, language: input.language,
+      topic: input.topic, autoTopic: input.autoTopic === true, duration: input.duration, language: input.language,
       visualStyle: input.visualStyle, idempotencyKey: req.get("Idempotency-Key") || input.idempotencyKey
-    });
+    }, encryptSession(session));
     return res.status(result.created ? 201 : 200).json({
-      success: true, created: result.created, job: result.job,
+      success: true, created: result.created, job: sanitizeAutomationJob(result.job),
       executionStarted: false,
-      message: "Job draft database में सुरक्षित है। यह branch अभी background pipeline execute नहीं करती; Start/Resume को complete worker से जोड़ना बाकी है।"
+      message: "Job database में सुरक्षित है। Start दबाने पर worker इसे queue में चलाएगा।"
     });
   } catch (error) {
     if (error instanceof TypeError) return res.status(400).json({ error: error.message });
@@ -293,8 +316,35 @@ app.get("/api/automation/jobs/:jobId", async (req, res) => {
     const store = await readyAutomationStore();
     const job = await store.getJob(owner, req.params.jobId);
     if (!job) return res.status(404).json({ error: "इस चैनल के लिए job नहीं मिली।" });
-    return res.json({ job });
+    return res.json({ job: sanitizeAutomationJob(job) });
   } catch (error) { return automationDbError(res, error); }
+});
+
+
+app.post("/api/automation/jobs/:jobId/start", async (req,res)=>{
+  const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
+  try{const st=await readyAutomationStore();const job=await st.transition(owner,req.params.jobId,"queued");if(!job)return res.status(404).json({error:"Job नहीं मिली।"});return res.json({success:true,job:sanitizeAutomationJob(job),message:"Job queue में डाल दी गई।"});}
+  catch(e){if(e.code==="INVALID_TRANSITION")return res.status(409).json({error:e.message});return automationDbError(res,e);}
+});
+app.post("/api/automation/jobs/:jobId/pause", async (req,res)=>{
+  const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
+  try{const st=await readyAutomationStore();const job=await st.transition(owner,req.params.jobId,"paused");if(!job)return res.status(404).json({error:"Job नहीं मिली।"});return res.json({success:true,job:sanitizeAutomationJob(job),message:"Pause request सेव हो गई; मौजूदा API call खत्म होने के बाद worker रुकेगा।"});}
+  catch(e){if(e.code==="INVALID_TRANSITION")return res.status(409).json({error:e.message});return automationDbError(res,e);}
+});
+app.post("/api/automation/jobs/:jobId/resume", async (req,res)=>{
+  const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
+  try{const st=await readyAutomationStore();const job=await st.transition(owner,req.params.jobId,"queued");if(!job)return res.status(404).json({error:"Job नहीं मिली।"});return res.json({success:true,job:sanitizeAutomationJob(job),message:"Job फिर queue में डाल दी गई।"});}
+  catch(e){if(e.code==="INVALID_TRANSITION")return res.status(409).json({error:e.message});return automationDbError(res,e);}
+});
+app.post("/api/automation/jobs/:jobId/retry/:step", async (req,res)=>{
+  const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
+  try{const st=await readyAutomationStore();const step=await st.retryFailedStep(owner,req.params.jobId,req.params.step);if(!step)return res.status(404).json({error:"Job नहीं मिली।"});return res.json({success:true,step,message:"केवल चुना हुआ failed step queue में वापस रखा गया।"});}
+  catch(e){if(["STEP_NOT_FAILED","JOB_TERMINAL"].includes(e.code))return res.status(409).json({error:e.message});return automationDbError(res,e);}
+});
+app.get("/api/automation/jobs/:jobId/preview", async (req,res)=>{
+  const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
+  try{const st=await readyAutomationStore();const job=await st.getJob(owner,req.params.jobId);if(!job)return res.status(404).json({error:"Job नहीं मिली।"});const a=await st.artifact(job.id,"render");if(!a?.output_ref)return res.status(409).json({error:"MP4 preview अभी तैयार नहीं है।"});const signed=await automationStorage.signedUrl(a.output_ref,3600);return res.json({url:signed.url,expiresIn:signed.expiresIn});}
+  catch(e){return automationDbError(res,e);}
 });
 
 // 2. हिंदी आवाज़ बनाना
@@ -1140,12 +1190,33 @@ app.use((error, req, res, next) => {
 // 6. सर्वर शुरू करना
 
 const PORT = process.env.PORT || 3000;
+const automationWorker = new AutomationWorker({
+  store: automationStore,
+  storage: automationStorage,
+  handlers: makeHandlers({
+    store: automationStore, storage: automationStorage,
+    baseUrl: process.env.AUTOMATION_INTERNAL_BASE_URL || ("http://127.0.0.1:" + PORT),
+    aiClientFactory: getAIClient,
+    encryptSessionValue: encryptSession,
+    decryptSessionValue
+  }),
+  pollMs: Number(process.env.AUTOMATION_POLL_MS) || 2500
+});
+app.locals.automationWorker = automationWorker;
 
 // Allow node:test to import retry/quota helpers without binding a server port.
 if (require.main === module) {
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", async () => {
     console.log("BABA AI Server running on port " + PORT);
+    if (automationStore.configured && automationStorage.configured) {
+      try { const started = await automationWorker.start(); console.log("BABA AI durable worker " + (started ? "started" : "already running")); }
+      catch (error) { safeLog("BABA AI durable worker could not start", error); }
+    } else {
+      console.log("BABA AI durable worker disabled: DATABASE_URL and Supabase storage credentials are required.");
+    }
   });
+  const shutdown = async () => { await automationWorker.stop().catch(() => {}); server.close(() => process.exit(0)); };
+  process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, automationStore, automationStorage, automationWorker };
