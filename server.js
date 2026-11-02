@@ -771,7 +771,7 @@ ${script.slice(0, 18000)}
         const quotaHit = isQuotaError(sceneError);
         const temporaryHit = [500, 502, 503, 504].includes(getStatus(sceneError));
         if (temporaryHit) temporaryImageFailure = true;
-        if (quotaHit) imageQuota = quotaInfo(sceneError, imageModel, "image generation");
+        if (quotaHit) { rememberGeminiQuota(sceneError, "images"); imageQuota = quotaInfo(sceneError, imageModel, "image generation"); }
         failedScenes.push({ scene: scene.originalScene || i + 1, title: String(scene.title || `दृश्य ${scene.originalScene || i + 1}`).slice(0, 120), prompt: scene.prompt,
           error: quotaHit
             ? "Gemini quota exhausted; आगे image requests रोक दी गईं।"
@@ -837,6 +837,7 @@ ${script.slice(0, 18000)}
       return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
     }
     if (isQuotaError(error)) {
+      rememberGeminiQuota(error, "images");
       const failedModel = quotaModel || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
       const info = quotaInfo(error, failedModel, quotaOperation);
       return res.status(429).json({ error: info.message, model: info.model, quotaInfo: info, images: [], failedScenes: [] });
