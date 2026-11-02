@@ -1250,4 +1250,5 @@ if (require.main === module) {
   process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, automationStore, automationStorage, automationWorker };
+function resetGeminiCooldownForTests() { providerCooldownMemory.clear(); }
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, resetGeminiCooldownForTests, automationStore, automationStorage, automationWorker };
