@@ -65,6 +65,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <option>हिंदी</option>
 <option>English</option>
 </select>
+<label>वीडियो का विज़ुअल स्टाइल</label>
+<select id="visualStyle">
+<option value="3d-cartoon" selected>🎭 3D कार्टून कॉमेडी (Recommended)</option>
+<option value="cinematic">🎬 सिनेमैटिक</option>
+<option value="realistic">📷 वास्तविक तस्वीरें</option>
+</select>
+<p class="small">3D मोड में AI एक जैसे कार्टून किरदारों और भारतीय लोकेशन वाली तस्वीरें बनाने की कोशिश करेगा। MP4 अभी दृश्यों + हिंदी आवाज़ का वीडियो है; वास्तविक 3D character animation/lip-sync अलग सुविधा है। AI इमेज API की quota/बिलिंग लागू हो सकती है।</p>
 <label>वीडियो की अवधि</label>
 <select id="duration">
 <option value="5">5 मिनट</option>
@@ -288,7 +295,7 @@ async function generateFullScript() {
     var resp = await fetch('/api/script', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic: topic, duration: duration, language: lang })
+      body: JSON.stringify({ topic: topic, duration: duration, language: lang, visualStyle: document.getElementById("visualStyle")?.value || "3d-cartoon" })
     });
     var data = await readApiJson(resp);
     if (!resp.ok) {
@@ -596,7 +603,7 @@ async function generateSceneImages() {
   info.appendChild(progress);
 
   try {
-    var response = await fetch('/api/images', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})});
+    var response = await fetch('/api/images', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script,visualStyle:document.getElementById('visualStyle')?.value||'3d-cartoon'})});
     var data = await readApiJson(response);
     if (Array.isArray(data.images)) data.images.forEach(function(item){
       var ix=savedSceneImages.findIndex(function(old){return Number(old.scene)===Number(item.scene);});
@@ -712,7 +719,7 @@ async function retryFailedSceneImages() {
   if(!pending.length){status.textContent='दोबारा बनाने के लिए saved failed-scene prompts नहीं हैं।';return;}
   status.textContent='केवल '+pending.length+' असफल दृश्य दोबारा बनाए जा रहे हैं…';
   try{
-    var resp=await fetch('/api/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:document.getElementById('script').value.trim(),scenePrompts:pending})});
+    var resp=await fetch('/api/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:document.getElementById('script').value.trim(),scenePrompts:pending,visualStyle:document.getElementById('visualStyle')?.value||'3d-cartoon'})});
     var data=await readApiJson(resp);
     (data.images||[]).forEach(function(item){var ix=savedSceneImages.findIndex(function(old){return Number(old.scene)===Number(item.scene);});if(ix>=0)savedSceneImages[ix]=item;else savedSceneImages.push(item);});
     savedFailedScenes=Array.isArray(data.failedScenes)?data.failedScenes:[];
@@ -794,7 +801,7 @@ async function generateAutoVideo() {
   try {
     var imageData={images:[]};
     try{
-      var imageResp=await fetch('/api/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:renderScriptText})});
+      var imageResp=await fetch('/api/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:renderScriptText,visualStyle:document.getElementById('visualStyle')?.value||'3d-cartoon'})});
       var generated=await readApiJson(imageResp);
       (generated.images||[]).forEach(function(item){var ix=savedSceneImages.findIndex(function(old){return Number(old.scene)===Number(item.scene);});if(ix>=0)savedSceneImages[ix]=item;else savedSceneImages.push(item);});
       if(Array.isArray(generated.failedScenes))savedFailedScenes=generated.failedScenes;
