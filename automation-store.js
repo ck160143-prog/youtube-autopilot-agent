@@ -158,6 +158,55 @@ class AutomationStore {
     const r=await this.pool.query("SELECT provider,quota_scope,retry_after,reason FROM baba_provider_cooldowns WHERE provider=$1 AND quota_scope=$2 AND retry_after>NOW()",[provider,scope]);
     return r.rows[0]||null;
   }
+  async claimNextJob(){
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const r=await c.query("SELECT * FROM baba_automation_jobs WHERE status='queued' AND NOT pause_requested ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1");
+      const job=r.rows[0];
+      if(!job){await c.query("COMMIT");return null;}
+      const u=await c.query("UPDATE baba_automation_jobs SET status='running',updated_at=NOW() WHERE id=$1 RETURNING *",[job.id]);
+      await this.event(c,job.id,"worker_claimed","Background worker claimed job");
+      await c.query("COMMIT");return u.rows[0];
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
+  async recoverInterruptedJobs(){
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const stale=await c.query("SELECT id FROM baba_automation_jobs WHERE status='running' FOR UPDATE SKIP LOCKED");
+      for(const row of stale.rows){
+        await c.query("UPDATE baba_automation_steps SET status='pending',error_message='Worker restarted during this step; safely retrying from persisted assets where available',updated_at=NOW() WHERE job_id=$1 AND status='running'",[row.id]);
+        await c.query("UPDATE baba_automation_jobs SET status='queued',pause_requested=FALSE,updated_at=NOW() WHERE id=$1",[row.id]);
+        await this.event(c,row.id,"worker_recovery","Interrupted job returned to queue after worker restart");
+      }
+      await c.query("COMMIT");return stale.rows.length;
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
+  async markJobFailed(owner,id,step,message){
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const sr=await c.query("UPDATE baba_automation_steps SET status='failed',finished_at=NOW(),error_message=$3,retry_count=retry_count+1,updated_at=NOW() WHERE job_id=$1 AND step_name=$2 AND status='pending' RETURNING *",[id,step,String(message).slice(0,1000)]);
+      await c.query("UPDATE baba_automation_jobs SET status='failed',last_error=$3,updated_at=NOW() WHERE id=$1 AND owner_channel_id=$2",[id,owner,String(message).slice(0,1000)]);
+      await this.event(c,id,"step_failed",message,step);
+      await c.query("COMMIT");return sr.rows[0]||null;
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
+  async deferStep(owner,id,step,retryAfter,message){
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      await c.query("UPDATE baba_automation_steps SET status='failed',retry_after=$3,error_message=$4,finished_at=NOW(),retry_count=retry_count+1,updated_at=NOW() WHERE job_id=$1 AND step_name=$2 AND status IN ('pending','running')",[id,step,retryAfter,String(message).slice(0,1000)]);
+      await c.query("UPDATE baba_automation_jobs SET status='failed',last_error=$3,updated_at=NOW() WHERE id=$1 AND owner_channel_id=$2",[id,owner,String(message).slice(0,1000)]);
+      await this.event(c,id,"step_deferred","Step stopped because provider cooldown is active",step,{retryAfter});
+      await c.query("COMMIT");
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
+  async artifact(jobId,step){
+    const r=await this.pool.query("SELECT output_ref,output_metadata,status FROM baba_automation_steps WHERE job_id=$1 AND step_name=$2",[jobId,step]);
+    return r.rows[0]||null;
+  }
   async close(){if(this.pool?.end)await this.pool.end();}
 }
 module.exports={AutomationStore,STEP_NAMES,JOB_STATES,validateJobInput,canTransitionJob,retryDelayMs,parseRetryAfter};
