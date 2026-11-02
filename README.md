@@ -83,14 +83,14 @@ Render should run the Node server with `npm start`. The static frontend is serve
 
 ## Tests
 
-Run `npm test` (Node.js 18+). Tests cover quota classification, retry hints, no retries on 429, and bounded retries for temporary 5xx errors.
+Run `npm ci`, `npm run build`, and `npm test` (Node.js 24 is used in CI). CI also runs a real PostgreSQL integration test against a temporary PostgreSQL 16 service, plus an FFmpeg caption burn-in integration test. An opt-in Supabase private-bucket integration test is available in `tests/supabase-storage.integration.test.js` and requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a dedicated private `SUPABASE_STORAGE_BUCKET`; it is not run without those credentials. These tests do not constitute a live Google OAuth/Gemini/YouTube end-to-end test.
 
 
 ## Durable automation foundation (feature branch)
 
 The `feature/baba-ai-durable-automation` branch adds a PostgreSQL-backed persistence module for job metadata, per-step attempt counters, step results/errors, event history and provider quota cooldowns. It requires `DATABASE_URL`; the database schema is initialized lazily when the automation status/jobs API is first used. The app continues to start without this optional database, and the existing YouTube OAuth endpoints/cookie token handling are not changed by this feature.
 
-**This is not yet the completed automation worker.** The new API can create durable job drafts and show persisted history, but it does not yet execute the entire pipeline in a server-side worker. Existing `/api/render` status and output still depend on process memory and temporary files. Persistent object storage, safe upload-resume/idempotency at the YouTube boundary, durable worker scheduling/recovery, captions integration, and a complete mobile control dashboard remain unfinished. Do not deploy this branch as a claim of end-to-end durable automation.
+This older note described the initial persistence-only stage. The branch has since added the durable worker, pipeline handlers, Supabase Storage adapter, restart recovery, upload gating, and mobile controls described below. These modules are still subject to live integration testing; code presence alone is not proof of a production-ready end-to-end workflow.
 
 ### PostgreSQL setup (only after review)
 
@@ -123,7 +123,7 @@ On first API use, PostgreSQL tables are created/migrated automatically. Create t
 ### Known limits
 
 - The hosted renderer still creates a narrated still-image MP4 preview (maximum 180 seconds); it is **not** real 3D character animation and does not provide dialogue lip-sync. No Blender/Godot/Unreal or lip-sync engine has been integrated in this branch. Genuine 3D animation needs a separately provisioned renderer and character/rig/viseme assets, which this Render service does not currently provide.
-- Captions are generated as an approximate-timing SRT sidecar; they are not burned into the MP4 and are not uploaded to YouTube as a caption track.
+- Phase 3 passes the generated SRT into FFmpeg's `subtitles` filter to burn captions into the MP4 when that filter is available. The captions use approximate timing; the separate SRT is also retained as a pipeline artifact. Captions are not automatically uploaded to YouTube as a caption track. The CI FFmpeg integration test verifies a captioned MP4 can render; it does not prove ideal Hindi font shaping on every host.
 - The thumbnail step uses the first generated scene image as a thumbnail candidate; it does not yet create a text-composited thumbnail design.
 - The automatic narration is capped at a short excerpt because the hosted renderer is limited to 180 seconds. Full 5–30 minute film production is not implemented.
 - Upload progress is persisted at chunk boundaries. If a saved YouTube resumable session expires, the worker refuses to silently start a new session to avoid an accidental duplicate. Check YouTube Studio before deciding how to recover that job.
