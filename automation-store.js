@@ -38,7 +38,7 @@ class AutomationStore {
       const {Pool}=require("pg");
       this.pool=new Pool({connectionString,max:Number(process.env.AUTOMATION_DB_POOL_MAX)||3,
         idleTimeoutMillis:30000,connectionTimeoutMillis:10000,
-        ssl:process.env.DATABASE_SSL==="disable"?false:{rejectUnauthorized:false}});
+        ssl:process.env.DATABASE_SSL==="disable"?false:{rejectUnauthorized:true}});
     }
   }
   get configured(){return Boolean(this.pool);}
