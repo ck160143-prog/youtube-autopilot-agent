@@ -1196,8 +1196,8 @@ async function renderThumbnailToFile(body) {
     const captionsPath = path.join(tempDir, "title.srt");
     const outputPath = path.join(tempDir, "thumbnail.jpg");
     await fs.promises.writeFile(sourcePath, sourceBytes);
-    await fs.promises.writeFile(captionsPath, "1\\n00:00:00,000 --> 00:00:05,000\\n" + text + "\\n", "utf8");
-    const escapedCaptionsPath = captionsPath.replace(/\\\\/g, "/").replace(/:/g, "\\\\:").replace(/'/g, "\\\\'");
+    await fs.promises.writeFile(captionsPath, "1\n00:00:00,000 --> 00:00:05,000\n" + text + "\n", "utf8");
+    const escapedCaptionsPath = captionsPath.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
     const filter = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720," +
       "subtitles='" + escapedCaptionsPath + "':force_style='FontName=DejaVu Sans,FontSize=38,Outline=3,Shadow=1,Alignment=2,MarginV=45,BorderStyle=3,BackColour=&H99000000'";
     await execFileAsync(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-threads", "1", "-y",
