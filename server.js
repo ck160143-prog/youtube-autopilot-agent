@@ -341,6 +341,11 @@ app.post("/api/automation/jobs/:jobId/retry/:step", async (req,res)=>{
   try{const st=await readyAutomationStore();const step=await st.retryFailedStep(owner,req.params.jobId,req.params.step);if(!step)return res.status(404).json({error:"Job नहीं मिली।"});return res.json({success:true,step,message:"केवल चुना हुआ failed step queue में वापस रखा गया।"});}
   catch(e){if(["STEP_NOT_FAILED","JOB_TERMINAL"].includes(e.code))return res.status(409).json({error:e.message});return automationDbError(res,e);}
 });
+app.post("/api/automation/jobs/:jobId/upload-private", async (req,res)=>{
+  const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
+  try{const st=await readyAutomationStore();const job=await st.authorizePrivateUpload(owner,req.params.jobId);if(!job)return res.status(404).json({error:"Job नहीं मिली या upload पहले ही confirm हो चुका है।"});return res.json({success:true,job:sanitizeAutomationJob(job),message:"Private upload की स्पष्ट अनुमति सेव हुई। Worker अब YouTube upload शुरू/जारी करेगा।"});}
+  catch(e){if(e.code==="PREVIEW_REQUIRED")return res.status(409).json({error:"पहले MP4 preview तैयार होना चाहिए।"});return automationDbError(res,e);}
+});
 app.get("/api/automation/jobs/:jobId/preview", async (req,res)=>{
   const owner=automationOwner(req);if(!owner)return res.status(401).json({error:"पहले YouTube चैनल Connect करें।"});
   try{const st=await readyAutomationStore();const job=await st.getJob(owner,req.params.jobId);if(!job)return res.status(404).json({error:"Job नहीं मिली।"});const a=await st.artifact(job.id,"render");if(!a?.output_ref)return res.status(409).json({error:"MP4 preview अभी तैयार नहीं है।"});const signed=await automationStorage.signedUrl(a.output_ref,3600);return res.json({url:signed.url,expiresIn:signed.expiresIn});}
