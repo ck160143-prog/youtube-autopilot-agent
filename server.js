@@ -1163,6 +1163,77 @@ async function renderToFile(body) {
   }
 }
 
+async function renderThumbnailToFile(body) {
+  let tempDir;
+  try {
+    const imageBase64 = String(body.imageBase64 || "");
+    if (!imageBase64 || imageBase64.length > 16 * 1024 * 1024) {
+      throw Object.assign(new Error("Thumbnail image is missing or too large."), { statusCode: 413 });
+    }
+    const mimeType = String(body.mimeType || "image/png").toLowerCase();
+    const ext = mimeType === "image/jpeg" ? "jpg" : mimeType === "image/webp" ? "webp" : "png";
+    if (!["image/png", "image/jpeg", "image/webp"].includes(mimeType)) {
+      throw Object.assign(new Error("Thumbnail source must be PNG, JPEG, or WebP."), { statusCode: 415 });
+    }
+    const sourceBytes = Buffer.from(imageBase64, "base64");
+    if (!sourceBytes.length) throw Object.assign(new Error("Thumbnail source is empty."), { statusCode: 422 });
+    const title = Array.from(String(body.title || "BABA AI Hindi Cartoon").replace(/[\\r\\n\\t]+/g, " ").trim()).slice(0, 100).join("");
+    const words = title.split(/\\s+/).filter(Boolean);
+    const lines = [];
+    let line = "";
+    for (const word of words) {
+      if (!line) line = word;
+      else if (Array.from(line + " " + word).length <= 22) line += " " + word;
+      else { lines.push(line); line = word; }
+      if (lines.length >= 2) break;
+    }
+    if (line && lines.length < 3) lines.push(line);
+    const text = (lines.length ? lines : ["BABA AI"]).join("\\n");
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-thumbnail-"));
+    const ffmpegPath = require("ffmpeg-static");
+    if (!ffmpegPath) throw Object.assign(new Error("FFmpeg binary unavailable."), { statusCode: 503 });
+    const sourcePath = path.join(tempDir, "source." + ext);
+    const textPath = path.join(tempDir, "title.txt");
+    const outputPath = path.join(tempDir, "thumbnail.jpg");
+    await fs.promises.writeFile(sourcePath, sourceBytes);
+    await fs.promises.writeFile(textPath, text, "utf8");
+    const escapedTextPath = textPath.replace(/\\\\/g, "/").replace(/:/g, "\\\\:").replace(/'/g, "\\\\'");
+    const filter = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720," +
+      "drawbox=x=0:y=ih*0.55:w=iw:h=ih*0.45:color=black@0.62:t=fill," +
+      "drawtext=textfile='" + escapedTextPath + "':fontcolor=white:fontsize=54:line_spacing=8:" +
+      "borderw=3:bordercolor=black:box=1:boxcolor=black@0.25:boxborderw=18:" +
+      "x=(w-text_w)/2:y=h-text_h-55";
+    await execFileAsync(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-threads", "1", "-y",
+      "-i", sourcePath, "-vf", filter, "-frames:v", "1", "-q:v", "2", outputPath],
+      { timeout: 30000, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 });
+    const stat = await fs.promises.stat(outputPath);
+    if (stat.size < 1000) throw Object.assign(new Error("Thumbnail output is unexpectedly small."), { statusCode: 503 });
+    return { tempDir, outputPath, size: stat.size, mimeType: "image/jpeg" };
+  } catch (error) {
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    if (error.statusCode) throw error;
+    safeLog("FFmpeg text thumbnail failed", error);
+    throw Object.assign(new Error("Text thumbnail render failed; verify FFmpeg drawtext/font support."), { statusCode: 503 });
+  }
+}
+
+app.post("/api/thumbnail", async (req, res) => {
+  let rendered;
+  try {
+    rendered = await renderThumbnailToFile(req.body || {});
+    const imageBase64 = (await fs.promises.readFile(rendered.outputPath)).toString("base64");
+    return res.json({ imageBase64, mimeType: rendered.mimeType, size: rendered.size });
+  } catch (error) {
+    return res.status(Number(error.statusCode) || 503).json({
+      error: error.statusCode === 413 ? "Thumbnail input is too large." :
+        error.statusCode === 415 ? "Thumbnail source must be PNG, JPEG, or WebP." :
+        "Text thumbnail render failed. Check FFmpeg/font support and source image."
+    });
+  } finally {
+    if (rendered?.tempDir) await fs.promises.rm(rendered.tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 app.post("/api/render", async (req, res) => {
   const invalid = validateRenderPayload(req.body);
   if (invalid) return res.status(invalid.status).json({ error: invalid.error });
@@ -1270,4 +1341,4 @@ if (require.main === module) {
 }
 
 function resetGeminiCooldownForTests() { providerCooldownMemory.clear(); }
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, resetGeminiCooldownForTests, automationStore, automationStorage, automationWorker, renderToFile };
+module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory, resetGeminiCooldownForTests, automationStore, automationStorage, automationWorker, renderToFile, renderThumbnailToFile };
