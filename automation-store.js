@@ -46,7 +46,8 @@ class AutomationStore {
   get configured(){return Boolean(this.pool);}
   async initialize(){
     if(!this.pool)return false;
-    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
+    await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, upload_authorized BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_authorized BOOLEAN NOT NULL DEFAULT FALSE");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS oauth_session_ciphertext TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_idempotency_key TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_session_url TEXT");
@@ -214,6 +215,16 @@ class AutomationStore {
     return r.rows[0]||null;
   }
 
+  async authorizePrivateUpload(owner,id){
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const r=await c.query("UPDATE baba_automation_jobs SET upload_authorized=TRUE,status=CASE WHEN status='paused' THEN 'queued' ELSE status END,pause_requested=FALSE,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND upload_confirmed=FALSE RETURNING *",[owner,id]);
+      if(!r.rows[0]){await c.query("ROLLBACK");return null;}
+      await this.event(c,id,"private_upload_authorized","User explicitly authorized a private YouTube upload","youtube_upload",{visibility:"private"});
+      await c.query("COMMIT");return r.rows[0];
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
   async setJobTopic(owner,id,topic){
     if(typeof topic!=="string"||!topic.trim()||topic.trim().length>500)throw new TypeError("Generated topic must contain 1–500 characters");
     const r=await this.pool.query("UPDATE baba_automation_jobs SET topic=$3,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND topic='__AUTO_TOPIC_PENDING__' RETURNING *",[owner,id,topic.trim()]);
