@@ -35,3 +35,9 @@ test("Retry-After parses seconds and HTTP dates without guessing malformed value
 test("pipeline steps distinguish still-image render from thumbnail and upload",()=>{
  assert.deepEqual(STEP_NAMES,["topic","script","seo","scene_plan","images","voice","captions","render","thumbnail","preview","youtube_upload"]);
 });
+
+test("manual schedule accepts a future timestamp and rejects past timestamps",()=>{
+ const future=new Date(Date.now()+3600000).toISOString();
+ assert.equal(validateJobInput({topic:"scheduled video",scheduledAt:future}).scheduledAt.toISOString(),future);
+ assert.throws(()=>validateJobInput({topic:"late video",scheduledAt:"2020-01-01T00:00:00Z"}),/scheduledAt/);
+});
