@@ -142,6 +142,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <label for="durableScheduleAt">अपना YouTube upload समय चुनें (वैकल्पिक)</label>
 <input id="durableScheduleAt" type="datetime-local" />
 <p class="small">खाली छोड़ने पर job अभी queue होगी। एक चैनल के लिए चुनी गई तारीख पर अधिकतम 3 वीडियो schedule किए जा सकते हैं।</p>
+<div class="grid"><button type="button" class="green" onclick="globalAutomationControl('start')">▶ Start Automation</button><button type="button" class="secondary" onclick="globalAutomationControl('pause')">⏸ Pause All</button></div>
+<div class="grid"><button type="button" class="secondary" onclick="globalAutomationControl('resume')">↻ Resume</button><button type="button" class="secondary" onclick="globalAutomationControl('permanent-stop')">⛔ Permanent Stop</button></div>
+<p id="globalAutomationState" class="small">Global automation state loading…</p>
 <div class="grid"><button type="button" class="green" onclick="createAndStartDurableJob()">🚀 Start Job</button><button type="button" class="secondary" onclick="refreshDurableJobs()">🔄 Job History</button></div>
 <div id="durableJobHistory" style="margin-top:12px"></div>
 <div id="durableSelectedJob" style="display:none;margin-top:12px">
