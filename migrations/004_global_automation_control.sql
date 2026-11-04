@@ -8,3 +8,6 @@ create table if not exists public.baba_automation_control (
 );
 insert into public.baba_automation_control(id,state) values (1,'running')
 on conflict (id) do nothing;
+
+alter table if exists public.baba_automation_jobs
+  add column if not exists global_pause boolean not null default false;
