@@ -132,3 +132,12 @@ On first API use, PostgreSQL tables are created/migrated automatically. Create t
 - The automatic narration is capped at a short excerpt because the hosted renderer is limited to 180 seconds. Full 5–30 minute film production is not implemented.
 - Upload progress is persisted at chunk boundaries. If a saved YouTube resumable session expires, the worker refuses to silently start a new session to avoid an accidental duplicate. Check YouTube Studio before deciding how to recover that job.
 - A successful code build/test does not prove real Google/Gemini/PostgreSQL/Supabase end-to-end operation. Those integrations must be tested with the user's configured services before calling the system production-ready.
+
+
+## Phase 6 — manual scheduling and daily publishing cap
+
+The Phase 6 integration branch extends the existing durable queue with a user-selected schedule time. The schedule is stored on the job in PostgreSQL; the background worker only claims jobs whose `scheduled_at` is due. Each verified channel is limited to **three scheduled video jobs per UTC calendar date** at the database transaction level. Idempotency is checked before applying the cap, so a retry of the same create request does not consume another slot.
+
+Before using scheduling, apply `migrations/002_manual_schedule.sql` to the dedicated automation PostgreSQL database. The paired `002_manual_schedule_down.sql` removes only the scheduling column/index. The migration backfills existing jobs from their creation timestamps. Existing jobs and YouTube OAuth sessions are not deleted.
+
+The UI's schedule field is optional: leave it blank to queue the job immediately, or select a future date/time. Times are converted to an ISO timestamp by the browser and persisted by PostgreSQL. The daily cap currently uses UTC dates; channel-local timezone scheduling is a follow-up item.
