@@ -72,9 +72,16 @@ test("monetization inputs reject negative values and clearly identify manual dat
     const body = await read.json();
     assert.equal(body.basis.includes("user-entered"), true);
   });
+  } finally {
+    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousKey;
+  }
 });
 
 test("niche research returns generated estimates with an explicit non-guarantee disclaimer", async () => {
+  const previousKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = "test-key";
+  try {
   await withServer(async base => {
     const response = await fetch(base + "/api/growth/niches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interest: "technology" }) });
     const body = await response.json();
