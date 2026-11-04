@@ -2,6 +2,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const { Pool } = require("pg");
 const { AutomationStore } = require("../automation-store");
 
@@ -18,6 +20,7 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
   let jobId;
   try {
     await store.initialize();
+    await pool.query(fs.readFileSync(path.join(__dirname, "../migrations/002_manual_schedule.sql"), "utf8"));
     const first = await store.createJob(owner, { topic: "Phase 3 database integration check", duration: 1, idempotencyKey: key });
     assert.equal(first.created, true);
     jobId = first.job.id;
@@ -25,6 +28,26 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     const duplicate = await store.createJob(owner, { topic: "Should not replace original job", duration: 1, idempotencyKey: key });
     assert.equal(duplicate.created, false);
     assert.equal(duplicate.job.id, jobId, "same owner/idempotency key must return the existing job");
+
+    const scheduledOwner = owner + "-schedule";
+    const scheduledAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    for (let i = 0; i < 3; i++) {
+      const scheduled = await store.createJob(scheduledOwner, {
+        topic: "Scheduled integration " + i, duration: 5,
+        scheduledAt, idempotencyKey: "scheduled-" + i + "-" + crypto.randomUUID()
+      });
+      assert.equal(scheduled.created, true);
+      assert.equal(new Date(scheduled.job.scheduled_at).toISOString(), scheduledAt.toISOString());
+    }
+    await assert.rejects(
+      () => store.createJob(scheduledOwner, {
+        topic: "Fourth scheduled video", duration: 5,
+        scheduledAt, idempotencyKey: "scheduled-fourth-" + crypto.randomUUID()
+      }),
+      error => error && error.code === "DAILY_VIDEO_LIMIT_REACHED",
+      "PostgreSQL must enforce no more than three scheduled videos per channel/day"
+    );
+    await pool.query("DELETE FROM baba_automation_jobs WHERE owner_channel_id=$1", [scheduledOwner]);
 
     await store.transition(owner, jobId, "queued");
     const claimed = await store.claimNextJob();
