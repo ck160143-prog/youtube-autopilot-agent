@@ -51,6 +51,8 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     );
     await pool.query("DELETE FROM baba_automation_jobs WHERE owner_channel_id=$1", [scheduledOwner]);
 
+    const killJob = await store.createJob(owner, { topic: "Permanent stop queue gate", duration: 1, idempotencyKey: "kill-" + crypto.randomUUID() });
+    await store.transition(owner, killJob.job.id, "queued");
     const control = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
     assert.equal(control.rows[0].state, "running");
     assert.equal(control.rows[0].permanently_stopped, false);
@@ -58,6 +60,7 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     const paused = await pool.query("SELECT state FROM baba_automation_control WHERE id=1");
     assert.equal(paused.rows[0].state, "paused");
     await pool.query("UPDATE baba_automation_control SET state='stopped',permanently_stopped=TRUE WHERE id=1");
+    assert.equal(await store.claimNextJob(), null, "permanent stop must prevent workers from claiming queued jobs");
     const stopped = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
     assert.equal(stopped.rows[0].state, "stopped");
     assert.equal(stopped.rows[0].permanently_stopped, true);
@@ -65,7 +68,8 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     const remainsStopped = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
     assert.equal(remainsStopped.rows[0].state, "running", "direct database maintenance can change state; application API blocks restart");
     assert.equal(remainsStopped.rows[0].permanently_stopped, true);
-    await pool.query("UPDATE baba_automation_control SET state='stopped' WHERE id=1");
+    assert.equal(await store.claimNextJob(), null, "permanent-stop flag remains an effective worker kill switch");
+    await pool.query("UPDATE baba_automation_control SET state='running',permanently_stopped=FALSE WHERE id=1");
 
 
 
