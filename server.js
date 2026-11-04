@@ -277,15 +277,19 @@ function automationDbError(res, error) {
 app.get("/api/automation/status", async (req, res) => {
   try {
     await readyAutomationStore();
+    const migrationCheck = await automationStore.pool.query("SELECT to_regclass('public.baba_automation_control') IS NOT NULL AS control_ready, to_regclass('public.baba_channel_metrics') IS NOT NULL AS growth_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='scheduled_at') AS schedule_ready");
+    const migrations = migrationCheck.rows[0] || {};
+    const workerReady = Boolean(migrations.control_ready && migrations.schedule_ready);
     return res.json({
       databaseConfigured: true,
       databaseReady: true,
       durableJobMetadata: true,
+      migrations: { scheduleReady: Boolean(migrations.schedule_ready), controlReady: Boolean(migrations.control_ready), growthReady: Boolean(migrations.growth_ready) },
       objectStorageCredentialsPresent: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
-      workerConfigured: Boolean(automationStorage.configured && automationWorker?.running),
-      durableRenderConfigured: Boolean(automationStorage.configured && automationWorker?.running),
+      workerConfigured: Boolean(automationStorage.configured && automationWorker?.running && workerReady),
+      durableRenderConfigured: Boolean(automationStorage.configured && automationWorker?.running && workerReady),
       persistentObjectStorageConfigured: automationStorage.configured,
-      message: automationWorker?.running ? "Durable worker is running. Render remains an FFmpeg narrated still-image preview, not full 3D animation." : "PostgreSQL is ready but the worker is disabled; configure Supabase storage and inspect server logs."
+      message: !workerReady ? "Apply migrations/002_manual_schedule.sql and migrations/004_global_automation_control.sql before enabling the durable worker." : (automationWorker?.running && automationStorage.configured ? "Durable worker is running. Render remains an FFmpeg narrated still-image preview, not full 3D animation." : "PostgreSQL is ready but the worker is disabled; configure Supabase storage and inspect server logs.")
     });
   } catch (error) {
     if (error.code === "AUTOMATION_DB_NOT_CONFIGURED") {
