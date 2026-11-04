@@ -56,21 +56,32 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     const control = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
     assert.equal(control.rows[0].state, "running");
     assert.equal(control.rows[0].permanently_stopped, false);
+    const activeKillJob = await store.claimNextJob();
+    assert.equal(activeKillJob.id, killJob.job.id);
     await pool.query("UPDATE baba_automation_control SET state='paused' WHERE id=1");
+    await store.pauseForGlobalControl(owner, killJob.job.id);
+    const pausedJob = await store.getJob(owner, killJob.job.id);
+    assert.equal(pausedJob.status, "paused");
+    assert.equal(pausedJob.global_pause, true);
     const paused = await pool.query("SELECT state FROM baba_automation_control WHERE id=1");
     assert.equal(paused.rows[0].state, "paused");
+    assert.equal(await store.resumeGlobalPausedJobs(), 1);
+    const resumedJob = await store.getJob(owner, killJob.job.id);
+    assert.equal(resumedJob.status, "queued");
+    assert.equal(resumedJob.global_pause, false);
     await pool.query("UPDATE baba_automation_control SET state='stopped',permanently_stopped=TRUE WHERE id=1");
     assert.equal(await store.claimNextJob(), null, "permanent stop must prevent workers from claiming queued jobs");
     const stopped = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
     assert.equal(stopped.rows[0].state, "stopped");
     assert.equal(stopped.rows[0].permanently_stopped, true);
+    await pool.query("UPDATE baba_automation_jobs SET status='cancelled',pause_requested=TRUE WHERE id=$1", [killJob.job.id]);
     await pool.query("UPDATE baba_automation_control SET state='running' WHERE id=1");
     const remainsStopped = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
     assert.equal(remainsStopped.rows[0].state, "running", "direct database maintenance can change state; application API blocks restart");
     assert.equal(remainsStopped.rows[0].permanently_stopped, true);
     assert.equal(await store.claimNextJob(), null, "permanent-stop flag remains an effective worker kill switch");
     await pool.query("UPDATE baba_automation_control SET state='running',permanently_stopped=FALSE WHERE id=1");
-
+    await pool.query("DELETE FROM baba_automation_jobs WHERE id=$1", [killJob.job.id]);
 
 
     await store.transition(owner, jobId, "queued");
