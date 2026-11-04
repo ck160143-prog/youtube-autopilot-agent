@@ -29,7 +29,7 @@ class AutomationWorker {
       if(!fresh)return;
       const globalControl = await this.store.getGlobalControl?.();
       if(globalControl?.permanently_stopped){
-        if(fresh.status==="running") await this.store.transition(job.owner_channel_id,job.id,"cancelled").catch(()=>{});
+        if(!["completed","cancelled"].includes(fresh.status)) await this.store.transition(job.owner_channel_id,job.id,"cancelled").catch(()=>{});
         await this.store.eventForJob?.(job.id,"job_cancelled_global","Job stopped by permanent global kill switch");
         return;
       }
