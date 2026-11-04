@@ -141,3 +141,16 @@ The Phase 6 integration branch extends the existing durable queue with a user-se
 Before using scheduling, apply `migrations/002_manual_schedule.sql` to the dedicated automation PostgreSQL database. The paired `002_manual_schedule_down.sql` removes only the scheduling column/index. The migration backfills existing jobs from their creation timestamps. Existing jobs and YouTube OAuth sessions are not deleted.
 
 The UI's schedule field is optional: leave it blank to queue the job immediately, or select a future date/time. Times are converted to an ISO timestamp by the browser and persisted by PostgreSQL. The daily cap currently uses UTC dates; channel-local timezone scheduling is a follow-up item.
+
+
+## Phase 6 — growth, trend and promotion dashboard
+
+Apply `migrations/003_growth_dashboard.sql` to the same dedicated PostgreSQL database before using the Growth Dashboard. The matching `003_growth_dashboard_down.sql` removes only the three Phase 6 growth tables.
+
+- `GET /api/growth/overview` reads authenticated channel statistics and, when the OAuth grant permits it, 28-day YouTube Analytics views/watch minutes/subscriber gains. Daily snapshots are persisted.
+- `GET /api/growth/trending?q=...` retrieves recent public YouTube video results from the last seven days, ordered by view-count signal. It is a research signal, not a prediction of future views or income.
+- `POST /api/growth/niches` requests qualitative AI niche ideas from the configured Gemini model. Scores are estimates, not verified RPM or revenue.
+- `GET/POST/PATCH /api/growth/promotions` stores sponsorship and affiliate records and manually tracked deal amounts/status.
+- `GET/PUT /api/growth/monetization` stores user-entered public watch hours and Shorts views. It does not certify Partner Program eligibility.
+
+The OAuth connect flow now requests the additional `yt-analytics.readonly` scope. Existing sessions do not silently gain this permission: the channel owner must reconnect and approve the expanded Google permission before watch-time analytics are available. Existing upload/readonly scopes and stored channel identity are retained; do not clear the existing OAuth cookie unless reconnecting is intended.
