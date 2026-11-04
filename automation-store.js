@@ -14,7 +14,9 @@ function validateJobInput(input = {}) {
   if (!Number.isInteger(duration) || duration < 1 || duration > 30) throw new TypeError("duration must be an integer from 1 to 30");
   const idempotencyKey = typeof input.idempotencyKey === "string" && /^[a-zA-Z0-9:_-]{8,128}$/.test(input.idempotencyKey)
     ? input.idempotencyKey : crypto.randomUUID();
-  return { topic: storedTopic, autoTopic, duration, language: input.language === "English" ? "English" : "Hindi",
+  const scheduledAt = input.scheduledAt ? new Date(input.scheduledAt) : new Date();
+  if (!Number.isFinite(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() - 60000) throw new TypeError("scheduledAt must be a valid current or future timestamp");
+  return { topic: storedTopic, autoTopic, duration, scheduledAt, language: input.language === "English" ? "English" : "Hindi",
     visualStyle: ["3d-cartoon","cinematic","realistic"].includes(input.visualStyle) ? input.visualStyle : "3d-cartoon", idempotencyKey };
 }
 function canTransitionJob(from, to) {
@@ -47,6 +49,9 @@ class AutomationStore {
   async initialize(){
     if(!this.pool)return false;
     await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, upload_authorized BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, upload_session_creation_started BOOLEAN NOT NULL DEFAULT FALSE, upload_progress_bytes BIGINT NOT NULL DEFAULT 0, upload_total_bytes BIGINT NOT NULL DEFAULT 0, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
+    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ");
+    await this.pool.query("UPDATE baba_automation_jobs SET scheduled_at=created_at WHERE scheduled_at IS NULL");
+    await this.pool.query("CREATE INDEX IF NOT EXISTS baba_automation_jobs_due ON baba_automation_jobs(status,scheduled_at,created_at)");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_authorized BOOLEAN NOT NULL DEFAULT FALSE");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS oauth_session_ciphertext TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_idempotency_key TEXT");
@@ -72,16 +77,22 @@ class AutomationStore {
     const v=validateJobInput(input), c=await this.pool.connect();
     try{
       await c.query("BEGIN");
+      const existing=await c.query("SELECT * FROM baba_automation_jobs WHERE owner_channel_id=$1 AND idempotency_key=$2 FOR UPDATE",[owner,v.idempotencyKey]);
+      if(existing.rows[0]){await c.query("COMMIT");return {job:existing.rows[0],created:false};}
+      const scheduleDay=v.scheduledAt.toISOString().slice(0,10);
+      await c.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[owner,scheduleDay]);
+      const count=await c.query("SELECT count(*)::int AS total FROM baba_automation_jobs WHERE owner_channel_id=$1 AND scheduled_at >= $2::date AND scheduled_at < ($2::date + interval '1 day') AND status <> 'cancelled'",[owner,scheduleDay]);
+      if(Number(count.rows[0]?.total||0)>=3){const e=new Error("Daily video limit of 3 has been reached for the selected date");e.code="DAILY_VIDEO_LIMIT_REACHED";throw e;}
       const id=crypto.randomUUID();
-      const ins=await c.query("INSERT INTO baba_automation_jobs(id,owner_channel_id,idempotency_key,topic,duration,language,visual_style,status,oauth_session_ciphertext,upload_idempotency_key,asset_prefix) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10) ON CONFLICT(owner_channel_id,idempotency_key) DO NOTHING RETURNING *",
-        [id,owner,v.idempotencyKey,v.topic,v.duration,v.language,v.visualStyle,oauthSessionCiphertext,crypto.randomUUID(),"jobs/"+id]);
+      const ins=await c.query("INSERT INTO baba_automation_jobs(id,owner_channel_id,idempotency_key,topic,duration,language,visual_style,status,oauth_session_ciphertext,upload_idempotency_key,asset_prefix,scheduled_at) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11) ON CONFLICT(owner_channel_id,idempotency_key) DO NOTHING RETURNING *",
+        [id,owner,v.idempotencyKey,v.topic,v.duration,v.language,v.visualStyle,oauthSessionCiphertext,crypto.randomUUID(),"jobs/"+id,v.scheduledAt]);
       let job=ins.rows[0];
       if(job){
         for(const step of STEP_NAMES)await c.query("INSERT INTO baba_automation_steps(job_id,step_name,status) VALUES($1,$2,'pending')",[job.id,step]);
         await this.event(c,job.id,"job_created","Automation job draft created");
       }else{
-        const existing=await c.query("SELECT * FROM baba_automation_jobs WHERE owner_channel_id=$1 AND idempotency_key=$2",[owner,v.idempotencyKey]);
-        job=existing.rows[0];
+        const duplicate=await c.query("SELECT * FROM baba_automation_jobs WHERE owner_channel_id=$1 AND idempotency_key=$2",[owner,v.idempotencyKey]);
+        job=duplicate.rows[0];
       }
       await c.query("COMMIT");return {job,created:Boolean(ins.rows[0])};
     }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
@@ -96,7 +107,7 @@ class AutomationStore {
   }
   async listJobs(owner,limit=30){
     const n=Math.max(1,Math.min(100,Number(limit)||30));
-    const r=await this.pool.query("SELECT id,topic,duration,language,visual_style,status,current_step,last_error,upload_video_id,upload_visibility,upload_confirmed,upload_progress_bytes,upload_total_bytes,created_at,updated_at FROM baba_automation_jobs WHERE owner_channel_id=$1 ORDER BY created_at DESC LIMIT $2",[owner,n]);
+    const r=await this.pool.query("SELECT id,topic,duration,language,visual_style,status,current_step,last_error,upload_video_id,upload_visibility,upload_confirmed,upload_progress_bytes,upload_total_bytes,scheduled_at,created_at,updated_at FROM baba_automation_jobs WHERE owner_channel_id=$1 ORDER BY created_at DESC LIMIT $2",[owner,n]);
     return r.rows;
   }
   async transition(owner,id,target){
@@ -172,7 +183,7 @@ class AutomationStore {
     const c=await this.pool.connect();
     try{
       await c.query("BEGIN");
-      const r=await c.query("SELECT * FROM baba_automation_jobs WHERE status='queued' AND NOT pause_requested ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED");
+      const r=await c.query("SELECT * FROM baba_automation_jobs WHERE status='queued' AND NOT pause_requested AND (scheduled_at IS NULL OR scheduled_at<=NOW()) ORDER BY COALESCE(scheduled_at,created_at) ASC LIMIT 1 FOR UPDATE SKIP LOCKED");
       const job=r.rows[0];
       if(!job){await c.query("COMMIT");return null;}
       const u=await c.query("UPDATE baba_automation_jobs SET status='running',updated_at=NOW() WHERE id=$1 RETURNING *",[job.id]);
