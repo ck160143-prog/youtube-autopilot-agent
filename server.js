@@ -951,7 +951,8 @@ app.get("/api/youtube/status", async (req, res) => {
 app.get("/api/youtube/connect", (req, res) => {
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
   const state = crypto.randomBytes(24).toString("hex");
-  setYoutubeSession(res, { oauth_state: state });
+  const previousSession = decryptSession(req);
+  setYoutubeSession(res, { ...previousSession, oauth_state: state });
   const params = new URLSearchParams({
     client_id: process.env.YOUTUBE_CLIENT_ID,
     redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
