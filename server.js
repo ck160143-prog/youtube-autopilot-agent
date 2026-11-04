@@ -1361,8 +1361,16 @@ if (require.main === module) {
   const server = app.listen(PORT, "0.0.0.0", async () => {
     console.log("BABA AI Server running on port " + PORT);
     if (automationStore.configured && automationStorage.configured) {
-      try { const started = await automationWorker.start(); console.log("BABA AI durable worker " + (started ? "started" : "already running")); }
-      catch (error) { safeLog("BABA AI durable worker could not start", error); }
+      try {
+        await readyAutomationStore();
+        const checks = await automationStore.pool.query("SELECT to_regclass('public.baba_automation_control') IS NOT NULL AS control_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='scheduled_at') AS schedule_ready");
+        if (!checks.rows[0]?.control_ready || !checks.rows[0]?.schedule_ready) {
+          console.log("BABA AI durable worker disabled: apply migrations/002_manual_schedule.sql and migrations/004_global_automation_control.sql first.");
+        } else {
+          const started = await automationWorker.start();
+          console.log("BABA AI durable worker " + (started ? "started" : "already running"));
+        }
+      } catch (error) { safeLog("BABA AI durable worker could not start", error); }
     } else {
       console.log("BABA AI durable worker disabled: DATABASE_URL and Supabase storage credentials are required.");
     }
