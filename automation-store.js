@@ -49,9 +49,6 @@ class AutomationStore {
   async initialize(){
     if(!this.pool)return false;
     await this.pool.query("CREATE TABLE IF NOT EXISTS baba_automation_jobs (id UUID PRIMARY KEY, owner_channel_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, topic TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 1 AND 30), language TEXT NOT NULL, visual_style TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','queued','running','paused','failed','completed','cancelled')), current_step TEXT, pause_requested BOOLEAN NOT NULL DEFAULT FALSE, upload_video_id TEXT, upload_visibility TEXT NOT NULL DEFAULT 'private' CHECK(upload_visibility IN ('private','unlisted','public')), upload_confirmed BOOLEAN NOT NULL DEFAULT FALSE, upload_authorized BOOLEAN NOT NULL DEFAULT FALSE, oauth_session_ciphertext TEXT, upload_idempotency_key TEXT, upload_session_url TEXT, upload_session_creation_started BOOLEAN NOT NULL DEFAULT FALSE, upload_progress_bytes BIGINT NOT NULL DEFAULT 0, upload_total_bytes BIGINT NOT NULL DEFAULT 0, asset_prefix TEXT, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(owner_channel_id,idempotency_key))");
-    await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ");
-    await this.pool.query("UPDATE baba_automation_jobs SET scheduled_at=created_at WHERE scheduled_at IS NULL");
-    await this.pool.query("CREATE INDEX IF NOT EXISTS baba_automation_jobs_due ON baba_automation_jobs(status,scheduled_at,created_at)");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_authorized BOOLEAN NOT NULL DEFAULT FALSE");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS oauth_session_ciphertext TEXT");
     await this.pool.query("ALTER TABLE baba_automation_jobs ADD COLUMN IF NOT EXISTS upload_idempotency_key TEXT");
