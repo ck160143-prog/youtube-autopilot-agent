@@ -1310,7 +1310,7 @@ app.post("/api/automation/control/:action", async (req,res) => {
     if (!current.rows[0]) return res.status(503).json({ error: "Apply migrations/004_global_automation_control.sql first." });
     if (current.rows[0].permanently_stopped && action !== "permanent-stop") return res.status(410).json({ error: "Automation was permanently stopped and cannot be restarted through the application." });
     const permanent = action === "permanent-stop";
-    const state = action === "pause" || permanent ? "stopped" === action ? "stopped" : (permanent ? "stopped" : "paused") : "running";
+    const state = permanent ? "stopped" : (action === "pause" ? "paused" : "running");
     const result = await store.pool.query("UPDATE baba_automation_control SET state=$1,permanently_stopped=CASE WHEN $2 THEN TRUE ELSE permanently_stopped END,updated_at=NOW(),updated_by=$3 WHERE id=1 RETURNING state,permanently_stopped,updated_at", [state,permanent,"channel:"+automationOwner(req)]);
     return res.json({ control: result.rows[0], message: permanent ? "Automation permanently stopped." : "Automation state updated to "+state+"." });
   } catch (error) { return res.status(503).json({ error: "Automation control update failed. Apply migration 004 and check PostgreSQL." }); }
