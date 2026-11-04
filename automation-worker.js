@@ -27,6 +27,16 @@ class AutomationWorker {
     for(const step of STEP_NAMES){
       const fresh=await this.store.getJob(job.owner_channel_id,job.id);
       if(!fresh)return;
+      const globalControl = await this.store.getGlobalControl?.();
+      if(globalControl?.permanently_stopped){
+        if(fresh.status==="running") await this.store.transition(job.owner_channel_id,job.id,"cancelled").catch(()=>{});
+        await this.store.eventForJob?.(job.id,"job_cancelled_global","Job stopped by permanent global kill switch");
+        return;
+      }
+      if(globalControl?.state==="paused"||globalControl?.state==="stopped"){
+        if(fresh.status==="running") await this.store.pauseForGlobalControl?.(job.owner_channel_id,job.id);
+        return;
+      }
       if(fresh.status==="paused"||fresh.pause_requested)return;
       if(["completed","cancelled"].includes(fresh.status))return;
       if(step==="youtube_upload"&&!fresh.upload_authorized){await this.store.transition(job.owner_channel_id,job.id,"paused").catch(()=>{});await this.store.eventForJob?.(job.id,"waiting_upload_confirmation","Waiting for explicit private-upload confirmation");return;}
