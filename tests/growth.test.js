@@ -26,6 +26,32 @@ test("growth overview rejects requests without a verified channel", async () => 
   }, { getOwner: () => null });
 });
 
+test("growth overview reads authenticated channel and Analytics API values and persists a snapshot", async () => {
+  let apiCalls = 0, dbWrites = 0;
+  await withServer(async base => {
+    const response = await fetch(base + "/api/growth/overview");
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.channel.id, "channel-123");
+    assert.equal(body.channel.subscribers, 321);
+    assert.equal(body.last28Days.views, 90);
+    assert.equal(body.last28Days.minutes, 180);
+    assert.equal(body.last28Days.gained, 7);
+    assert.equal(dbWrites, 1);
+  }, {
+    fetchImpl: async url => {
+      apiCalls++;
+      if (String(url).includes("/youtube/v3/channels")) return { ok: true, json: async () => ({ items: [{ id: "channel-123", snippet: { title: "GajabGuru" }, statistics: { subscriberCount: "321", viewCount: "9000", videoCount: "40" } }] }) };
+      return { ok: true, json: async () => ({ rows: [["2026-11-03", 90, 180, 7]] }) };
+    },
+    getStore: async () => ({ pool: { query: async (sql,args) => {
+      if (String(sql).includes("INSERT INTO baba_channel_metrics")) { dbWrites++; assert.equal(args[0], "channel-123"); assert.equal(args[1], 321); }
+      return { rows: [] };
+    } } })
+  });
+  assert.equal(apiCalls, 2);
+});
+
 test("trend endpoint validates query length before calling YouTube", async () => {
   let calls = 0;
   await withServer(async base => {
