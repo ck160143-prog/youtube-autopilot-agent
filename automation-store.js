@@ -176,6 +176,28 @@ class AutomationStore {
     const r=await this.pool.query("SELECT provider,quota_scope,retry_after,reason FROM baba_provider_cooldowns WHERE provider=$1 AND quota_scope=$2 AND retry_after>NOW()",[provider,scope]);
     return r.rows[0]||null;
   }
+  async getGlobalControl(){
+    const result=await this.pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
+    return result.rows[0]||null;
+  }
+  async pauseForGlobalControl(owner,id){
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const result=await c.query("UPDATE baba_automation_jobs SET status='paused',pause_requested=TRUE,global_pause=TRUE,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND status='running' RETURNING id",[owner,id]);
+      if(result.rows[0])await this.event(c,id,"job_paused_global","Job paused by global automation control");
+      await c.query("COMMIT");return Boolean(result.rows[0]);
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
+  async resumeGlobalPausedJobs(){
+    const c=await this.pool.connect();
+    try{
+      await c.query("BEGIN");
+      const result=await c.query("UPDATE baba_automation_jobs SET status='queued',pause_requested=FALSE,global_pause=FALSE,updated_at=NOW() WHERE status='paused' AND global_pause=TRUE RETURNING id");
+      for(const row of result.rows)await this.event(c,row.id,"job_resumed_global","Job queued after global automation resumed");
+      await c.query("COMMIT");return result.rows.length;
+    }catch(e){await c.query("ROLLBACK").catch(()=>{});throw e;}finally{c.release();}
+  }
   async claimNextJob(){
     const c=await this.pool.connect();
     try{
