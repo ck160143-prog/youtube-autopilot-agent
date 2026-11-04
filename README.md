@@ -154,3 +154,8 @@ Apply `migrations/003_growth_dashboard.sql` to the same dedicated PostgreSQL dat
 - `GET/PUT /api/growth/monetization` stores user-entered public watch hours and Shorts views. It does not certify Partner Program eligibility.
 
 The OAuth connect flow now requests the additional `yt-analytics.readonly` scope. Existing sessions do not silently gain this permission: the channel owner must reconnect and approve the expanded Google permission before watch-time analytics are available. Existing upload/readonly scopes and stored channel identity are retained; do not clear the existing OAuth cookie unless reconnecting is intended.
+
+
+## Phase 6 — global automation controls
+
+Apply `migrations/004_global_automation_control.sql` before using the global controls. The table defaults to `running` so a fresh migration preserves the existing worker's behavior. Start/Resume and Pause update the persisted state; the worker's PostgreSQL claim query refuses to claim jobs unless state is running. Permanent Stop sets a one-way `permanently_stopped` flag; the application API will not allow Start/Resume afterward. The rollback script drops only this control table and should be used only during a deliberate rollback window.
