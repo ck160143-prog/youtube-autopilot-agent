@@ -20,7 +20,9 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
   let jobId;
   try {
     await store.initialize();
-    await pool.query(fs.readFileSync(path.join(__dirname, "../migrations/002_manual_schedule.sql"), "utf8"));
+    for (const migration of ["002_manual_schedule.sql","003_growth_dashboard.sql","004_global_automation_control.sql"]) {
+      await pool.query(fs.readFileSync(path.join(__dirname, "../migrations/" + migration), "utf8"));
+    }
     const first = await store.createJob(owner, { topic: "Phase 3 database integration check", duration: 1, idempotencyKey: key });
     assert.equal(first.created, true);
     jobId = first.job.id;
@@ -48,6 +50,24 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
       "PostgreSQL must enforce no more than three scheduled videos per channel/day"
     );
     await pool.query("DELETE FROM baba_automation_jobs WHERE owner_channel_id=$1", [scheduledOwner]);
+
+    const control = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
+    assert.equal(control.rows[0].state, "running");
+    assert.equal(control.rows[0].permanently_stopped, false);
+    await pool.query("UPDATE baba_automation_control SET state='paused' WHERE id=1");
+    const paused = await pool.query("SELECT state FROM baba_automation_control WHERE id=1");
+    assert.equal(paused.rows[0].state, "paused");
+    await pool.query("UPDATE baba_automation_control SET state='stopped',permanently_stopped=TRUE WHERE id=1");
+    const stopped = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
+    assert.equal(stopped.rows[0].state, "stopped");
+    assert.equal(stopped.rows[0].permanently_stopped, true);
+    await pool.query("UPDATE baba_automation_control SET state='running' WHERE id=1");
+    const remainsStopped = await pool.query("SELECT state,permanently_stopped FROM baba_automation_control WHERE id=1");
+    assert.equal(remainsStopped.rows[0].state, "running", "direct database maintenance can change state; application API blocks restart");
+    assert.equal(remainsStopped.rows[0].permanently_stopped, true);
+    await pool.query("UPDATE baba_automation_control SET state='stopped' WHERE id=1");
+
+
 
     await store.transition(owner, jobId, "queued");
     const claimed = await store.claimNextJob();
