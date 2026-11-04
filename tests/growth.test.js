@@ -44,7 +44,7 @@ test("trend endpoint returns real YouTube video IDs and view counts", async () =
     assert.equal(body.videos.length, 1);
     assert.equal(body.videos[0].id, "video-1");
     assert.equal(body.videos[0].views, 1234);
-  }, { fetchImpl: async url => {
+  }, { fetchImpl: async () => {
     calls++;
     if (calls === 1) return { ok: true, json: async () => ({ items: [{ id: { videoId: "video-1" } }] }) };
     return { ok: true, json: async () => ({ items: [{ id: "video-1", snippet: { title: "Hindi AI", channelTitle: "Channel", publishedAt: "2026-11-03T00:00:00Z" }, statistics: { viewCount: "1234" } }] }) };
@@ -72,23 +72,23 @@ test("monetization inputs reject negative values and clearly identify manual dat
     const body = await read.json();
     assert.equal(body.basis.includes("user-entered"), true);
   });
-  } finally {
-    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
-    else process.env.GEMINI_API_KEY = previousKey;
-  }
 });
 
 test("niche research returns generated estimates with an explicit non-guarantee disclaimer", async () => {
   const previousKey = process.env.GEMINI_API_KEY;
   process.env.GEMINI_API_KEY = "test-key";
   try {
-  await withServer(async base => {
-    const response = await fetch(base + "/api/growth/niches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interest: "technology" }) });
-    const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(body.niches[0].niche, "Hindi AI Tools");
-    assert.match(body.disclaimer, /estimates only/i);
-  }, {
-    aiClientFactory: () => ({ models: { generateContent: async () => ({ text: JSON.stringify({ niches: [{ niche: "Hindi AI Tools", competition: "medium", estimatedPotentialScore: 72, monetizationPaths: ["affiliate"] }] }) }) } })
-  });
+    await withServer(async base => {
+      const response = await fetch(base + "/api/growth/niches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interest: "technology" }) });
+      const body = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(body.niches[0].niche, "Hindi AI Tools");
+      assert.match(body.disclaimer, /estimates only/i);
+    }, {
+      aiClientFactory: () => ({ models: { generateContent: async () => ({ text: JSON.stringify({ niches: [{ niche: "Hindi AI Tools", competition: "medium", estimatedPotentialScore: 72, monetizationPaths: ["affiliate"] }] }) }) } })
+    });
+  } finally {
+    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousKey;
+  }
 });
