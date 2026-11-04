@@ -154,6 +154,36 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <button type="button" class="secondary" onclick="resetExpiredDurableUpload()">⚠️ Expired upload session reset</button>
 <p class="small">Public upload इस workflow से नहीं होगा। Upload Private तभी शुरू होगा जब preview सफल हो और आप इस बटन को दबाएँ।</p>
 <div id="durableJobSteps" class="small"></div></div></div>
+<div class="card" id="growthDashboard">
+<h2>📈 Channel Growth & Promotion Dashboard</h2>
+<p class="small">Live YouTube channel statistics, recent trend signals, niche ideas and your sponsorship/affiliate ledger. Watch hours/Shorts views are manual inputs unless YouTube Analytics access is granted.</p>
+<button type="button" class="secondary" onclick="refreshGrowthDashboard()">🔄 Growth Data Refresh</button>
+<p id="growthOverview" class="status" aria-live="polite">Growth data अभी load नहीं हुआ।</p>
+<div class="grid">
+<div><label for="growthTrendQuery">Trending topic खोजें</label><input id="growthTrendQuery" placeholder="उदा. AI tools in Hindi" /></div>
+<button type="button" onclick="searchGrowthTrends()">YouTube Trends खोजें</button>
+</div>
+<div id="growthTrendResults" class="small"></div>
+<div class="grid">
+<div><label for="growthNicheInterest">Profitable niche research interest</label><input id="growthNicheInterest" placeholder="उदा. Tech, education, history" /></div>
+<button type="button" onclick="researchGrowthNiches()">AI Niche Research</button>
+</div>
+<div id="growthNicheResults" class="small"></div>
+<hr />
+<h3>💼 Add Promotion</h3>
+<label for="promotionName">Promotion name</label><input id="promotionName" placeholder="Brand / Affiliate product" />
+<div class="grid"><div><label for="promotionType">Type</label><select id="promotionType"><option value="sponsorship">Sponsorship</option><option value="affiliate">Affiliate</option></select></div><div><label for="promotionAmount">Income / deal amount</label><input id="promotionAmount" type="number" min="0" step="0.01" value="0" /></div></div>
+<label for="promotionUrl">Affiliate / sponsor URL (HTTPS)</label><input id="promotionUrl" placeholder="https://..." />
+<button type="button" onclick="addGrowthPromotion()">➕ Add Promotion</button>
+<div id="promotionList" class="small"></div>
+<hr />
+<h3>🎯 Monetization Progress Inputs</h3>
+<div class="grid"><div><label for="monetizationWatchHours">Public watch hours</label><input id="monetizationWatchHours" type="number" min="0" step="0.1" placeholder="Manual value" /></div><div><label for="monetizationShortsViews">Shorts views (90 days)</label><input id="monetizationShortsViews" type="number" min="0" step="1" placeholder="Manual value" /></div></div>
+<button type="button" onclick="saveGrowthMonetization()">💾 Save Monetization Inputs</button>
+<p id="monetizationStatus" class="small"></p>
+<p class="small">Monetization figures are progress-tracking inputs, not official YouTube Partner Program eligibility or approval confirmation.</p>
+</div>
+
 <div class="card">
 <h2>📦 प्रोजेक्ट डाउनलोड</h2>
 <p class="small">पूरा प्रोजेक्ट ZIP फ़ाइल के रूप में डाउनलोड करें (बिना API keys या secrets के)।</p>
@@ -1230,6 +1260,17 @@ try {
     }
   }
 } catch (e) {}
+
+async function growthRequest(path,options){var response=await fetch('/api/growth'+path,Object.assign({headers:{'Content-Type':'application/json'}},options||{}));var data=await readApiJson(response);if(!response.ok)throw new Error(data.error||('HTTP '+response.status));return data;}
+async function refreshGrowthDashboard(){var box=document.getElementById('growthOverview');try{var d=await growthRequest('/overview');var c=d.channel;box.textContent='Channel: '+c.title+' · Subscribers: '+(c.subscribers===null?'Hidden':c.subscribers)+' / 1,000 · Views: '+c.totalViews+' · Videos: '+c.videoCount+(d.last28Days?' · Last 28 days views: '+d.last28Days.views+' · Watch minutes: '+Math.round(d.last28Days.minutes):'')+(d.analyticsAccessRequired?' · Analytics permission required: reconnect channel to grant YouTube Analytics read access.':'');box.className='status';if(d.analyticsAccessRequired)box.className='status error-status';}catch(e){box.textContent='Growth data उपलब्ध नहीं: '+e.message;box.className='status error-status';}await loadGrowthPromotions();await loadGrowthMonetization();}
+async function searchGrowthTrends(){var out=document.getElementById('growthTrendResults');try{out.textContent='YouTube पर पिछले 7 दिनों के videos खोजे जा रहे हैं…';var d=await growthRequest('/trending?q='+encodeURIComponent(document.getElementById('growthTrendQuery').value.trim()));out.replaceChildren();if(!d.videos.length){out.textContent='इस query के लिए recent video results नहीं मिले।';return;}d.videos.forEach(function(v){var p=document.createElement('p');var a=document.createElement('a');a.href=v.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent=v.title;a.style.color='inherit';p.appendChild(a);p.appendChild(document.createTextNode(' · '+v.channelTitle+' · '+Number(v.views).toLocaleString()+' views'));out.appendChild(p);});var note=document.createElement('p');note.textContent=d.disclaimer;out.appendChild(note);}catch(e){out.textContent='Trend search विफल: '+e.message;}}
+async function researchGrowthNiches(){var out=document.getElementById('growthNicheResults');try{out.textContent='Gemini niche research चल रही है…';var d=await growthRequest('/niches',{method:'POST',body:JSON.stringify({interest:document.getElementById('growthNicheInterest').value.trim()})});out.replaceChildren();d.niches.forEach(function(n){var p=document.createElement('p');p.textContent=n.niche+' · Competition: '+n.competition+' · Potential estimate: '+n.estimatedPotentialScore+'/100 · Monetization: '+(n.monetizationPaths||[]).join(', ');out.appendChild(p);});var note=document.createElement('p');note.textContent=d.disclaimer;out.appendChild(note);}catch(e){out.textContent='Niche research विफल: '+e.message;}}
+async function addGrowthPromotion(){try{await growthRequest('/promotions',{method:'POST',body:JSON.stringify({name:document.getElementById('promotionName').value.trim(),promotionType:document.getElementById('promotionType').value,amount:Number(document.getElementById('promotionAmount').value||0),url:document.getElementById('promotionUrl').value.trim()||null})});document.getElementById('promotionName').value='';document.getElementById('promotionUrl').value='';await loadGrowthPromotions();}catch(e){document.getElementById('promotionList').textContent='Promotion save विफल: '+e.message;}}
+async function loadGrowthPromotions(){var box=document.getElementById('promotionList');try{var d=await growthRequest('/promotions');box.replaceChildren();if(!d.promotions.length){box.textContent='अभी कोई promotion दर्ज नहीं है।';return;}d.promotions.forEach(function(x){var p=document.createElement('p');p.textContent=x.name+' · '+x.promotion_type+' · '+x.currency+' '+x.amount+' · '+x.status;box.appendChild(p);});}catch(e){box.textContent='Promotion list उपलब्ध नहीं: '+e.message;}}
+async function loadGrowthMonetization(){try{var d=await growthRequest('/monetization');if(d.inputs){document.getElementById('monetizationWatchHours').value=d.inputs.public_watch_hours??'';document.getElementById('monetizationShortsViews').value=d.inputs.shorts_views_90d??'';}document.getElementById('monetizationStatus').textContent=d.basis||'';}catch(e){document.getElementById('monetizationStatus').textContent='Monetization tracker उपलब्ध नहीं: '+e.message;}}
+async function saveGrowthMonetization(){var status=document.getElementById('monetizationStatus');try{var hours=document.getElementById('monetizationWatchHours').value,shorts=document.getElementById('monetizationShortsViews').value;var d=await growthRequest('/monetization',{method:'PUT',body:JSON.stringify({publicWatchHours:hours===''?null:Number(hours),shortsViews90d:shorts===''?null:Number(shorts)})});status.textContent=d.basis||'Saved';}catch(e){status.textContent='Save विफल: '+e.message;}}
+document.addEventListener('DOMContentLoaded',function(){refreshGrowthDashboard();});
+
 </script>
 
 <script>
