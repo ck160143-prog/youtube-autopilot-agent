@@ -1316,8 +1316,15 @@ app.post("/api/automation/control/:action", async (req,res) => {
     const permanent = action === "permanent-stop";
     const state = permanent ? "stopped" : (action === "pause" ? "paused" : "running");
     const result = await store.pool.query("UPDATE baba_automation_control SET state=$1,permanently_stopped=CASE WHEN $2 THEN TRUE ELSE permanently_stopped END,updated_at=NOW(),updated_by=$3 WHERE id=1 RETURNING state,permanently_stopped,updated_at", [state,permanent,"channel:"+automationOwner(req)]);
-    const resumedJobs = !permanent && state === "running" ? await store.resumeGlobalPausedJobs() : 0;
-    return res.json({ control: result.rows[0], resumedJobs, message: permanent ? "Automation permanently stopped." : "Automation state updated to "+state+"." });
+    let resumedJobs = 0, cancelledJobs = 0;
+    if (permanent) {
+      const cancelled = await store.pool.query("UPDATE baba_automation_jobs SET status='cancelled',pause_requested=TRUE,updated_at=NOW() WHERE status IN ('queued','paused') RETURNING id");
+      cancelledJobs = cancelled.rows.length;
+      for (const row of cancelled.rows) await store.eventForJob(row.id,"job_cancelled_global","Job cancelled by permanent global stop");
+    } else if (state === "running") {
+      resumedJobs = await store.resumeGlobalPausedJobs();
+    }
+    return res.json({ control: result.rows[0], resumedJobs, cancelledJobs, message: permanent ? "Automation permanently stopped." : "Automation state updated to "+state+"." });
   } catch (error) { return res.status(503).json({ error: "Automation control update failed. Apply migration 004 and check PostgreSQL." }); }
 });
 
