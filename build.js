@@ -1,36 +1,5 @@
-const fs = require("fs");
-const path = require("path");
-const { execSync } = require("child_process");
-
-const distDir = path.join(__dirname, "dist");
-fs.mkdirSync(distDir, { recursive: true });
-
-fs.copyFileSync(
-  path.join(__dirname, "index.html"),
-  path.join(distDir, "index.html")
-);
-
-// Create a project ZIP (excluding secrets, node_modules, dist, bolt config)
-const zipPath = path.join(distDir, "baba-ai-youtube-agent.zip");
-const files = [
-  ".gitignore",
-  ".env.example",
-  "README.md",
-  "build.js",
-  "index.html",
-  "netlify.toml",
-  "package-lock.json",
-  "package.json",
-  "server.js",
-].join(" ");
-
-try {
-  execSync(`zip -j ${zipPath} ${files} -x "*.env" "*/node_modules/*" "*/dist/*" "*/.bolt/*" "*/.v3/*"`, {
-    cwd: __dirname,
-    stdio: "pipe",
-  });
-  console.log("Build OK: dist/index.html + dist/baba-ai-youtube-agent.zip created");
-} catch (e) {
-  // zip might not be available; skip silently
-  console.log("Build OK: dist/index.html created (zip skipped — zip not available)");
-}
+"use strict";
+const fs=require("node:fs"),path=require("node:path");
+const {createProjectZip}=require("./zip-archive");
+async function build(){const root=__dirname,dist=path.join(root,"dist");await fs.promises.mkdir(dist,{recursive:true});await fs.promises.copyFile(path.join(root,"index.html"),path.join(dist,"index.html"));const r=await createProjectZip({rootDir:root,outputPath:path.join(dist,"baba-ai-youtube-agent.zip")});console.log("Build OK: dist/index.html + dist/baba-ai-youtube-agent.zip created ("+r.fileCount+" files, "+r.archiveBytes+" bytes)");}
+build().catch(e=>{console.error("Build failed: project ZIP could not be generated:",e.message);process.exitCode=1;});

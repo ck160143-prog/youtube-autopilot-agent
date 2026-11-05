@@ -15,6 +15,8 @@ let server;
 let baseUrl;
 
 test("start test server", async () => {
+  const { createProjectZip } = require("./zip-archive");
+  await createProjectZip({ rootDir: __dirname, outputPath: require("node:path").join(__dirname, "dist", "baba-ai-youtube-agent.zip") });
   server = app.listen(0, "127.0.0.1");
   await new Promise((resolve, reject) => {
     server.once("listening", resolve);
@@ -194,6 +196,15 @@ test("YouTube Analytics re-consent preserves the existing channel refresh token 
   }
 });
 
+test("project ZIP endpoint streams a valid attachment and supports byte ranges",async()=>{
+ const head=await fetch(baseUrl+"/api/download/project.zip",{method:"HEAD"});assert.equal(head.status,200);assert.equal(head.headers.get("content-type"),"application/zip");assert.match(head.headers.get("content-disposition")||"",/baba-ai-youtube-agent\.zip/);assert.ok(Number(head.headers.get("content-length"))>22);
+ const part=await fetch(baseUrl+"/api/download/project.zip",{headers:{Range:"bytes=0-9"}});assert.equal(part.status,206);assert.match(part.headers.get("content-range")||"",/^bytes 0-9\//);const bytes=Buffer.from(await part.arrayBuffer());assert.equal(bytes.length,10);assert.equal(bytes.readUInt32LE(0),0x04034B50);
+ const full=await fetch(baseUrl+"/api/download/project.zip");assert.equal(full.status,200);const archive=Buffer.from(await full.arrayBuffer());assert.equal(archive.readUInt32LE(0),0x04034B50);assert.ok(archive.length>1000);
+});
+test("project ZIP endpoint returns a clear error when artifact is missing",async()=>{
+ const fs=require("node:fs"),path=require("node:path"),p=path.join(__dirname,"dist","baba-ai-youtube-agent.zip"),park=p+".test-backup";await fs.promises.rename(p,park);
+ try{const r=await fetch(baseUrl+"/api/download/project.zip");assert.equal(r.status,503);const d=await r.json();assert.match(d.error,/Project ZIP server पर उपलब्ध नहीं है/);}finally{await fs.promises.rename(park,p);}
+});
 test("stop test server", async () => {
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 });

@@ -190,7 +190,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div class="card">
 <h2>📦 प्रोजेक्ट डाउनलोड</h2>
 <p class="small">पूरा प्रोजेक्ट ZIP फ़ाइल के रूप में डाउनलोड करें (बिना API keys या secrets के)।</p>
-<a href="/baba-ai-youtube-agent.zip" download="baba-ai-youtube-agent.zip" style="display:block;width:100%;padding:13px;margin-top:10px;border:0;border-radius:9px;background:#18865d;color:white;font-weight:bold;font-size:15px;cursor:pointer;text-align:center;text-decoration:none;transition:opacity .2s">⬇️ प्रोजेक्ट ZIP डाउनलोड करें</a>
+<button id="projectZipDownloadButton" type="button" onclick="downloadProjectZip()" style="display:block;width:100%;padding:13px;margin-top:10px;border:0;border-radius:9px;background:#18865d;color:white;font-weight:bold;font-size:15px;cursor:pointer;text-align:center">⬇️ प्रोजेक्ट ZIP डाउनलोड करें</button><p id="projectZipDownloadStatus" class="small" role="status" aria-live="polite">ZIP उपलब्ध होने पर सुरक्षित रूप से डाउनलोड होगी।</p>
 </div>
 
 <div class="card">
@@ -1282,6 +1282,17 @@ async function loadGrowthMonetization(){try{var d=await growthRequest('/monetiza
 async function saveGrowthMonetization(){var status=document.getElementById('monetizationStatus');try{var hours=document.getElementById('monetizationWatchHours').value,shorts=document.getElementById('monetizationShortsViews').value;var d=await growthRequest('/monetization',{method:'PUT',body:JSON.stringify({publicWatchHours:hours===''?null:Number(hours),shortsViews90d:shorts===''?null:Number(shorts)})});status.textContent=d.basis||'Saved';}catch(e){status.textContent='Save विफल: '+e.message;}}
 document.addEventListener('DOMContentLoaded',function(){refreshGrowthDashboard();});
 
+async function downloadProjectZip(){
+  var button=document.getElementById("projectZipDownloadButton"),status=document.getElementById("projectZipDownloadStatus");
+  if(!button||button.disabled)return;button.disabled=true;button.textContent="⏳ ZIP जाँच रहे हैं…";
+  if(status)status.textContent="Project ZIP की उपलब्धता जाँची जा रही है…";
+  try{var check=await fetch("/api/download/project.zip",{method:"HEAD",cache:"no-store"});
+    if(!check.ok){var message="ZIP अभी उपलब्ध नहीं है (HTTP "+check.status+").";try{var r=await fetch("/api/download/project.zip",{cache:"no-store"}),d=await r.json();if(d.error)message=d.error;}catch(_){}throw Error(message);}
+    if(status)status.textContent="ZIP तैयार है। Browser का सुरक्षित download शुरू हो रहा है…";
+    window.location.assign("/api/download/project.zip");button.textContent="⬇️ दोबारा डाउनलोड करें";
+  }catch(e){if(status)status.textContent="❌ डाउनलोड शुरू नहीं हुआ: "+(e.message||"Network error");button.textContent="↻ दोबारा प्रयास करें";}
+  finally{button.disabled=false;}
+}
 </script>
 
 <script>

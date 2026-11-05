@@ -1270,6 +1270,20 @@ app.post("/api/render", async (req, res) => {
   });
 });
 
+app.head("/api/download/project.zip", async (req,res) => {
+  const zipPath=path.join(__dirname,"dist","baba-ai-youtube-agent.zip");
+  try { const stat=await fs.promises.stat(zipPath); if(!stat.isFile()||stat.size<=22)return res.status(503).json({error:"Project ZIP खाली या अमान्य है। Build दोबारा चलाएँ।"});
+    res.set({"Content-Type":"application/zip","Content-Disposition":'attachment; filename="baba-ai-youtube-agent.zip"',"Content-Length":String(stat.size),"Cache-Control":"private, no-store, max-age=0","X-Content-Type-Options":"nosniff"}); return res.status(200).end();
+  } catch(e) { if(e.code==="ENOENT")return res.status(503).json({error:"Project ZIP server पर उपलब्ध नहीं है। Deployment build पूरा होने के बाद फिर प्रयास करें।"}); safeLog("Project ZIP metadata check failed",e);return res.status(500).json({error:"Project ZIP की स्थिति जाँची नहीं जा सकी।"}); }
+});
+app.get("/api/download/project.zip", async (req,res) => {
+  const zipPath=path.join(__dirname,"dist","baba-ai-youtube-agent.zip");
+  try { const stat=await fs.promises.stat(zipPath);if(!stat.isFile()||stat.size<=22)return res.status(503).json({error:"Project ZIP खाली या अमान्य है। Build दोबारा चलाएँ।"});
+    res.set({"Content-Type":"application/zip","Cache-Control":"private, no-store, max-age=0","X-Content-Type-Options":"nosniff"});
+    return res.download(zipPath,"baba-ai-youtube-agent.zip",{dotfiles:"deny",acceptRanges:true},e=>{if(e)safeLog("Project ZIP download failed",e);});
+  } catch(e) {if(e.code==="ENOENT")return res.status(503).json({error:"Project ZIP server पर उपलब्ध नहीं है। Deployment build पूरा होने के बाद फिर प्रयास करें。"});safeLog("Project ZIP lookup failed",e);return res.status(500).json({error:"Project ZIP डाउनलोड शुरू नहीं हो सका।"});}
+});
+
 app.get("/api/render/status/:jobId", (req, res) => {
   const job = renderJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: "Render job नहीं मिला या server restart के बाद हट गया।" });
