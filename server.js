@@ -321,7 +321,7 @@ app.post("/api/automation/jobs", async (req, res) => {
     const session = decryptSession(req);
     if (!session.refresh_token && !session.access_token) return res.status(401).json({ error: "YouTube OAuth session उपलब्ध नहीं है; चैनल दोबारा Connect करें।" });
     const result = await store.createJob(owner, {
-      topic: input.topic, autoTopic: input.autoTopic === true, duration: input.duration, scheduledAt: input.scheduledAt, language: input.language,
+      topic: input.topic, autoTopic: input.autoTopic === true, duration: input.duration, scheduledAt: input.scheduledAt, channelTimezone: input.channelTimezone, language: input.language,
       visualStyle: input.visualStyle, idempotencyKey: req.get("Idempotency-Key") || input.idempotencyKey
     }, encryptSession(session));
     return res.status(result.created ? 201 : 200).json({
