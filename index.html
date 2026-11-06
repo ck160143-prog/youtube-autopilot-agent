@@ -139,9 +139,22 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <h2>🧠 Durable Automation — Job Control</h2>
 <p class="small">PostgreSQL job history और Supabase persistent assets के साथ background workflow। Start के बाद worker script → SEO → scene plan → images → voice → captions → MP4 → thumbnail → preview तक काम करता है। YouTube upload से पहले अलग से “Upload Private” दबाना आवश्यक है।</p>
 <p id="durableAutomationStatus" class="status" aria-live="polite">Database और object storage की स्थिति जाँची जा रही है…</p>
-<label for="durableScheduleAt">अपना YouTube upload समय चुनें (वैकल्पिक)</label>
+<label for="channelTimezone">YouTube चैनल का Timezone</label>
+<select id="channelTimezone">
+  <option value="Asia/Kolkata" selected>India — Asia/Kolkata</option>
+  <option value="UTC">UTC</option>
+  <option value="America/Los_Angeles">US Pacific — America/Los_Angeles</option>
+  <option value="America/Denver">US Mountain — America/Denver</option>
+  <option value="America/Chicago">US Central — America/Chicago</option>
+  <option value="America/New_York">US Eastern — America/New_York</option>
+  <option value="Europe/London">UK — Europe/London</option>
+  <option value="Europe/Berlin">Central Europe — Europe/Berlin</option>
+  <option value="Asia/Dubai">UAE — Asia/Dubai</option>
+  <option value="Asia/Singapore">Singapore — Asia/Singapore</option>
+</select>
+<label for="durableScheduleAt">चुने गए चैनल Timezone में Upload समय (वैकल्पिक)</label>
 <input id="durableScheduleAt" type="datetime-local" />
-<p class="small">खाली छोड़ने पर job अभी queue होगी। एक चैनल के लिए चुनी गई तारीख पर अधिकतम 3 वीडियो schedule किए जा सकते हैं।</p>
+<p class="small">खाली छोड़ने पर job अभी queue होगी। चुने गए चैनल के स्थानीय कैलेंडर दिन में अधिकतम 3 वीडियो schedule होंगे। DST बदलाव भी timezone database के अनुसार संभाले जाते हैं।</p>
 <div class="grid"><button type="button" class="green" onclick="globalAutomationControl('start')">▶ Start Automation</button><button type="button" class="secondary" onclick="globalAutomationControl('pause')">⏸ Pause All</button></div>
 <div class="grid"><button type="button" class="secondary" onclick="globalAutomationControl('resume')">↻ Resume</button><button type="button" class="secondary" onclick="globalAutomationControl('permanent-stop')">⛔ Permanent Stop</button></div>
 <p id="globalAutomationState" class="small">Global automation state loading…</p>
@@ -1359,8 +1372,27 @@ async function downloadProjectZip(){
 var durableSelectedJobId=null;
 var durableSelectedJob=null;
 async function durableApi(path,options){var response=await fetch(path,Object.assign({headers:{"Content-Type":"application/json"}},options||{}));var data=await readApiJson(response);if(!response.ok)throw new Error(data.error||("HTTP "+response.status));return data;}
+function channelLocalDateTimeToIso(value,timeZone){
+  if(!value)return null;
+  var m=/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})$/.exec(value);
+  if(!m)throw new Error('Upload समय सही चुनें।');
+  var wanted={year:Number(m[1]),month:Number(m[2]),day:Number(m[3]),hour:Number(m[4]),minute:Number(m[5])};
+  var guess=Date.UTC(wanted.year,wanted.month-1,wanted.day,wanted.hour,wanted.minute);
+  var fmt=new Intl.DateTimeFormat('en-US',{timeZone:timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+  for(var i=0;i<5;i++){
+    var p=Object.fromEntries(fmt.formatToParts(new Date(guess)).map(function(x){return [x.type,x.value];}));
+    var seen=Date.UTC(Number(p.year),Number(p.month)-1,Number(p.day),Number(p.hour),Number(p.minute));
+    var delta=Date.UTC(wanted.year,wanted.month-1,wanted.day,wanted.hour,wanted.minute)-seen;
+    if(!delta)break;
+    guess+=delta;
+  }
+  var check=Object.fromEntries(fmt.formatToParts(new Date(guess)).map(function(x){return [x.type,x.value];}));
+  if(Number(check.year)!==wanted.year||Number(check.month)!==wanted.month||Number(check.day)!==wanted.day||Number(check.hour)!==wanted.hour||Number(check.minute)!==wanted.minute)
+    throw new Error('इस timezone में यह स्थानीय समय मौजूद नहीं है (DST बदलाव)। दूसरा समय चुनें।');
+  return new Date(guess).toISOString();
+}
 async function refreshDurableStatus(){var el=document.getElementById('durableAutomationStatus');try{var d=await durableApi('/api/automation/status');el.textContent='Database: '+(d.databaseReady?'READY':'NOT READY')+' · Object storage: '+(d.persistentObjectStorageConfigured?'CONFIGURED':'MISSING')+' · Worker: '+(d.workerConfigured?'RUNNING':'DISABLED')+'. '+(d.message||'');el.className='status'+(!d.databaseReady||!d.persistentObjectStorageConfigured||!d.workerConfigured?' error-status':'');try{var c=await durableApi('/api/automation/control');document.getElementById('globalAutomationState').textContent='Automation: '+c.control.state+(c.control.permanently_stopped?' · permanently stopped':'');}catch(controlError){document.getElementById('globalAutomationState').textContent='Global control unavailable: apply migration 004.';}}catch(e){el.textContent='स्थिति नहीं मिली: '+e.message;el.className='status error-status';}}
-async function createAndStartDurableJob(){var status=document.getElementById('durableAutomationStatus');try{status.textContent='Job database में सेव हो रही है…';var topic=document.getElementById('topic').value.trim();var key=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():('mobile-'+Date.now()+'-'+Math.random().toString(16).slice(2));var created=await durableApi('/api/automation/jobs',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify({topic:topic,autoTopic:!topic,duration:Number(document.getElementById('duration').value)||3,language:document.getElementById('language').value==='English'?'English':'Hindi',visualStyle:document.getElementById('visualStyle').value,scheduledAt:(document.getElementById('durableScheduleAt').value?new Date(document.getElementById('durableScheduleAt').value).toISOString():null)})});durableSelectedJobId=created.job.id;await durableApi('/api/automation/jobs/'+encodeURIComponent(durableSelectedJobId)+'/start',{method:'POST',body:'{}'});status.textContent='Job queue में है। विषय खाली था तो worker स्वयं विषय चुनेगा।';await refreshDurableJobs();await selectDurableJob(durableSelectedJobId);}catch(e){status.textContent='Job शुरू नहीं हुई: '+e.message;status.className='status error-status';}}
+async function createAndStartDurableJob(){var status=document.getElementById('durableAutomationStatus');try{status.textContent='Job database में सेव हो रही है…';var topic=document.getElementById('topic').value.trim();var key=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():('mobile-'+Date.now()+'-'+Math.random().toString(16).slice(2));var created=await durableApi('/api/automation/jobs',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify({topic:topic,autoTopic:!topic,duration:Number(document.getElementById('duration').value)||3,language:document.getElementById('language').value==='English'?'English':'Hindi',visualStyle:document.getElementById('visualStyle').value,channelTimezone:document.getElementById('channelTimezone').value,scheduledAt:channelLocalDateTimeToIso(document.getElementById('durableScheduleAt').value,document.getElementById('channelTimezone').value)})});durableSelectedJobId=created.job.id;await durableApi('/api/automation/jobs/'+encodeURIComponent(durableSelectedJobId)+'/start',{method:'POST',body:'{}'});status.textContent='Job queue में है। विषय खाली था तो worker स्वयं विषय चुनेगा।';await refreshDurableJobs();await selectDurableJob(durableSelectedJobId);}catch(e){status.textContent='Job शुरू नहीं हुई: '+e.message;status.className='status error-status';}}
 async function refreshDurableJobs(){var box=document.getElementById('durableJobHistory');try{var d=await durableApi('/api/automation/jobs');box.replaceChildren();if(!d.jobs||!d.jobs.length){box.textContent='अभी कोई durable job नहीं है।';return;}d.jobs.forEach(function(job){var b=document.createElement('button');b.type='button';b.className='secondary';b.textContent=(job.topic==='__AUTO_TOPIC_PENDING__'?'AI topic चुन रहा है…':job.topic)+' · '+job.status+(job.current_step?' · '+job.current_step:'')+(job.scheduled_at?' · '+new Date(job.scheduled_at).toLocaleString():'');b.addEventListener('click',function(){selectDurableJob(job.id);});box.appendChild(b);});}catch(e){box.textContent='Job history नहीं मिली: '+e.message;}}
 async function selectDurableJob(id){try{var d=await durableApi('/api/automation/jobs/'+encodeURIComponent(id));durableSelectedJobId=id;durableSelectedJob=d.job;document.getElementById('durableSelectedJob').style.display='block';document.getElementById('durableJobSummary').textContent='विषय: '+d.job.topic+' · स्थिति: '+d.job.status+' · चरण: '+(d.job.current_step||'अभी शुरू नहीं')+(d.job.scheduled_at?' · निर्धारित समय: '+new Date(d.job.scheduled_at).toLocaleString():'')+(d.job.upload_total_bytes?' · Upload '+Math.round(100*Number(d.job.upload_progress_bytes||0)/Math.max(1,Number(d.job.upload_total_bytes)))+'% ('+d.job.upload_progress_bytes+'/'+d.job.upload_total_bytes+' bytes)':'')+(d.job.upload_video_id?' · YouTube ID: '+d.job.upload_video_id:'')+(d.job.last_error?' · Error: '+d.job.last_error:'');var steps=document.getElementById('durableJobSteps');steps.replaceChildren();(d.job.steps||[]).forEach(function(step){var p=document.createElement('p');p.textContent=step.step_name+': '+step.status+' · attempts '+step.attempt_count+' · retries '+step.retry_count+(step.error_message?' · '+step.error_message:'');steps.appendChild(p);});var failed=(d.job.steps||[]).find(function(x){return x.status==='failed';});if(failed)document.getElementById('durableRetryStep').value=failed.step_name;await refreshDurableJobs();await refreshDurableStatus();}catch(e){document.getElementById('durableAutomationStatus').textContent='Job details नहीं मिले: '+e.message;}}
 async function controlDurableJob(action){if(!durableSelectedJobId)return alert('पहले Job History में job चुनें।');try{var d=await durableApi('/api/automation/jobs/'+encodeURIComponent(durableSelectedJobId)+'/'+action,{method:'POST',body:'{}'});document.getElementById('durableAutomationStatus').textContent=d.message||'Job state update हुई।';await selectDurableJob(durableSelectedJobId);}catch(e){document.getElementById('durableAutomationStatus').textContent='Action failed: '+e.message;}}
