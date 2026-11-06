@@ -277,14 +277,14 @@ function automationDbError(res, error) {
 app.get("/api/automation/status", async (req, res) => {
   try {
     await readyAutomationStore();
-    const migrationCheck = await automationStore.pool.query("SELECT to_regclass('public.baba_automation_control') IS NOT NULL AS control_ready, to_regclass('public.baba_channel_metrics') IS NOT NULL AS growth_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='scheduled_at') AS schedule_ready");
+    const migrationCheck = await automationStore.pool.query("SELECT to_regclass('public.baba_automation_control') IS NOT NULL AS control_ready, to_regclass('public.baba_channel_metrics') IS NOT NULL AS growth_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='scheduled_at') AS schedule_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='channel_timezone') AS channel_timezone_ready");
     const migrations = migrationCheck.rows[0] || {};
-    const workerReady = Boolean(migrations.control_ready && migrations.schedule_ready);
+    const workerReady = Boolean(migrations.control_ready && migrations.schedule_ready && migrations.channel_timezone_ready);
     return res.json({
       databaseConfigured: true,
       databaseReady: true,
       durableJobMetadata: true,
-      migrations: { scheduleReady: Boolean(migrations.schedule_ready), controlReady: Boolean(migrations.control_ready), growthReady: Boolean(migrations.growth_ready) },
+      migrations: { scheduleReady: Boolean(migrations.schedule_ready), controlReady: Boolean(migrations.control_ready), growthReady: Boolean(migrations.growth_ready), channelTimezoneReady: Boolean(migrations.channel_timezone_ready) },
       objectStorageCredentialsPresent: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
       workerConfigured: Boolean(automationStorage.configured && automationWorker?.running && workerReady),
       durableRenderConfigured: Boolean(automationStorage.configured && automationWorker?.running && workerReady),
@@ -1386,9 +1386,9 @@ if (require.main === module) {
     if (automationStore.configured && automationStorage.configured) {
       try {
         await readyAutomationStore();
-        const checks = await automationStore.pool.query("SELECT to_regclass('public.baba_automation_control') IS NOT NULL AS control_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='scheduled_at') AS schedule_ready");
-        if (!checks.rows[0]?.control_ready || !checks.rows[0]?.schedule_ready) {
-          console.log("BABA AI durable worker disabled: apply migrations/002_manual_schedule.sql and migrations/004_global_automation_control.sql first.");
+        const checks = await automationStore.pool.query("SELECT to_regclass('public.baba_automation_control') IS NOT NULL AS control_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='scheduled_at') AS schedule_ready, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='baba_automation_jobs' AND column_name='channel_timezone') AS channel_timezone_ready");
+        if (!checks.rows[0]?.control_ready || !checks.rows[0]?.schedule_ready || !checks.rows[0]?.channel_timezone_ready) {
+          console.log("BABA AI durable worker disabled: apply migrations/002_manual_schedule.sql, migrations/004_global_automation_control.sql, and migrations/005_channel_timezone.sql first.");
         } else {
           const started = await automationWorker.start();
           console.log("BABA AI durable worker " + (started ? "started" : "already running"));
