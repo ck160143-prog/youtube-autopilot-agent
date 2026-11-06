@@ -20,7 +20,7 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
   let jobId;
   try {
     await store.initialize();
-    for (const migration of ["002_manual_schedule.sql","003_growth_dashboard.sql","004_global_automation_control.sql"]) {
+    for (const migration of ["002_manual_schedule.sql","003_growth_dashboard.sql","004_global_automation_control.sql","005_channel_timezone.sql"]) {
       await pool.query(fs.readFileSync(path.join(__dirname, "../migrations/" + migration), "utf8"));
     }
     const first = await store.createJob(owner, { topic: "Phase 3 database integration check", duration: 1, idempotencyKey: key });
@@ -32,19 +32,23 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     assert.equal(duplicate.job.id, jobId, "same owner/idempotency key must return the existing job");
 
     const scheduledOwner = owner + "-schedule";
-    const scheduledAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    const futureUtcDay = Date.UTC(...(() => { const d = new Date(Date.now() + 48 * 60 * 60 * 1000); return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()]; })());
+    // These timestamps cross UTC midnight but all fall on the same Asia/Kolkata local date.
+    const localDayTimes = [futureUtcDay + 18.5 * 60 * 60 * 1000, futureUtcDay + 20.5 * 60 * 60 * 1000, futureUtcDay + 25.5 * 60 * 60 * 1000];
     for (let i = 0; i < 3; i++) {
+      const scheduledAt = new Date(localDayTimes[i]);
       const scheduled = await store.createJob(scheduledOwner, {
-        topic: "Scheduled integration " + i, duration: 5,
+        topic: "Scheduled integration " + i, duration: 5, channelTimezone: "Asia/Kolkata",
         scheduledAt, idempotencyKey: "scheduled-" + i + "-" + crypto.randomUUID()
       });
       assert.equal(scheduled.created, true);
+      assert.equal(scheduled.job.channel_timezone, "Asia/Kolkata");
       assert.equal(new Date(scheduled.job.scheduled_at).toISOString(), scheduledAt.toISOString());
     }
     await assert.rejects(
       () => store.createJob(scheduledOwner, {
-        topic: "Fourth scheduled video", duration: 5,
-        scheduledAt, idempotencyKey: "scheduled-fourth-" + crypto.randomUUID()
+        topic: "Fourth scheduled video", duration: 5, channelTimezone: "Asia/Kolkata",
+        scheduledAt: new Date(futureUtcDay + 26.5 * 60 * 60 * 1000), idempotencyKey: "scheduled-fourth-" + crypto.randomUUID()
       }),
       error => error && error.code === "DAILY_VIDEO_LIMIT_REACHED",
       "PostgreSQL must enforce no more than three scheduled videos per channel/day"
