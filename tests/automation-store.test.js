@@ -1,7 +1,7 @@
 "use strict";
 const test=require("node:test");
 const assert=require("node:assert/strict");
-const {STEP_NAMES,validateJobInput,canTransitionJob,retryDelayMs,parseRetryAfter}=require("../automation-store");
+const {STEP_NAMES,validateJobInput,validateChannelTimezone,localDateKey,canTransitionJob,retryDelayMs,parseRetryAfter}=require("../automation-store");
 
 test("job input normalizes topic and supported defaults",()=>{
  const j=validateJobInput({topic:" गाँव की मस्ती ",duration:"5"});
@@ -40,4 +40,22 @@ test("manual schedule accepts a future timestamp and rejects past timestamps",()
  const future=new Date(Date.now()+3600000).toISOString();
  assert.equal(validateJobInput({topic:"scheduled video",scheduledAt:future}).scheduledAt.toISOString(),future);
  assert.throws(()=>validateJobInput({topic:"late video",scheduledAt:"2020-01-01T00:00:00Z"}),/scheduledAt/);
+});
+
+test("channel timezone is validated as an IANA timezone",()=>{
+ assert.equal(validateChannelTimezone("Asia/Kolkata"),"Asia/Kolkata");
+ assert.equal(validateJobInput({topic:"tz job",channelTimezone:"America/Los_Angeles"}).channelTimezone,"America/Los_Angeles");
+ assert.throws(()=>validateChannelTimezone("Mars/Olympus"),/IANA timezone/);
+ assert.throws(()=>validateChannelTimezone(""),/IANA timezone/);
+});
+test("local scheduling date follows the channel timezone rather than UTC",()=>{
+ const instant=new Date("2026-11-06T01:00:00.000Z");
+ assert.equal(localDateKey(instant,"Asia/Kolkata"),"2026-11-06");
+ assert.equal(localDateKey(instant,"America/Los_Angeles"),"2026-11-05");
+});
+test("local date keys remain correct across daylight-saving transitions",()=>{
+ const beforeSpring=new Date("2026-03-08T07:30:00.000Z");
+ const afterSpring=new Date("2026-03-08T08:30:00.000Z");
+ assert.equal(localDateKey(beforeSpring,"America/Los_Angeles"),"2026-03-07");
+ assert.equal(localDateKey(afterSpring,"America/Los_Angeles"),"2026-03-08");
 });
