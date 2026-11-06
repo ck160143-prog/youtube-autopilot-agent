@@ -5,6 +5,20 @@ const STEP_NAMES = Object.freeze(["topic","script","seo","scene_plan","images","
 const JOB_STATES = new Set(["draft","queued","running","paused","failed","completed","cancelled"]);
 const TERMINAL = new Set(["completed","cancelled"]);
 
+function validateChannelTimezone(value = "Asia/Kolkata") {
+  const timezone = typeof value === "string" ? value.trim() : "";
+  if (!timezone || timezone.length > 100) throw new TypeError("channelTimezone must be a valid IANA timezone");
+  try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date(0)); }
+  catch { throw new TypeError("channelTimezone must be a valid IANA timezone"); }
+  return timezone;
+}
+function localDateKey(date, timezone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return values.year + "-" + values.month + "-" + values.day;
+}
 function validateJobInput(input = {}) {
   const autoTopic = input.autoTopic === true;
   const topic = typeof input.topic === "string" ? input.topic.trim() : "";
@@ -16,7 +30,8 @@ function validateJobInput(input = {}) {
     ? input.idempotencyKey : crypto.randomUUID();
   const scheduledAt = input.scheduledAt ? new Date(input.scheduledAt) : new Date();
   if (!Number.isFinite(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() - 60000) throw new TypeError("scheduledAt must be a valid current or future timestamp");
-  return { topic: storedTopic, autoTopic, duration, scheduledAt, language: input.language === "English" ? "English" : "Hindi",
+  const channelTimezone = validateChannelTimezone(input.channelTimezone);
+  return { topic: storedTopic, autoTopic, duration, scheduledAt, channelTimezone, language: input.language === "English" ? "English" : "Hindi",
     visualStyle: ["3d-cartoon","cinematic","realistic"].includes(input.visualStyle) ? input.visualStyle : "3d-cartoon", idempotencyKey };
 }
 function canTransitionJob(from, to) {
@@ -76,13 +91,16 @@ class AutomationStore {
       await c.query("BEGIN");
       const existing=await c.query("SELECT * FROM baba_automation_jobs WHERE owner_channel_id=$1 AND idempotency_key=$2 FOR UPDATE",[owner,v.idempotencyKey]);
       if(existing.rows[0]){await c.query("COMMIT");return {job:existing.rows[0],created:false};}
-      const scheduleDay=v.scheduledAt.toISOString().slice(0,10);
-      await c.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[owner,scheduleDay]);
-      const count=await c.query("SELECT count(*)::int AS total FROM baba_automation_jobs WHERE owner_channel_id=$1 AND scheduled_at >= $2::date AND scheduled_at < ($2::date + interval '1 day') AND status <> 'cancelled'",[owner,scheduleDay]);
+      // Enforce the daily cap by the channel's IANA timezone, not UTC.
+      // PostgreSQL AT TIME ZONE handles 23/25-hour DST days without guessed offsets.
+      const scheduleDay=localDateKey(v.scheduledAt,v.channelTimezone);
+      const lockScope=v.channelTimezone+":"+scheduleDay;
+      await c.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",[owner,lockScope]);
+      const count=await c.query("SELECT count(*)::int AS total FROM baba_automation_jobs WHERE owner_channel_id=$1 AND (scheduled_at AT TIME ZONE $3)::date=$2::date AND status <> 'cancelled'",[owner,scheduleDay,v.channelTimezone]);
       if(Number(count.rows[0]?.total||0)>=3){const e=new Error("Daily video limit of 3 has been reached for the selected date");e.code="DAILY_VIDEO_LIMIT_REACHED";throw e;}
       const id=crypto.randomUUID();
-      const ins=await c.query("INSERT INTO baba_automation_jobs(id,owner_channel_id,idempotency_key,topic,duration,language,visual_style,status,oauth_session_ciphertext,upload_idempotency_key,asset_prefix,scheduled_at) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11) ON CONFLICT(owner_channel_id,idempotency_key) DO NOTHING RETURNING *",
-        [id,owner,v.idempotencyKey,v.topic,v.duration,v.language,v.visualStyle,oauthSessionCiphertext,crypto.randomUUID(),"jobs/"+id,v.scheduledAt]);
+      const ins=await c.query("INSERT INTO baba_automation_jobs(id,owner_channel_id,idempotency_key,topic,duration,language,visual_style,status,oauth_session_ciphertext,upload_idempotency_key,asset_prefix,scheduled_at,channel_timezone) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12) ON CONFLICT(owner_channel_id,idempotency_key) DO NOTHING RETURNING *",
+        [id,owner,v.idempotencyKey,v.topic,v.duration,v.language,v.visualStyle,oauthSessionCiphertext,crypto.randomUUID(),"jobs/"+id,v.scheduledAt,v.channelTimezone]);
       let job=ins.rows[0];
       if(job){
         for(const step of STEP_NAMES)await c.query("INSERT INTO baba_automation_steps(job_id,step_name,status) VALUES($1,$2,'pending')",[job.id,step]);
@@ -314,4 +332,4 @@ class AutomationStore {
   }
   async close(){if(this.pool?.end)await this.pool.end();}
 }
-module.exports={AutomationStore,STEP_NAMES,JOB_STATES,validateJobInput,canTransitionJob,retryDelayMs,parseRetryAfter};
+module.exports={AutomationStore,STEP_NAMES,JOB_STATES,validateJobInput,validateChannelTimezone,localDateKey,canTransitionJob,retryDelayMs,parseRetryAfter};
