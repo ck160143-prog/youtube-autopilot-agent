@@ -115,14 +115,15 @@ class AutomationStore {
   async getJob(owner,id){
     const r=await this.pool.query("SELECT * FROM baba_automation_jobs WHERE owner_channel_id=$1 AND id=$2",[owner,id]);
     if(!r.rows[0])return null;
-    const [steps,events]=await Promise.all([
+    const [steps,events,segments]=await Promise.all([
       this.pool.query("SELECT * FROM baba_automation_steps WHERE job_id=$1 ORDER BY array_position($2::text[],step_name)",[id,STEP_NAMES]),
-      this.pool.query("SELECT id,step_name,event_type,message,details,created_at FROM baba_automation_events WHERE job_id=$1 ORDER BY id DESC LIMIT 100",[id])]);
-    return {...r.rows[0],steps:steps.rows,events:events.rows};
+      this.pool.query("SELECT id,step_name,event_type,message,details,created_at FROM baba_automation_events WHERE job_id=$1 ORDER BY id DESC LIMIT 100",[id]),
+      this.pool.query("SELECT segment_id,segment_type,sequence_no,status,output_ref,metadata,attempt_count,retry_after,last_error,updated_at FROM baba_automation_segments WHERE job_id=$1 ORDER BY segment_type,sequence_no",[id])]);
+    return {...r.rows[0],steps:steps.rows,events:events.rows,segments:segments.rows};
   }
   async listJobs(owner,limit=30){
     const n=Math.max(1,Math.min(100,Number(limit)||30));
-    const r=await this.pool.query("SELECT id,topic,duration,language,visual_style,status,current_step,last_error,upload_video_id,upload_visibility,upload_confirmed,upload_progress_bytes,upload_total_bytes,scheduled_at,created_at,updated_at FROM baba_automation_jobs WHERE owner_channel_id=$1 ORDER BY created_at DESC LIMIT $2",[owner,n]);
+    const r=await this.pool.query("SELECT j.id,j.topic,j.duration,j.language,j.visual_style,j.status,j.current_step,j.last_error,j.upload_video_id,j.upload_visibility,j.upload_confirmed,j.upload_progress_bytes,j.upload_total_bytes,j.scheduled_at,j.created_at,j.updated_at,COALESCE(s.total_segments,0)::int AS total_segments,COALESCE(s.succeeded_segments,0)::int AS succeeded_segments,COALESCE(s.failed_segments,0)::int AS failed_segments FROM baba_automation_jobs j LEFT JOIN (SELECT job_id,count(*) AS total_segments,count(*) FILTER (WHERE status='succeeded') AS succeeded_segments,count(*) FILTER (WHERE status='failed') AS failed_segments FROM baba_automation_segments GROUP BY job_id) s ON s.job_id=j.id WHERE j.owner_channel_id=$1 ORDER BY j.created_at DESC LIMIT $2",[owner,n]);
     return r.rows;
   }
   async transition(owner,id,target){
