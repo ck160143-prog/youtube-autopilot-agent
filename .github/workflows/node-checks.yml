@@ -28,6 +28,8 @@ jobs:
         env:
           RUN_FFMPEG_INTEGRATION: "1"
           FFMPEG_RENDER_TIMEOUT_MS: "45000"
+      - name: Verify segmented long-form MP4 rendering with FFmpeg
+        run: node --test tests/ffmpeg-segmented-renderer.integration.test.js
       - name: Live Supabase private storage integration (only when configured)
         shell: bash
         env:
