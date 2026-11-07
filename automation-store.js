@@ -265,6 +265,44 @@ class AutomationStore {
     const r=await this.pool.query("SELECT output_ref,output_metadata,status FROM baba_automation_steps WHERE job_id=$1 AND step_name=$2",[jobId,step]);
     return r.rows[0]||null;
   }
+  async replaceSegments(jobId, type, segments) {
+    if (!["script","voice","scene","render"].includes(type) || !Array.isArray(segments)) throw new TypeError("Invalid segment manifest");
+    const c=await this.pool.connect();
+    try {
+      await c.query("BEGIN");
+      await c.query("SELECT id FROM baba_automation_jobs WHERE id=$1 FOR UPDATE",[jobId]);
+      for (const item of segments) {
+        const id=String(item.id||"").slice(0,120), sequence=Number(item.sequence);
+        if (!id || !Number.isInteger(sequence) || sequence<1) throw new TypeError("Invalid segment identity");
+        const meta=JSON.stringify(item.metadata||{});
+        if (Buffer.byteLength(meta)>64000) throw new TypeError("Segment metadata exceeds 64 KB");
+        await c.query("INSERT INTO baba_automation_segments(job_id,segment_id,segment_type,sequence_no,status,input_ref,output_ref,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(job_id,segment_type,segment_id) DO UPDATE SET sequence_no=EXCLUDED.sequence_no,input_ref=COALESCE(EXCLUDED.input_ref,baba_automation_segments.input_ref),metadata=CASE WHEN EXCLUDED.metadata='{}'::jsonb THEN baba_automation_segments.metadata ELSE EXCLUDED.metadata END,updated_at=NOW()",
+          [jobId,id,type,sequence,item.status||"pending",item.inputRef||null,item.outputRef||null,meta]);
+      }
+      await c.query("COMMIT");
+      return this.listSegments(jobId,type);
+    } catch(e) { await c.query("ROLLBACK").catch(()=>{}); throw e; }
+    finally { c.release(); }
+  }
+  async listSegments(jobId,type) {
+    const r=await this.pool.query("SELECT segment_id,segment_type,sequence_no,status,input_ref,output_ref,metadata,attempt_count,retry_after,last_error FROM baba_automation_segments WHERE job_id=$1 AND segment_type=$2 ORDER BY sequence_no",[jobId,type]);
+    return r.rows;
+  }
+  async startSegment(jobId,type,id) {
+    const r=await this.pool.query("UPDATE baba_automation_segments SET status='running',attempt_count=attempt_count+1,started_at=NOW(),finished_at=NULL,last_error=NULL,updated_at=NOW() WHERE job_id=$1 AND segment_type=$2 AND segment_id=$3 AND status IN ('pending','failed') AND (retry_after IS NULL OR retry_after<=NOW()) RETURNING *",[jobId,type,id]);
+    if(!r.rows[0]) { const e=new Error("Segment is not ready to run"); e.code="SEGMENT_NOT_RUNNABLE"; throw e; }
+    return r.rows[0];
+  }
+  async finishSegment(jobId,type,id,{outputRef=null,metadata={},error=null,retryAfter=null}={}) {
+    if(outputRef!==null&&(typeof outputRef!=="string"||outputRef.length>2048)) throw new TypeError("Segment output must be an object-storage reference");
+    const failed=Boolean(error), meta=JSON.stringify(metadata||{});
+    if(Buffer.byteLength(meta)>64000) throw new TypeError("Segment metadata exceeds 64 KB");
+    const r=await this.pool.query("UPDATE baba_automation_segments SET status=$4,output_ref=COALESCE($5,output_ref),metadata=CASE WHEN $6::jsonb='{}'::jsonb THEN metadata ELSE $6::jsonb END,last_error=$7,retry_after=$8,finished_at=NOW(),updated_at=NOW() WHERE job_id=$1 AND segment_type=$2 AND segment_id=$3 AND status='running' RETURNING *",
+      [jobId,type,id,failed?"failed":"succeeded",outputRef,meta,failed?String(error).slice(0,1000):null,retryAfter]);
+    if(!r.rows[0]) { const e=new Error("Segment was not running; refusing checkpoint overwrite"); e.code="SEGMENT_NOT_RUNNING"; throw e; }
+    await this.eventForJob(jobId,failed?"segment_failed":"segment_succeeded",failed?String(error):"Segment checkpoint saved",{type,id,outputRef});
+    return r.rows[0];
+  }
 
   async authorizePrivateUpload(owner,id){
     const c=await this.pool.connect();
