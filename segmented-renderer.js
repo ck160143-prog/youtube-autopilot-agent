@@ -62,7 +62,7 @@ function orderAndValidateAssets(items, expectedCount, label) {
   return sorted;
 }
 function parseDurationFromFfmpeg(stderr) {
-  const match = String(stderr || "").match(/Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)/);
+  const match = String(stderr || "").match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : null;
 }
 async function renderStillSegment({ ffmpegPath, imagePath, audioPath, captionsPath, outputPath, timeoutMs = 180000, width = 1280, height = 720 }) {
