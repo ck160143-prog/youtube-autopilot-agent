@@ -294,6 +294,20 @@ class AutomationStore {
     if(!r.rows[0]) { const e=new Error("Segment is not ready to run"); e.code="SEGMENT_NOT_RUNNABLE"; throw e; }
     return r.rows[0];
   }
+  async releaseStepForControl(owner,id,step,target) {
+    if (!["paused","cancelled"].includes(target) || !STEP_NAMES.includes(step)) throw new TypeError("Invalid controlled step release");
+    const c=await this.pool.connect();
+    try {
+      await c.query("BEGIN");
+      await c.query("UPDATE baba_automation_steps SET status='pending',error_message=NULL,finished_at=NULL,updated_at=NOW() WHERE job_id=$1 AND step_name=$2 AND status='running'",[id,step]);
+      await c.query("UPDATE baba_automation_segments SET status='pending',last_error=$2,finished_at=NULL,updated_at=NOW() WHERE job_id=$1 AND status='running'",[id,target==="paused"?"Paused at a durable segment boundary":"Cancelled at a durable segment boundary"]);
+      if (target==="paused") await c.query("UPDATE baba_automation_jobs SET status='paused',pause_requested=TRUE,updated_at=NOW() WHERE owner_channel_id=$1 AND id=$2 AND status NOT IN ('completed','cancelled')",[owner,id]);
+      await this.event(c,id,target==="paused"?"job_paused_segment_boundary":"job_cancelled_segment_boundary",target==="paused"?"Paused after current media segment":"Cancelled after current media segment",step);
+      await c.query("COMMIT");
+      return true;
+    } catch(e) { await c.query("ROLLBACK").catch(()=>{}); throw e; }
+    finally { c.release(); }
+  }
   async finishSegment(jobId,type,id,{outputRef=null,metadata={},error=null,retryAfter=null}={}) {
     if(outputRef!==null&&(typeof outputRef!=="string"||outputRef.length>2048)) throw new TypeError("Segment output must be an object-storage reference");
     const failed=Boolean(error), meta=JSON.stringify(metadata||{});
