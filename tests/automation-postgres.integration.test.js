@@ -109,7 +109,10 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     );
 
     await store.startStep(owner, jobId, "script");
+    await store.replaceSegments(jobId,"voice",[{id:"voice-recovery-1",sequence:1,metadata:{mimeType:"audio/L16"}}]);
+    await store.startSegment(jobId,"voice","voice-recovery-1");
     const recoveredCount = await store.recoverInterruptedJobs();
+    assert.equal((await store.listSegments(jobId,"voice"))[0].status,"pending","worker restart must release in-flight segment checkpoints");
     assert.equal(recoveredCount, 1, "a simulated worker restart should recover the running job");
     let recovered = await store.getJob(owner, jobId);
     assert.equal(recovered.status, "queued");
