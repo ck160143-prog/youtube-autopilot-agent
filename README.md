@@ -159,3 +159,25 @@ The OAuth connect flow now requests the additional `yt-analytics.readonly` scope
 ## Phase 6 — global automation controls
 
 Apply `migrations/004_global_automation_control.sql` before using the global controls. The table defaults to `running` so a fresh migration preserves the existing worker's behavior. Start/Resume and Pause update the persisted state; the worker's PostgreSQL claim query refuses to claim jobs unless state is running. Permanent Stop sets a one-way `permanently_stopped` flag; the application API will not allow Start/Resume afterward. The rollback script drops only this control table and should be used only during a deliberate rollback window.
+
+
+## Phase 6 — segmented long-form renderer (implementation in progress)
+
+The Phase 6 branch now includes a segmented-rendering foundation:
+
+- Hindi scripts are split at sentence boundaries into ordered chunks (maximum 3,000 characters per chunk); the complete source script remains in the job artifact.
+- PostgreSQL migration `006_render_segments.sql` adds per-job, per-type segment checkpoints for script, voice, scene and render work. Binary assets are stored by reference in private object storage, not in PostgreSQL rows.
+- The worker pipeline generates voice clips one script chunk at a time, stores each successful clip, and skips already-succeeded clips on a later step retry.
+- Scene prompts are planned against the script chunks. The image endpoint is called one scene at a time because that endpoint currently accepts at most three prompts per request. Successful images are stored with stable job/scene references.
+- MP4 output is rendered as separate 1280×720 still-image narration segments, with Hindi SRT captions burned into each segment, then concatenated. The finalizer checks that the MP4 can be read and that its duration is within tolerance of the combined narration duration.
+- In-flight segment records are reset to pending after a worker restart; already-succeeded segment references are retained and reused.
+
+### Important limits and required verification
+
+This is a still-image narration renderer, **not** a genuine animated 3D character renderer. It does not create character rigs, skeletal motion, facial animation, visemes, or Hindi phoneme-to-mouth lip-sync. Blender is not installed or provisioned by this branch. A genuine 3D pipeline requires a separate worker image with Blender and project-specific character rigs/viseme assets; it should be deployed as a separately configured rendering backend, not represented as a Render Free feature.
+
+The long-form implementation is committed but must not be treated as production-ready until CI, the PostgreSQL integration test (including migration 006), FFmpeg segment-join tests, and a live provider run have passed. Gemini script/image/TTS calls still depend on the configured API key and quota. A 30-minute project can require many image and voice requests; quota exhaustion must stop the affected stage and preserve successful checkpoints.
+
+Render Free has constrained CPU, memory, ephemeral disk, request lifetime and restart behavior. Segmenting reduces peak FFmpeg load and makes retries more targeted, but it does not guarantee that a 30-minute 720p finalization will complete on the Free instance. The final MP4 is stored in private object storage; YouTube upload remains separate and requires the existing explicit Private authorization. The current YouTube pipeline still enforces a 90 MB upload cap.
+
+Apply migration 006 only to a dedicated test database after reviewing the SQL. The production database and Render service were not changed by this branch work.
