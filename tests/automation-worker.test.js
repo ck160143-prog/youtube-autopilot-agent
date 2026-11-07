@@ -19,6 +19,7 @@ function fakeStore(){
   async transition(owner,id,status){this.job.status=status;return this.job;},
   async eventForJob(id,type,msg){this.events.push({type,msg});},
   async markJobFailed(){this.job.status="failed";},
+  async releaseStepForControl(owner,id,step,target){const s=this.job.steps.find(x=>x.step_name===step);if(s.status==="running")s.status="pending";if(target==="paused")this.job.status="paused";},
   async deferStep(){this.job.status="failed";}
  };
 }
@@ -73,4 +74,13 @@ test("permanent global stop cancels an active job and prevents further stage exe
  await worker.runJob(store.job);
  assert.equal(store.job.status,"cancelled");
  assert.deepEqual(seen,[]);
+});
+
+test("worker pauses at a segment boundary without marking the step failed",async()=>{
+ const store=fakeStore(),storage={configured:true,async put(key){return {key};}};
+ const handlers=Object.fromEntries(STEP_NAMES.map(step=>[step,async({assertRunnable})=>{store.job.status="paused";await assertRunnable();}]));
+ const worker=new AutomationWorker({store,storage,handlers,logger:{error(){}}});
+ await worker.runJob(store.job);
+ assert.equal(store.job.status,"paused");
+ assert.equal(store.job.steps[0].status,"pending");
 });
