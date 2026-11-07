@@ -9,10 +9,11 @@ const {promisify}=require("node:util");
 const execFileAsync=promisify(execFile);
 const {renderStillSegment,concatenateSegments}=require("../segmented-renderer");
 const ffmpegPath=require("ffmpeg-static");
+const enabled=process.env.RUN_FFMPEG_SEGMENTED_INTEGRATION==="1"&&Boolean(ffmpegPath);
 
 test("FFmpeg renders and joins captioned 1280x720 narration segments with verified duration",{
   timeout:120000,
-  skip:!ffmpegPath?"ffmpeg-static binary unavailable":false
+  skip:!enabled?"Set RUN_FFMPEG_SEGMENTED_INTEGRATION=1 and ensure ffmpeg-static is installed":false
 },async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"baba-segmented-ffmpeg-test-"));
  try{
