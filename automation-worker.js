@@ -56,7 +56,7 @@ class AutomationWorker {
       let output=null, outputRef=null;
       try{
         await this.store.startStep(job.owner_channel_id,job.id,step);
-        output=await handler({job:fresh,step,storage:this.storage,store:this.store});
+        output=await handler({job:fresh,step,storage:this.storage,store:this.store,assertRunnable:async()=>{const current=await this.store.getJob(job.owner_channel_id,job.id);if(!current||current.status==="cancelled"){const e=new Error("Job cancelled at segment boundary");e.code="JOB_CANCELLED";throw e;}const control=await this.store.getGlobalControl?.();if(current.status==="paused"||current.pause_requested||control?.state==="paused"||control?.state==="stopped"){const e=new Error("Job paused at segment boundary");e.code="JOB_PAUSED";throw e;}}});
         outputRef=output?.buffer?await this.storage.put("jobs/"+job.id+"/"+step+"/"+(output.filename||"output.bin"),output.buffer,{contentType:output.contentType||"application/octet-stream",upsert:true}):output?.outputRef||null;
         const metadata={...(output?.metadata||{}),...(output?.contentType?{contentType:output.contentType}:{})};
         if(metadata.partialFailure){
@@ -66,6 +66,10 @@ class AutomationWorker {
         }
         await this.store.finishStep(job.owner_channel_id,job.id,step,{outputRef:typeof outputRef==="string"?outputRef:outputRef?.key||null,outputMetadata:metadata});
       }catch(error){
+        if(error?.code==="JOB_PAUSED"||error?.code==="JOB_CANCELLED"){
+          await this.store.releaseStepForControl(job.owner_channel_id,job.id,step,error.code==="JOB_PAUSED"?"paused":"cancelled").catch(()=>{});
+          return;
+        }
         const retryAfter=error?.retryAfter?new Date(error.retryAfter):null;
         if(error?.quotaProvider==="gemini"&&retryAfter){
           await this.store.setCooldown("gemini",step,retryAfter,error.message||"Gemini quota limit");
