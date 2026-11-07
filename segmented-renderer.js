@@ -94,7 +94,7 @@ async function concatenateSegments({ ffmpegPath, segmentPaths, outputPath, timeo
     if (stat.size < 1024) throw new Error("Final MP4 is unexpectedly small");
     const probe = await execFileAsync(ffmpegPath, ["-hide_banner", "-i", outputPath, "-f", "null", "-"], { timeout: 60000, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 }).catch(e => e);
     const stderr = probe.stderr || "";
-    if (/Invalid data found|moov atom not found|could not find codec parameters/i.test(stderr)) throw new Error("Final MP4 failed FFmpeg media inspection");
+    if ((probe.code !== undefined && probe.code !== 0) || /Invalid data found|moov atom not found|could not find codec parameters|Error while decoding/i.test(stderr)) throw new Error("Final MP4 failed FFmpeg media inspection");
     const duration = parseDurationFromFfmpeg(stderr);
     if (!duration) throw new Error("Final MP4 duration could not be verified");
     if (expectedDurationSeconds && Math.abs(duration - expectedDurationSeconds) > Math.max(3, expectedDurationSeconds * 0.02)) {
