@@ -753,7 +753,7 @@ ${script.slice(0, 18000)}
           try {
             imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
               model: candidateModel,
-              contents: stylePrompt + scene.prompt + (visualStyle === "3d-cartoon" ? " Keep the same recurring Indian cartoon friends and their outfits consistent; portrait 9:16 composition." : ""),
+              contents: stylePrompt + scene.prompt + (visualStyle === "3d-cartoon" ? " Keep the same recurring Indian cartoon friends and their outfits consistent; " + (req.body?.aspectRatio === "16:9" ? "landscape 16:9 composition." : "portrait 9:16 composition.") : ""),
               config: { responseModalities: ["TEXT", "IMAGE"] }
             }));
             break;
