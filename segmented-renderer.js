@@ -65,12 +65,13 @@ function parseDurationFromFfmpeg(stderr) {
   const match = String(stderr || "").match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : null;
 }
-async function renderStillSegment({ ffmpegPath, imagePath, audioPath, captionsPath, outputPath, timeoutMs = 180000, width = 1280, height = 720 }) {
+async function renderStillSegment({ ffmpegPath, imagePath, audioPath, audioMime = "", captionsPath, outputPath, timeoutMs = 180000, width = 1280, height = 720 }) {
   if (!ffmpegPath || !imagePath || !audioPath || !outputPath) throw new TypeError("FFmpeg, image, audio and output paths are required");
   const vf = ["scale=" + width + ":" + height + ":force_original_aspect_ratio=increase", "crop=" + width + ":" + height, "setsar=1", "format=yuv420p"];
   if (captionsPath) vf.push("subtitles='" + String(captionsPath).replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'") + "'");
+  const audioInput = /l16|pcm/i.test(String(audioMime)) ? ["-f", "s16le", "-ar", "24000", "-ac", "1", "-i", audioPath] : ["-i", audioPath];
   await execFileAsync(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-threads", "1", "-y",
-    "-loop", "1", "-framerate", "24", "-i", imagePath, "-i", audioPath,
+    "-loop", "1", "-framerate", "24", "-i", imagePath, ...audioInput,
     "-vf", vf.join(","), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast",
     "-crf", "24", "-r", "24", "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", outputPath],
     { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 });
