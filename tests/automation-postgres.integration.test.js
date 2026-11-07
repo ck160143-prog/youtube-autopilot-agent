@@ -121,6 +121,21 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
     assert.equal(reclaimed.id, jobId);
     await store.startStep(owner, jobId, "script");
     await store.finishStep(owner, jobId, "script", { outputRef: "integration/script.json" });
+    await store.replaceSegments(jobId,"script",[
+      {id:"script-0001",sequence:1,metadata:{text:"पहला हिंदी भाग",estimatedDurationSeconds:35}},
+      {id:"script-0002",sequence:2,metadata:{text:"दूसरा हिंदी भाग",estimatedDurationSeconds:40}}
+    ]);
+    const scriptSegments=await store.listSegments(jobId,"script");
+    assert.equal(scriptSegments.length,2);
+    await store.startSegment(jobId,"script","script-0001");
+    await store.finishSegment(jobId,"script","script-0001",{outputRef:"integration/segment-1.json",metadata:{persisted:true}});
+    assert.equal((await store.listSegments(jobId,"script"))[0].status,"succeeded");
+    await store.startSegment(jobId,"script","script-0002");
+    await store.finishSegment(jobId,"script","script-0002",{error:"simulated segment failure"});
+    assert.equal((await store.listSegments(jobId,"script"))[1].status,"failed");
+    await store.startSegment(jobId,"script","script-0002");
+    await store.finishSegment(jobId,"script","script-0002",{outputRef:"integration/segment-2.json"});
+    assert.equal((await store.listSegments(jobId,"script"))[1].status,"succeeded");
 
     await store.transition(owner, jobId, "paused");
     assert.equal((await store.getJob(owner, jobId)).status, "paused");
