@@ -289,7 +289,7 @@ app.get("/api/automation/status", async (req, res) => {
       workerConfigured: Boolean(automationStorage.configured && automationWorker?.running && workerReady),
       durableRenderConfigured: Boolean(automationStorage.configured && automationWorker?.running && workerReady),
       persistentObjectStorageConfigured: automationStorage.configured,
-      message: !workerReady ? "Apply migrations/002_manual_schedule.sql, migrations/004_global_automation_control.sql, and migrations/005_channel_timezone.sql and migrations/006_render_segments.sql before enabling the durable worker." : (automationWorker?.running && automationStorage.configured ? "Durable worker is running. Render remains an FFmpeg narrated still-image preview, not full 3D animation." : "PostgreSQL is ready but the worker is disabled; configure Supabase storage and inspect server logs.")
+      message: !workerReady ? "Apply migrations/002_manual_schedule.sql, migrations/004_global_automation_control.sql, and migrations/005_channel_timezone.sql and migrations/006_render_segments.sql before enabling the durable worker." : (automationWorker?.running && automationStorage.configured ? "Durable worker is running. Long-form output uses segmented 1280x720 FFmpeg still-image narration; it is not full 3D character animation or lip-sync." : "PostgreSQL is ready but the worker is disabled; configure Supabase storage and inspect server logs.")
     });
   } catch (error) {
     if (error.code === "AUTOMATION_DB_NOT_CONFIGURED") {
