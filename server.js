@@ -751,9 +751,15 @@ ${script.slice(0, 18000)}
           const candidateModel = imageModels[modelIndex];
           quotaModel = candidateModel;
           try {
+            const imagePrompt = stylePrompt + scene.prompt + (visualStyle === "3d-cartoon" ? " Keep the same recurring Indian cartoon friends and their outfits consistent; " + (req.body?.aspectRatio === "16:9" ? "landscape 16:9 composition." : "portrait 9:16 composition.") : "");
+            const referenceData = validBase64(req.body?.characterReferenceBase64) ? req.body.characterReferenceBase64 : null;
+            const referenceMime = ["image/png","image/jpeg","image/webp"].includes(String(req.body?.characterReferenceMimeType||"").toLowerCase()) ? String(req.body.characterReferenceMimeType).toLowerCase() : "image/png";
+            const contents = referenceData
+              ? [{ parts: [{ text: imagePrompt + " Use the supplied reference image to preserve the same character identity, clothing and color palette, but render the new scene and pose." }, { inlineData: { mimeType: referenceMime, data: referenceData } }] }]
+              : imagePrompt;
             imageResponse = await withTemporaryRetries(() => ai.models.generateContent({
               model: candidateModel,
-              contents: stylePrompt + scene.prompt + (visualStyle === "3d-cartoon" ? " Keep the same recurring Indian cartoon friends and their outfits consistent; " + (req.body?.aspectRatio === "16:9" ? "landscape 16:9 composition." : "portrait 9:16 composition.") : ""),
+              contents,
               config: { responseModalities: ["TEXT", "IMAGE"] }
             }));
             break;
