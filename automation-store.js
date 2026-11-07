@@ -278,7 +278,7 @@ class AutomationStore {
         if (!id || !Number.isInteger(sequence) || sequence<1) throw new TypeError("Invalid segment identity");
         const meta=JSON.stringify(item.metadata||{});
         if (Buffer.byteLength(meta)>64000) throw new TypeError("Segment metadata exceeds 64 KB");
-        await c.query("INSERT INTO baba_automation_segments(job_id,segment_id,segment_type,sequence_no,status,input_ref,output_ref,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(job_id,segment_type,segment_id) DO UPDATE SET sequence_no=EXCLUDED.sequence_no,input_ref=COALESCE(EXCLUDED.input_ref,baba_automation_segments.input_ref),metadata=CASE WHEN EXCLUDED.metadata='{}'::jsonb THEN baba_automation_segments.metadata ELSE EXCLUDED.metadata END,updated_at=NOW()",
+        await c.query("INSERT INTO baba_automation_segments(job_id,segment_id,segment_type,sequence_no,status,input_ref,output_ref,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(job_id,segment_type,segment_id) DO UPDATE SET sequence_no=EXCLUDED.sequence_no,status=CASE WHEN EXCLUDED.status='succeeded' THEN 'succeeded' ELSE baba_automation_segments.status END,input_ref=COALESCE(EXCLUDED.input_ref,baba_automation_segments.input_ref),metadata=CASE WHEN EXCLUDED.metadata='{}'::jsonb THEN baba_automation_segments.metadata ELSE EXCLUDED.metadata END,updated_at=NOW()",
           [jobId,id,type,sequence,item.status||"pending",item.inputRef||null,item.outputRef||null,meta]);
       }
       await c.query("COMMIT");
