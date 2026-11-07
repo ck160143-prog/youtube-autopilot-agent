@@ -20,7 +20,7 @@ test("PostgreSQL schema, idempotency, job claiming, step checkpoint, pause/resum
   let jobId;
   try {
     await store.initialize();
-    for (const migration of ["002_manual_schedule.sql","003_growth_dashboard.sql","004_global_automation_control.sql","005_channel_timezone.sql"]) {
+    for (const migration of ["002_manual_schedule.sql","003_growth_dashboard.sql","004_global_automation_control.sql","005_channel_timezone.sql","006_render_segments.sql"]) {
       await pool.query(fs.readFileSync(path.join(__dirname, "../migrations/" + migration), "utf8"));
     }
     const first = await store.createJob(owner, { topic: "Phase 3 database integration check", duration: 1, idempotencyKey: key });
