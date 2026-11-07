@@ -235,6 +235,7 @@ class AutomationStore {
       const stale=await c.query("SELECT id FROM baba_automation_jobs WHERE status='running' FOR UPDATE SKIP LOCKED");
       for(const row of stale.rows){
         await c.query("UPDATE baba_automation_steps SET status='pending',error_message='Worker restarted during this step; safely retrying from persisted assets where available',updated_at=NOW() WHERE job_id=$1 AND status='running'",[row.id]);
+        await c.query("UPDATE baba_automation_segments SET status='pending',last_error='Worker restarted during this segment; retrying from persistent assets where available',updated_at=NOW() WHERE job_id=$1 AND status='running'",[row.id]);
         await c.query("UPDATE baba_automation_jobs SET status='queued',pause_requested=FALSE,updated_at=NOW() WHERE id=$1",[row.id]);
         await this.event(c,row.id,"worker_recovery","Interrupted job returned to queue after worker restart");
       }
