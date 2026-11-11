@@ -675,6 +675,25 @@ ${script.slice(0, 18000)}
 });
 
 
+/* ---- Real AI thumbnail generation (Gemini image model) ---- */
+app.post("/api/thumbnail", async (req, res) => {
+  const topic = typeof req.body?.topic === "string" ? req.body.topic.trim() : "";
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : topic;
+  const style = ["3d-cartoon", "cinematic", "realistic"].includes(req.body?.visualStyle) ? req.body.visualStyle : "cinematic";
+  if (!topic) return res.status(400).json({ error: "थंबनेल के लिए वीडियो का विषय लिखें।" });
+  if (topic.length > 500 || title.length > 120) return res.status(400).json({ error: "विषय 500 और thumbnail text 120 अक्षरों तक रखें।" });
+  try {
+    const ai = getAIClient();
+    const model = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+    const styleText = style === "3d-cartoon" ? "polished 3D CGI cartoon illustration" : style === "realistic" ? "photorealistic documentary editorial photography" : "cinematic documentary key art";
+    const prompt = "Create an original YouTube thumbnail background in strict 16:9 landscape composition. Visually striking, high contrast, one clear focal subject and clean negative space on the left for an editable Hindi headline. Style: " + styleText + ". Topic: " + topic + ". Communicate the topic accurately. No text, letters, logos, watermarks or borders; the app adds editable typography separately.";
+    const response = await withTemporaryRetries(() => ai.models.generateContent({ model, contents: prompt, config: { responseModalities: ["TEXT", "IMAGE"] } }));
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    const imagePart = parts.find(part => part.inlineData?.data && /^image\/(png|jpeg|webp)$/i.test(part.inlineData.mimeType || ""));
+    if (!imagePart) return res.status(502).json({ error: "Gemini ने thumbnail image payload नहीं लौटाया। मॉडल access और image quota जाँचें।" });
+    return res.json({ success: true, model, mimeType: imagePart.inlineData.mimeType || "image/png", imageBase64: imagePart.inlineData.data, title: title.slice(0, 120) });
+  } catch (error) { return sendAPIError(res, error, "AI thumbnail नहीं बन सका।", "images"); }
+});
 /* ---- Real YouTube OAuth + resumable upload (single-user browser session) ---- */
 function youtubeConfigReady() {
   return Boolean(process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET &&
