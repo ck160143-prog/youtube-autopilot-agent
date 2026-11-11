@@ -1227,6 +1227,25 @@ async function renderThumbnailToFile(body) {
   }
 }
 
+/* ---- AI thumbnail background generation (Gemini); text composition remains editable client-side. ---- */
+app.post("/api/thumbnail/ai", async (req, res) => {
+  const topic = typeof req.body?.topic === "string" ? req.body.topic.trim() : "";
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : topic;
+  const style = ["3d-cartoon", "cinematic", "realistic"].includes(req.body?.visualStyle) ? req.body.visualStyle : "cinematic";
+  if (!topic) return res.status(400).json({ error: "Thumbnail के लिए video topic लिखें।" });
+  if (topic.length > 500 || title.length > 120) return res.status(400).json({ error: "Topic 500 और headline 120 characters तक रखें।" });
+  try {
+    const ai = getAIClient();
+    const model = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+    const visual = style === "3d-cartoon" ? "polished 3D CGI cartoon illustration" : style === "realistic" ? "photorealistic documentary editorial photography" : "cinematic documentary key art";
+    const prompt = "Create one original YouTube thumbnail background in 16:9 landscape composition, high contrast, one clear focal subject, professional lighting and clean negative space for a headline. Style: " + visual + ". Topic: " + topic + ". Accurately depict the topic. Do not include any text, letters, logos, watermark or border; the application will overlay editable Hindi text separately.";
+    const generated = await withTemporaryRetries(() => ai.models.generateContent({ model, contents: prompt, config: { responseModalities: ["TEXT", "IMAGE"] } }));
+    const parts = generated.candidates?.[0]?.content?.parts || [];
+    const imagePart = parts.find(part => part.inlineData?.data && /^image\/(png|jpeg|webp)$/i.test(part.inlineData.mimeType || ""));
+    if (!imagePart) return res.status(502).json({ error: "Gemini ने thumbnail image नहीं लौटाई। Image model access और quota जाँचें।" });
+    return res.json({ success: true, model, title: title.slice(0, 120), mimeType: imagePart.inlineData.mimeType || "image/png", imageBase64: imagePart.inlineData.data });
+  } catch (error) { return sendAPIError(res, error, "AI thumbnail generation विफल हुई।", "images"); }
+});
 app.post("/api/thumbnail", async (req, res) => {
   let rendered;
   try {
