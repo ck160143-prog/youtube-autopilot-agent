@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { app, isQuotaError, getStatus, resetAIClientFactory } = require("../server");
+const { app, isQuotaError, getStatus, resetAIClientFactory, setAIClientFactoryForTests } = require("../server");
 
 async function withServer(run) {
   const server = app.listen(0, "127.0.0.1");
@@ -81,4 +81,24 @@ test("script generation returns a setup error when the API key is missing", asyn
     else process.env.GEMINI_API_KEY = previousKey;
     resetAIClientFactory();
   }
+});
+
+test("AI thumbnail endpoint rejects missing topic before provider invocation", async () => {
+  await withServer(async base => {
+    const response=await fetch(base+"/api/thumbnail/ai",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+    assert.equal(response.status,400);assert.match((await response.json()).error,/topic|विषय/i);
+  });
+});
+
+test("AI thumbnail endpoint returns provider image bytes without exposing provider secrets", async () => {
+  const previousKey=process.env.GEMINI_API_KEY;process.env.GEMINI_API_KEY="test-thumbnail-key";
+  setAIClientFactoryForTests(()=>({models:{async generateContent(args){
+    assert.ok(args.config.responseModalities.includes("IMAGE"));
+    return {candidates:[{content:{parts:[{inlineData:{mimeType:"image/png",data:Buffer.from("image-fixture").toString("base64")}}]}}]};
+  }}}));
+  try{await withServer(async base=>{
+    const response=await fetch(base+"/api/thumbnail/ai",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic:"Taj Mahal",title:"22 बंद कमरे",visualStyle:"cinematic"})});
+    const data=await response.json();assert.equal(response.status,200);assert.equal(data.success,true);assert.equal(data.mimeType,"image/png");
+    assert.equal(Buffer.from(data.imageBase64,"base64").toString(),"image-fixture");
+  });}finally{resetAIClientFactory();if(previousKey===undefined)delete process.env.GEMINI_API_KEY;else process.env.GEMINI_API_KEY=previousKey;}
 });
