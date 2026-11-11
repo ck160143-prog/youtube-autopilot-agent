@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { app, isQuotaError, getStatus, resetAIClientFactory } = require("../server");
+const { app, isQuotaError, getStatus, resetAIClientFactory, setAIClientFactoryForTests } = require("../server");
 
 async function withServer(run) {
   const server = app.listen(0, "127.0.0.1");
@@ -81,4 +81,23 @@ test("script generation returns a setup error when the API key is missing", asyn
     else process.env.GEMINI_API_KEY = previousKey;
     resetAIClientFactory();
   }
+});
+test("AI thumbnail rejects missing topic without calling provider", async () => {
+  await withServer(async base => {
+    const response = await fetch(base + "/api/thumbnail", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({}) });
+    assert.equal(response.status, 400); assert.match((await response.json()).error, /विषय/);
+  });
+});
+
+test("AI thumbnail returns an image payload from the configured provider adapter", async () => {
+  const oldKey=process.env.GEMINI_API_KEY; process.env.GEMINI_API_KEY="test-thumbnail-key";
+  setAIClientFactoryForTests(() => ({ models:{ async generateContent(args){
+    assert.equal(args.config.responseModalities.includes("IMAGE"),true);
+    return {candidates:[{content:{parts:[{inlineData:{mimeType:"image/png",data:Buffer.from("png-fixture").toString("base64")}}]}}]};
+  }}}));
+  try { await withServer(async base => {
+    const response=await fetch(base+"/api/thumbnail",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({topic:"ताजमहल के रहस्य",title:"22 बंद कमरे"})});
+    const data=await response.json(); assert.equal(response.status,200); assert.equal(data.success,true); assert.equal(data.mimeType,"image/png");
+    assert.equal(Buffer.from(data.imageBase64,"base64").toString(),"png-fixture");
+  }); } finally { resetAIClientFactory(); if(oldKey===undefined)delete process.env.GEMINI_API_KEY;else process.env.GEMINI_API_KEY=oldKey; }
 });
