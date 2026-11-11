@@ -81,6 +81,10 @@ Render should run the Node server with `npm start`. The static frontend is serve
 - For local image generation, users can run a compatible local Stable Diffusion / ComfyUI setup on their own computer and download/import the resulting PNG/JPEG images. The hosted Render service does not silently claim to run a local model or provide unlimited image generation.
 - Workflow checkpoints preserve topic, script, SEO, and stage status in the same browser. Download scene images, voice audio, and MP4 files separately for durable backups; browser storage is not a permanent asset store.
 
+## AI thumbnail generation
+
+The thumbnail studio can request an original 16:9 background from the configured Gemini image model using `POST /api/thumbnail/ai`. The browser overlays an editable Hindi headline and exports a 1280×720 PNG. This requires a valid `GEMINI_API_KEY`, an image-capable `GEMINI_IMAGE_MODEL`, and available provider quota/billing. It is separate from the durable pipeline's FFmpeg text-composited thumbnail artifact; no AI success is shown when the provider returns no image.
+
 ## Text thumbnail generation
 
 The durable pipeline sends the first saved scene image and generated topic to `/api/thumbnail`. FFmpeg scales/crops to 1280×720 and composites the title in a lower dark band, returning a JPEG artifact in private object storage. This is a designed thumbnail candidate, not a guarantee that every system font renders every Hindi glyph identically; check the output visually before publishing. It is distinct from a fully branded template with custom fonts/logo.
