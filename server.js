@@ -885,7 +885,7 @@ function getPcmDurationSeconds(audioBase64, sampleRate = 24000, channels = 1, by
 }
 
 function validBase64(value) {
-  return typeof value === "string" && value.length > 0 && value.length < 18 * 1024 * 1024 &&
+  return typeof value === "string" && value.length > 0 && value.length < 24 * 1024 * 1024 &&
     /^[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
 function validateRenderPayload(body) {
@@ -898,13 +898,13 @@ function validateRenderPayload(body) {
   }
   const imageBytes = scenes.reduce((sum, s) => sum + Math.floor(s.imageBase64.length * 0.75), 0);
   const audioBytes = Math.floor(audioBase64.length * 0.75);
-  if (imageBytes > 12 * 1024 * 1024 || audioBytes > 8 * 1024 * 1024) {
+  if (imageBytes > 12 * 1024 * 1024 || audioBytes > 16 * 1024 * 1024) {
     return { status: 413, error: "Generated assets बहुत बड़े हैं। छोटा script/voice या कम images चुनें।" };
   }
   return null;
 }
 const renderJobs = new Map();
-const MAX_RENDER_JOBS = 3;
+const MAX_RENDER_JOBS = 1;
 const MAX_RETAINED_RENDER_JOBS = 30;
 
 async function renderToFile(body) {
@@ -936,8 +936,8 @@ async function renderToFile(body) {
       const m = textOut.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
       if (m) duration = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
     }
-    if (!Number.isFinite(duration) || duration < 0.5 || duration > 180) {
-      throw Object.assign(new Error("Voice duration 0.5–180 seconds के बीच होनी चाहिए। छोटे narration से retry करें।"), { statusCode: 422 });
+    if (!Number.isFinite(duration) || duration < 0.5 || duration > 300) {
+      throw Object.assign(new Error("Voice duration 0.5–300 seconds (5 minutes) के बीच होनी चाहिए। छोटी narration से retry करें।"), { statusCode: 422 });
     }
     const clipDuration = duration / scenes.length;
     // Render within Render's 512 MiB memory limit: SD 480p, 15 fps, single encoder thread.
@@ -957,7 +957,7 @@ async function renderToFile(body) {
     args.push("-filter_complex", filters.join(";"), "-map", "[outv]", "-map", imagePaths.length + ":a:0",
       "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1", "-crf", "28", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "96k", "-max_muxing_queue_size", "512", "-shortest", "-movflags", "+faststart", outputPath);
-    await execFileAsync(ffmpegPath, args, { timeout: 240000, maxBuffer: 4 * 1024 * 1024 });
+    await execFileAsync(ffmpegPath, args, { timeout: 420000, maxBuffer: 4 * 1024 * 1024 });
     const stat = await fs.promises.stat(outputPath);
     if (!stat.size || stat.size > 90 * 1024 * 1024) throw Object.assign(new Error("Rendered video 90 MB से बड़ा है। छोटा/कम resolution वाला project बनाएँ।"), { statusCode: 413 });
     return { tempDir, outputPath, size: stat.size };
