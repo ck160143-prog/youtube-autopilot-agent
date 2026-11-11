@@ -13,14 +13,14 @@ Hindi-first web app for Gemini script/SEO generation, scene images and Hindi TTS
 
 ## 3D cartoon mode
 
-- The frontend defaults to **3D cartoon comedy** and also offers cinematic and realistic visual styles.
+- The frontend defaults to **3D cartoon comedy** and also offers cinematic and realistic visual styles. Select a target duration from 1 to 5 minutes.
 - The selected style is passed to script generation and scene-image prompts. 3D prompts request consistent Indian cartoon characters, recurring outfits/hairstyles, expressive faces, and vertical 9:16 composition.
 - The current MP4 pipeline still combines scene stills and Hindi narration into a short narrated video/slideshow. It is **not** a full 3D character-animation or lip-sync engine. Character motion and dialogue-to-mouth synchronization are not guaranteed.
 - 3D image generation depends on the configured Gemini image model and its available quota/billing. In 3D-cartoon mode the app will not silently replace unavailable cartoon art with real Wikimedia photos; it will report the quota problem instead.
 
 ## Important limits (not falsely advertised as complete)
 
-The repository includes an end-to-end narrated slideshow MP4 renderer using FFmpeg, with up to 3 scene images and Hindi TTS. The hosted renderer is currently limited to 180 seconds (3 minutes) per MP4, and the automatic flow makes a short excerpt from longer scripts. It is not a full 5–30 minute movie renderer. The app also includes a browser Canvas thumbnail, checkpoint/export tools, Commons image fallback on Gemini image quota errors, and real YouTube upload for a rendered video. It does not include a durable multi-user token database, persistent upload queue, or automatic daily scheduler. The OAuth session is encrypted in a browser cookie; clearing browser cookies or losing the session requires reconnecting. Render's request-size/time limits can also affect large uploads. Do not upload files containing private or copyrighted material unless you have rights.
+The repository includes an end-to-end narrated slideshow MP4 renderer using FFmpeg, with up to 3 scene images and Hindi TTS. The web UI offers 1–5 minute targets; the server accepts narration up to 300 seconds (5 minutes), uses a single active render job on constrained hosts, and raises the audio payload ceiling for longer narration. Actual 4–5 minute render success depends on available CPU, memory, provider quotas, and the host's runtime limits; the free Render instance may not reliably complete the longest jobs. The output is a narrated still-image slideshow, not a full-motion AI video or 3D character animation. The app also includes a browser Canvas thumbnail, checkpoint/export tools, Commons image fallback on Gemini image quota errors, and real YouTube upload for a rendered video. It does not include a durable multi-user token database, persistent upload queue, or automatic daily scheduler. The OAuth session is encrypted in a browser cookie; clearing browser cookies or losing the session requires reconnecting. Render's request-size/time limits can also affect large uploads. Do not upload files containing private or copyrighted material unless you have rights.
 
 ## Run locally
 
