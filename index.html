@@ -961,6 +961,31 @@ async function generateAutoVideo() {
   finally { button.disabled=false; }
 }
 
+async function generateAIThumbnail(){
+  var topic=(document.getElementById('topic')?.value||'').trim(),title=(document.getElementById('thumbnailTitle')?.value||'').trim();
+  var style=document.getElementById('visualStyle')?.value||'cinematic',status=document.getElementById('featureStatus');
+  var button=document.getElementById('btnGenerateAIThumbnail'),preview=document.getElementById('thumbnailPreview');
+  if(!topic){status.textContent='पहले video topic भरें।';return;}if(!title){status.textContent='Thumbnail headline भरें।';return;}
+  button.disabled=true;status.textContent='Gemini AI thumbnail बना रहा है…';preview.replaceChildren();
+  try{
+    var response=await fetch('/api/thumbnail/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic:topic,title:title,visualStyle:style})});
+    var data=await readApiJson(response);if(!response.ok||!data.imageBase64)throw new Error(data.error||'AI thumbnail image नहीं मिली।');
+    var image=new Image();
+    image.onload=function(){
+      var canvas=document.createElement('canvas');canvas.width=1280;canvas.height=720;var ctx=canvas.getContext('2d');
+      var scale=Math.max(1280/image.width,720/image.height),w=image.width*scale,h=image.height*scale;ctx.drawImage(image,(1280-w)/2,(720-h)/2,w,h);
+      ctx.fillStyle='rgba(0,0,0,0.52)';ctx.fillRect(0,455,1280,265);
+      var words=title.split(/\\s+/),lines=[],line='';ctx.font='900 76px Arial,sans-serif';
+      words.forEach(function(word){var candidate=line?line+' '+word:word;if(ctx.measureText(candidate).width>1160&&line){lines.push(line);line=word;}else line=candidate;});if(line)lines.push(line);
+      lines=lines.slice(0,2);var size=lines.length>1?66:78;ctx.font='900 '+size+'px Arial,sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+      lines.forEach(function(txt,i){var y=lines.length===1?590:545+i*88;ctx.lineWidth=10;ctx.strokeStyle='#111';ctx.strokeText(txt,640,y,1160);ctx.fillStyle='#fff';ctx.fillText(txt,640,y,1160);});
+      var url=canvas.toDataURL('image/png'),img=document.createElement('img');img.src=url;img.alt='AI generated BABA AI thumbnail';img.style.width='100%';img.style.borderRadius='10px';img.style.display='block';preview.appendChild(img);
+      var a=document.createElement('a');a.href=url;a.download='BABA-AI-Thumbnail-1280x720.png';a.textContent='⬇️ 1280×720 Thumbnail डाउनलोड करें';a.style.display='block';a.style.padding='14px 0';a.style.color='#b9a1ff';preview.appendChild(a);
+      status.textContent='✅ AI thumbnail तैयार है।';
+    };
+    image.onerror=function(){status.textContent='Image decode नहीं हो सकी; retry करें।';};image.src='data:'+(data.mimeType||'image/png')+';base64,'+data.imageBase64;
+  }catch(error){status.textContent='❌ '+(error.message||'AI thumbnail failed');}finally{button.disabled=false;}
+}
 function showFeature(feature) {
   var detail = featureDetails[feature];
   var status = document.getElementById('featureStatus');
@@ -998,38 +1023,15 @@ function showFeature(feature) {
   }
 
   if (feature === 'thumbnail') {
-    var titleText = (document.getElementById('topic')?.value || document.getElementById('title')?.value || document.getElementById('script').value.split(/[।.!?\\n]/)[0] || 'BABA AI VIDEO').trim().slice(0,90);
-    if (!titleText) titleText = 'BABA AI VIDEO';
+    var topicText=(document.getElementById('topic')?.value||'').trim();
+    var titleText=(document.getElementById('script').value.split(/[।.!?\\n]/)[0]||topicText||'BABA AI VIDEO').trim().slice(0,120);
     info.replaceChildren();
-    var note = document.createElement('p');
-    note.className = 'small';
-    note.textContent = 'यह थंबनेल ब्राउज़र में Canvas से बनाया जाएगा। यह Gemini की AI तस्वीर नहीं है; आप इसे डाउनलोड करके इस्तेमाल कर सकते हैं।';
-    info.appendChild(note);
-    var canvas = document.createElement('canvas');
-    canvas.width = 1280; canvas.height = 720;
-    var ctx = canvas.getContext('2d');
-    var grad = ctx.createLinearGradient(0,0,1280,720);
-    grad.addColorStop(0,'#17152f'); grad.addColorStop(0.55,'#5426a8'); grad.addColorStop(1,'#e04d28');
-    ctx.fillStyle=grad; ctx.fillRect(0,0,1280,720);
-    ctx.fillStyle='rgba(0,0,0,0.34)'; ctx.fillRect(35,35,1210,650);
-    ctx.strokeStyle='#ffd34e'; ctx.lineWidth=12; ctx.strokeRect(42,42,1196,636);
-    ctx.fillStyle='#ffd34e'; ctx.font='bold 42px sans-serif'; ctx.textAlign='left'; ctx.fillText('BABA AI • YOUTUBE',80,120);
-    var words=titleText.split(/\\s+/), lines=[], line='';
-    words.forEach(function(word){var test=line?line+' '+word:word;if(ctx.measureText(test).width>1080&&line){lines.push(line);line=word;}else line=test;});
-    if(line)lines.push(line);
-    lines=lines.slice(0,3);
-    var fontSize=lines.length===1?94:lines.length===2?82:70;
-    ctx.font='900 '+fontSize+'px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
-    var lineHeight=fontSize*1.18, startY=390-((lines.length-1)*lineHeight/2);
-    lines.forEach(function(text,index){ctx.lineWidth=12;ctx.strokeStyle='#111111';ctx.strokeText(text,640,startY+index*lineHeight,1080);ctx.fillStyle='#ffffff';ctx.fillText(text,640,startY+index*lineHeight,1080);});
-    ctx.fillStyle='#ffda55';ctx.font='bold 34px sans-serif';ctx.fillText('देखें अभी!  •  LIKE  •  SUBSCRIBE',640,625,1080);
-    var preview=document.createElement('img');preview.alt='Generated BABA AI thumbnail';preview.src=canvas.toDataURL('image/png');preview.style.width='100%';preview.style.borderRadius='10px';preview.style.display='block';info.appendChild(preview);
-    var download=document.createElement('a');download.href=preview.src;download.download='BABA-AI-Thumbnail.png';download.textContent='⬇️ थंबनेल PNG डाउनलोड करें';download.style.display='block';download.style.padding='14px 0';download.style.color='#b9a1ff';info.appendChild(download);
-    status.textContent='✅ थंबनेल तैयार है। इसे PNG में डाउनलोड करें।';
-    info.style.display='block';
-    return;
+    var note=document.createElement('p');note.className='small';note.textContent='Gemini वास्तविक AI background बनाएगा। Hindi headline browser Canvas पर overlay होगी, जिसे आप edit कर सकते हैं।';info.appendChild(note);
+    var titleInput=document.createElement('input');titleInput.id='thumbnailTitle';titleInput.maxLength=120;titleInput.value=titleText;titleInput.placeholder='Editable Hindi thumbnail headline';info.appendChild(titleInput);
+    var generate=document.createElement('button');generate.id='btnGenerateAIThumbnail';generate.className='green';generate.textContent='✨ AI Thumbnail बनाएँ';generate.addEventListener('click',generateAIThumbnail);info.appendChild(generate);
+    var preview=document.createElement('div');preview.id='thumbnailPreview';info.appendChild(preview);info.style.display='block';
+    status.textContent=topicText?'AI thumbnail बनाने के लिए तैयार।':'पहले video topic भरें।';return;
   }
-
   if (feature === 'images') {
     var script = document.getElementById('script').value.trim();
     if (!script) {
