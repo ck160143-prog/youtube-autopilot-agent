@@ -6,6 +6,7 @@ Hindi-first web app for Gemini script/SEO generation, scene images and Hindi TTS
 
 - Gemini script and SEO endpoints.
 - Scene image generation (up to 3 images per request; Gemini quota/billing may apply), with Wikimedia Commons fallback on Gemini quota errors when suitable images are found and attribution details returned.
+- AI thumbnail generation through the configured Gemini image model, with a 1280×720 PNG export and Hindi headline overlay.
 - Hindi TTS endpoint (provider quota/billing may apply).
 - Google OAuth 2.0 connect/status/disconnect.
 - YouTube Data API v3 resumable upload for an already-rendered MP4/MOV/WebM, up to 90 MB per request. Upload defaults to **Private**; user must explicitly choose another privacy level.
