@@ -12,6 +12,12 @@ const path = require("node:path");
 
 const lipsync = require("../lib/lipsync");
 const ffmpegTools = require("../lib/ffmpeg");
+// Honest skip: with no FFmpeg binary the render-based tests cannot run, and a
+// failure would be a lie about the code rather than about the environment.
+const SKIP_NO_FFMPEG = ffmpegTools.ffmpegAvailableSync()
+  ? false
+  : "FFmpeg binary not available (set FFMPEG_PATH)";
+
 
 const FFMPEG = process.env.FFMPEG_PATH || "";
 
@@ -49,7 +55,7 @@ test("engine detection reports the real source", () => {
   assert.match(lipsync.engineLabel(), /Rhubarb/);
 });
 
-test("a real narration file produces a real mouth-cue timeline", { timeout: 180000 }, async () => {
+test("a real narration file produces a real mouth-cue timeline", { timeout: 180000, skip: SKIP_NO_FFMPEG }, async () => {
   const engine = lipsync.resolveEngine();
   if (!engine) return test.skip("no lip-sync engine installed (optional)");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-lip-"));
@@ -65,7 +71,7 @@ test("a real narration file produces a real mouth-cue timeline", { timeout: 1800
   assert.equal(result.source, "Rhubarb Lip Sync (MIT)");
 });
 
-test("analysis is cached beside the narration", { timeout: 180000 }, async () => {
+test("analysis is cached beside the narration", { timeout: 180000, skip: SKIP_NO_FFMPEG }, async () => {
   const engine = lipsync.resolveEngine();
   if (!engine) return test.skip("no lip-sync engine installed (optional)");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-lipcache-"));
@@ -78,7 +84,7 @@ test("analysis is cached beside the narration", { timeout: 180000 }, async () =>
   assert.equal(second.cues.length, first.cues.length);
 });
 
-test("no engine means an explicit blocked error, never invented cues", { timeout: 60000 }, async () => {
+test("no engine means an explicit blocked error, never invented cues", { timeout: 60000, skip: SKIP_NO_FFMPEG }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-lipnone-"));
   const audio = await makeAudio(dir, 1, "no-engine.wav");
   await assert.rejects(

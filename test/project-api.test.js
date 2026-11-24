@@ -21,6 +21,7 @@ process.env.FFMPEG_PRESET = "ultrafast";
 
 const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../server");
 const { authedHeaders } = require("./helpers");
+const ffmpegTools = require("../lib/ffmpeg");
 
 const PNG_1X1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -119,7 +120,7 @@ test("capabilities report the real feature matrix and blocked animation", async 
   assert.equal(typeof body.animationMode, "string");
 });
 
-test("one-click automation produces a real MP4 from story to render", { timeout: 240000 }, async () => {
+test("one-click automation produces a real MP4 from story to render", { timeout: 240000, skip: ffmpegTools.ffmpegAvailableSync() ? false : "FFmpeg binary not available (set FFMPEG_PATH)" }, async () => {
   setAIClientFactoryForTests(fakeGemini);
   try {
     const created = await api("/api/projects", {

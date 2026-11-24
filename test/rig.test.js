@@ -16,6 +16,12 @@ const { registerAndLogin, authHeaders } = require("./helpers");
 const { CharacterLibrary, validateRig } = require("../lib/characters");
 const ffmpegTools = require("../lib/ffmpeg");
 const { MOUTH_SHAPES } = require("../lib/characters");
+// Honest skip: with no FFmpeg binary the render-based tests cannot run, and a
+// failure would be a lie about the code rather than about the environment.
+const SKIP_NO_FFMPEG = ffmpegTools.ffmpegAvailableSync()
+  ? false
+  : "FFmpeg binary not available (set FFMPEG_PATH)";
+
 
 let server;
 let base;
@@ -35,6 +41,9 @@ test.before(async () => {
   });
   assert.equal(created.status, 200);
   characterId = (await created.json()).character.id;
+
+  // Everything below needs FFmpeg; the character above does not.
+  if (!ffmpegTools.ffmpegAvailableSync()) return;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-sprite-"));
   const file = path.join(dir, "mouth.png");
@@ -60,7 +69,7 @@ test("a character starts without an animation rig", async () => {
   assert.match(body.animation.message, /sprites/);
 });
 
-test("uploading real mouth sprites makes the character animation-ready", async () => {
+test("uploading real mouth sprites makes the character animation-ready", { skip: SKIP_NO_FFMPEG }, async () => {
   const mouth = {};
   for (const shape of ["A", "B", "X"]) mouth[shape] = spriteBase64;
   const response = await call("/api/characters/" + encodeURIComponent(characterId) + "/rig", {
@@ -83,7 +92,7 @@ test("uploading real mouth sprites makes the character animation-ready", async (
   assert.equal(body.character.rig.animationReady, true);
 });
 
-test("the character API now reports the rig honestly", async () => {
+test("the character API now reports the rig honestly", { skip: SKIP_NO_FFMPEG }, async () => {
   const response = await call("/api/characters/" + encodeURIComponent(characterId));
   const body = await response.json();
   assert.equal(body.animation.ready, true);
@@ -101,7 +110,7 @@ test("invalid sprites are rejected and never written", async () => {
   assert.deepEqual(body.invalid, ["C"]);
 });
 
-test("another user cannot upload or delete the rig", async () => {
+test("another user cannot upload or delete the rig", { skip: SKIP_NO_FFMPEG }, async () => {
   process.env.APP_REGISTRATION_KEY = "team-key";
   const other = await registerAndLogin(base, "rig_other", { registrationKey: "team-key" });
   const upload = await fetch(base + "/api/characters/" + encodeURIComponent(characterId) + "/rig", {
@@ -127,7 +136,7 @@ test("validateRig ignores paths that do not exist on disk", () => {
   assert.equal(rig.anchor.y, 0);
 });
 
-test("deleting the rig removes the sprites", async () => {
+test("deleting the rig removes the sprites", { skip: SKIP_NO_FFMPEG }, async () => {
   const before = await call("/api/characters/" + encodeURIComponent(characterId));
   const rig = (await before.json()).character.rig;
   const files = Object.values(rig.mouth).filter(Boolean);
@@ -138,7 +147,7 @@ test("deleting the rig removes the sprites", async () => {
   assert.equal((await after.json()).animation.ready, false);
 });
 
-test("editing a character keeps its rig", async () => {
+test("editing a character keeps its rig", { skip: SKIP_NO_FFMPEG }, async () => {
   const mouth = {};
   for (const shape of ["A", "X"]) mouth[shape] = spriteBase64;
   await call("/api/characters/" + encodeURIComponent(characterId) + "/rig", {
@@ -153,7 +162,7 @@ test("editing a character keeps its rig", async () => {
   assert.equal(saved.rig.animationReady, true, "rig must survive a character edit");
 });
 
-test("the lipsync endpoint analyses real audio and returns cues", { timeout: 180000 }, async () => {
+test("the lipsync endpoint analyses real audio and returns cues", { timeout: 180000, skip: SKIP_NO_FFMPEG }, async () => {
   const lipsync = require("../lib/lipsync");
   if (!lipsync.resolveEngine()) return test.skip("lip-sync engine not installed (optional)");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-rigaudio-"));

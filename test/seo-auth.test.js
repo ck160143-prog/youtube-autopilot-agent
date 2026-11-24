@@ -22,6 +22,11 @@ const { ProjectStore, createProject } = require("../lib/projects");
 const { authedHeaders } = require("./helpers");
 const ffmpegTools = require("../lib/ffmpeg");
 
+// The thumbnail test renders a real JPEG through FFmpeg; skip honestly without it.
+const SKIP_NO_FFMPEG = ffmpegTools.ffmpegAvailableSync()
+  ? false
+  : "FFmpeg binary not available (set FFMPEG_PATH)";
+
 const PNG_1X1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
@@ -102,7 +107,7 @@ test("SEO package is generated and stored on the project", async () => {
   }
 });
 
-test("thumbnail is a real JPEG built from scene 1", async () => {
+test("thumbnail is a real JPEG built from scene 1", { skip: SKIP_NO_FFMPEG }, async () => {
   const store = new ProjectStore({ root: path.join(dataDir, "projects") });
   const project = createProject({ topic: "thumbnail", durationMinutes: 1, sceneCount: 3 });
   const sceneDir = path.join(store.dirFor(project.id), "scenes");

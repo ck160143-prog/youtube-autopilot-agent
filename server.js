@@ -1450,7 +1450,9 @@ const fontsLib = require("./lib/fonts");
 function setupRuntime() {
   return {
     env: process.env,
-    ffmpeg: { available: Boolean(ffmpegTools.resolveFfmpegPath()), version: null },
+    // resolveFfmpegPath() always returns something (it falls back to "ffmpeg"),
+    // so presence alone is not proof that a working binary exists.
+    ffmpeg: { available: ffmpegTools.ffmpegAvailableSync(), version: null },
     fontFile: fontsLib.resolveFontFile(),
     youtubeReady: youtubeConfigReady(),
     lipSync: { available: Boolean(lipsyncEngine.resolveEngine()), source: lipsyncEngine.resolveEngine() ? lipsyncEngine.resolveEngine().source : "none" },
@@ -1476,9 +1478,15 @@ app.post("/api/setup/verify", async (req, res) => {
   const results = [];
   const push = (id, status, detail) => results.push({ id, status, detail });
 
+  // ffmpegVersion() returns null (instead of throwing) when the binary cannot
+  // run, so a null version must never be reported as "ok".
   try {
-    runtime.ffmpeg.version = await ffmpegTools.ffmpegVersion();
-    push("FFMPEG", "ok", "ffmpeg " + runtime.ffmpeg.version);
+    const version = await ffmpegTools.ffmpegVersion();
+    if (!version) push("FFMPEG", "blocked", "FFmpeg binary नहीं चला — FFMPEG_PATH दें या ffmpeg install करें");
+    else {
+      runtime.ffmpeg.version = version;
+      push("FFMPEG", "ok", "ffmpeg " + version);
+    }
   } catch (error) {
     push("FFMPEG", "blocked", redactSecrets(error.message || "FFmpeg नहीं चला"));
   }

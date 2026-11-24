@@ -14,6 +14,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-setup-"));
 const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../server");
 const { registerAndLogin, authHeaders } = require("./helpers");
 const { auditSetup, redactSecrets, keyLooksValid, setupGuideFor } = require("../lib/setup");
+const ffmpegTools = require("../lib/ffmpeg");
 
 let server;
 let base;
@@ -113,7 +114,11 @@ test("verify reports real checks and never claims success without a key", async 
     assert.equal(response.status, 200);
     const byId = Object.fromEntries(body.results.map(item => [item.id, item]));
     assert.equal(byId.GEMINI_API_KEY.status, "blocked");
-    assert.equal(byId.FFMPEG.status, "ok");
+    // FFMPEG is "ok" only where a real binary exists; elsewhere it must be
+    // "blocked", never a fake "ok" with a null version.
+    const ffmpegOk = await ffmpegTools.ffmpegAvailable();
+    assert.equal(byId.FFMPEG.status, ffmpegOk ? "ok" : "blocked");
+    if (!ffmpegOk) assert.match(byId.FFMPEG.detail, /नहीं चला/);
     assert.equal(byId.DATA_DIR.status, "ok");
     assert.equal(body.ok, false);
     assert.ok(Array.isArray(body.setupGuide) && body.setupGuide.length >= 1);
@@ -223,7 +228,8 @@ test("verify checks every configured model from a single models.list call", asyn
     assert.equal(byRole.image.status, "ok");
     assert.equal(byRole.tts.status, "ok");
     assert.equal(byRole.scriptFallback.status, "warn", "optional fallback is a warning, not a failure");
-    assert.equal(body.ok, true);
+    // The models are visible, so the verdict follows only the host's FFmpeg.
+    assert.equal(body.ok, await ffmpegTools.ffmpegAvailable());
     assert.equal(body.missing.includes("GEMINI_SCRIPT_FALLBACK_MODEL"), false);
     const byId = Object.fromEntries(body.results.map(item => [item.id, item]));
     assert.equal(byId.GEMINI_SCRIPT_MODEL.status, "ok");

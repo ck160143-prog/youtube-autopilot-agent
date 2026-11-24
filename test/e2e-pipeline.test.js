@@ -21,6 +21,12 @@ const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../se
 const { registerAndLogin, authHeaders } = require("./helpers");
 const ffmpegTools = require("../lib/ffmpeg");
 const lipsync = require("../lib/lipsync");
+// Honest skip: with no FFmpeg binary the render-based tests cannot run, and a
+// failure would be a lie about the code rather than about the environment.
+const SKIP_NO_FFMPEG = ffmpegTools.ffmpegAvailableSync()
+  ? false
+  : "FFmpeg binary not available (set FFMPEG_PATH)";
+
 
 const FFMPEG = process.env.FFMPEG_PATH || "";
 
@@ -77,6 +83,7 @@ test.before(async () => {
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
   session = await registerAndLogin(base, "e2e_user");
+  if (!ffmpegTools.ffmpegAvailableSync()) return;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-e2e-sprites-"));
   const mouth = path.join(dir, "mouth.png");
@@ -101,7 +108,7 @@ async function call(url, options) {
   return fetch(base + url, { ...(options || {}), headers: authHeaders(session, (options && options.headers) || {}) });
 }
 
-test("a rigged character is animated on the real cue timeline inside the full render", { timeout: 400000 }, async () => {
+test("a rigged character is animated on the real cue timeline inside the full render", { timeout: 400000, skip: SKIP_NO_FFMPEG }, async () => {
   if (!FFMPEG) return test.skip("FFmpeg binary not available (set FFMPEG_PATH)");
   if (!lipsync.resolveEngine()) return test.skip("lip-sync engine not installed (optional)");
 
@@ -169,7 +176,7 @@ test("a rigged character is animated on the real cue timeline inside the full re
   assert.equal(bytes.length, fs.statSync(final.project.render.videoPath).size);
 });
 
-test("a character without a rig renders normally, with no fake animation", { timeout: 300000 }, async () => {
+test("a character without a rig renders normally, with no fake animation", { timeout: 300000, skip: SKIP_NO_FFMPEG }, async () => {
   if (!FFMPEG) return test.skip("FFmpeg binary not available (set FFMPEG_PATH)");
   // Remove the rig first: without sprites the same story must not animate.
   if (riggedCharacterId) {

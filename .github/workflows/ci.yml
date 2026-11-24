@@ -13,6 +13,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      # The renderer, rig, lip-sync and end-to-end tests assert on a real MP4.
+      # Without a binary they skip, which would make CI silently test nothing.
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
