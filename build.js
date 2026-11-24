@@ -39,7 +39,6 @@ const MANIFEST = [
   "lib/renderer.js",
   "lib/story.js",
   "lib/timeline.js",
-  "netlify.toml",
   "package-lock.json",
   "package.json",
   "render.yaml",

@@ -350,8 +350,16 @@ function sendAPIError(res, error, fallbackMessage, kind) {
 
 // 1. सर्वर की स्थिति
 app.get("/api/health", (req, res) => {
+  // Liveness only: this stays 200 so the platform health check never fails a
+  // deploy. Readiness is reported separately, because "process is serving" and
+  // "the pipeline can run" are different claims.
+  const blocked = [];
+  if (!process.env.GEMINI_API_KEY) blocked.push("GEMINI_API_KEY");
+  if (!ffmpegTools.ffmpegVersionSync()) blocked.push("FFMPEG");
   res.json({
     status: "ok",
+    ready: blocked.length === 0,
+    blocked,
     geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
     message: "BABA AI सर्वर चल रहा है।",
   });
@@ -2252,7 +2260,12 @@ const PORT = process.env.PORT || 3000;
 // Allow node:test to import retry/quota helpers without binding a server port.
 if (require.main === module) {
   app.listen(PORT, "0.0.0.0", () => {
+    const ffmpegBin = ffmpegTools.resolveFfmpegPath();
+    const ffmpegVer = ffmpegTools.ffmpegVersionSync();
     console.log("BABA AI Server running on port " + PORT);
+    // Never a secret: just which binary renders, and whether it runs at all.
+    console.log("FFmpeg: " + (ffmpegVer ? ffmpegVer + " (" + ffmpegBin + ")" : "NOT AVAILABLE (" + ffmpegBin + ")"));
+    if (!process.env.GEMINI_API_KEY) console.log("GEMINI_API_KEY: not set - generation is blocked");
   });
 }
 

@@ -284,13 +284,28 @@ leave it unset unless this command reports it available.
 
 ## Deployment
 
-`render.yaml` runs the Node server (`npm start`). `netlify.toml` only publishes
-the static `dist/`, so a Netlify deploy has no API — use it for the frontend
-alone or remove it.
+**Render is the only deploy target.** `render.yaml` runs the Node server
+(`npm start`) and declares every environment variable the server reads; secrets
+are `sync: false`, so their values live only in the Render dashboard. The old
+`netlify.toml` was removed: `dist/` holds the project zip, not the dashboard, so
+a static deploy there could never serve the API.
+
+Service name in `render.yaml` is `youtube-autopilot-agent-1` on purpose — it
+must match the existing Render service, otherwise a Blueprint sync creates a
+second service instead of updating the live one.
 
 Free-tier caveats: 512 MB RAM, ephemeral disk, sleep after inactivity. A 30
 minute render will not finish on a free instance; the chunked renderer resumes,
-so re-running the same project continues from the last chunk.
+so re-running the same project continues from the last chunk. Set
+`FFMPEG_PRESET=ultrafast` to trade quality for speed. Projects and renders live
+under `DATA_DIR` (default `./data`), which does not survive a redeploy on the
+free plan.
+
+FFmpeg: Render's native runtime ships 4.1, and the renderer is tested on 4.1,
+4.2 and 9.x. `npm ci` also installs the newer `ffmpeg-static` binary; the code
+prefers it and falls back to the one on PATH. `GET /api/health` always answers
+200 (liveness) and reports `ready: false` with the blocked component names until
+the Gemini key and a working FFmpeg are present.
 
 ---
 
