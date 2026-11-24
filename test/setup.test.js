@@ -13,7 +13,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-setup-"));
 
 const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../server");
 const { registerAndLogin, authHeaders } = require("./helpers");
-const { auditSetup, redactSecrets, keyLooksValid, setupGuideFor } = require("../lib/setup");
+const { auditSetup, redactSecrets, keyLooksValid, setupGuideFor, cleanSecret, readSecret, keyShape } = require("../lib/setup");
 const ffmpegTools = require("../lib/ffmpeg");
 
 let server;
@@ -164,11 +164,72 @@ test("verify reports a rejected key honestly", async () => {
     assert.equal(check.status, "blocked");
     assert.match(check.detail, /not valid/i);
     assert.equal(body.ok, false);
+    // A rejected key is configured but unusable. It must never be reported as
+    // "missing": that wording sent users hunting for a variable that was set.
+    assert.equal((body.missing || []).includes("GEMINI_API_KEY"), false);
+    assert.equal((body.failed || []).includes("GEMINI_API_KEY"), true);
+    assert.equal(check.reason, "rejected");
+    assert.equal(body.keyShape.present, true);
+    assert.equal(body.keyShape.looksLikeAIStudio, true);
+    // The response explains the key without ever carrying it.
+    assert.equal(JSON.stringify(body).includes(process.env.GEMINI_API_KEY), false);
   } finally {
     if (previous === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = previous;
     resetAIClientFactory();
   }
+});
+
+test("a key pasted with quotes still works instead of being rejected", async () => {
+  const previous = process.env.GEMINI_API_KEY;
+  const realKey = "AIza" + "q".repeat(35);
+  process.env.GEMINI_API_KEY = '"' + realKey + '"';   // exactly what a dashboard paste does
+  setAIClientFactoryForTests(() => ({ models: { list: async () => ({ page: async () => [] }) } }));
+  try {
+    const response = await call("/api/setup/verify", { method: "POST" });
+    const body = await response.json();
+    const check = body.results.find(item => item.id === "GEMINI_API_KEY");
+    assert.equal(check.status, "ok");
+    assert.equal(body.keyShape.hadQuotes, true);
+    assert.equal(body.keyShape.looksLikeAIStudio, true);
+    // The key itself must not appear in either list: it is present and accepted.
+    // (Model IDs may still be blocked here; that is a separate check.)
+    assert.equal((body.failed || []).includes("GEMINI_API_KEY"), false);
+    assert.equal((body.missing || []).includes("GEMINI_API_KEY"), false);
+    assert.equal(JSON.stringify(body).includes(realKey), false);
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previous;
+    resetAIClientFactory();
+  }
+});
+
+test("the Gemini key is only ever read through readSecret", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const raw = source.match(/process\.env\.GEMINI_API_KEY/g) || [];
+  assert.equal(raw.length, 1,
+    "only keyShape may read the raw value; every other read bypasses cleanSecret");
+  assert.match(source, /keyShape\(process\.env\.GEMINI_API_KEY\)/);
+  assert.match(source, /apiKey: readSecret\("GEMINI_API_KEY"\)/);
+});
+
+test("cleanSecret strips matching quotes and whitespace, nothing else", () => {
+  assert.equal(cleanSecret('"AIza123"'), "AIza123");
+  assert.equal(cleanSecret("  'AIza123'\n"), "AIza123");
+  assert.equal(cleanSecret("\"AIza123\""), "AIza123");
+  // An unmatched quote is a real value problem and must not be silently "fixed".
+  assert.equal(cleanSecret('"AIza123'), '"AIza123');
+  assert.equal(cleanSecret("AIza123"), "AIza123");
+  assert.equal(cleanSecret(null), "");
+  assert.equal(readSecret("DEFINITELY_NOT_SET"), "");
+});
+
+test("keyShape describes a key without ever containing it", () => {
+  const key = "AIza" + "k".repeat(35);
+  const shape = keyShape('"' + key + '"');
+  assert.deepEqual(shape, { present: true, length: 39, hadQuotes: true, looksLikeAIStudio: true });
+  assert.equal(JSON.stringify(shape).includes(key), false);
+  assert.equal(keyShape("").present, false);
 });
 
 test("setupGuideFor returns null for an unknown check", () => {
@@ -260,9 +321,10 @@ test("verify never claims availability for a model the key cannot see", async ()
     assert.equal(byRole.tts.status, "blocked");
     assert.equal(byRole.scriptFallback.status, "warn");
     assert.equal(body.ok, false, "an invisible required model must fail the verdict");
-    assert.ok(body.missing.includes("GEMINI_SCRIPT_MODEL"));
-    assert.ok(body.missing.includes("GEMINI_IMAGE_MODEL"));
-    assert.ok(body.missing.includes("GEMINI_TTS_MODEL"));
+    assert.ok(body.failed.includes("GEMINI_SCRIPT_MODEL"));
+    assert.ok(body.failed.includes("GEMINI_IMAGE_MODEL"));
+    assert.ok(body.failed.includes("GEMINI_TTS_MODEL"));
+    assert.equal((body.missing || []).length, 0);
     const byId = Object.fromEntries(body.results.map(item => [item.id, item]));
     assert.match(byId.GEMINI_SCRIPT_MODEL.detail, /नहीं मिला/);
   } finally {

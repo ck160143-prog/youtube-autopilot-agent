@@ -2210,6 +2210,19 @@ try {
   }
 
   // ---------- Setup audit ----------
+  // Shape only (length / quotes / pattern): the key itself is never rendered.
+  function keyShapeNote(shape) {
+    if (!shape || !shape.present) return '';
+    if (shape.hadQuotes) {
+      return ' Key के अंदर quotes हैं — Render में value बिना quotes के फिर से save करें।';
+    }
+    if (!shape.looksLikeAIStudio) {
+      return ' Key का आकार Google AI Studio key जैसा नहीं है (लंबाई ' + shape.length +
+        ') — नई key बनाएँ, या paste करते समय पूरी key कॉपी हुई है यह जाँचें।';
+    }
+    return ' Key का आकार सही है — फिर भी reject हो तो Google Cloud project में "Generative Language API" enable करें।';
+  }
+
   function renderGuide(items) {
     var box = el('setupGuide');
     if (!box) return;
@@ -2246,9 +2259,11 @@ try {
       el('setupCard').hidden = false;
       renderChecks(body.checks);
       renderGuide(body.setupGuide);
+      var geminiCheck = (body.checks || []).filter(function (c) { return c.id === 'GEMINI_API_KEY'; })[0];
       text('setupStatus', body.ok
         ? '✅ ज़रूरी चीज़ें तैयार हैं। Verify setup दबाकर असली जाँच करें।'
-        : '⛔ ' + (body.missing || []).join(', ') + ' गायब है — नीचे के steps अपनाएँ।', !body.ok);
+        : '⛔ ' + (body.missing || []).join(', ') + ' set ही नहीं है — नीचे के steps अपनाएँ।' +
+          keyShapeNote(geminiCheck && geminiCheck.shape), !body.ok);
     } catch (error) {
       text('setupStatus', '❌ ' + (error.message || 'Setup जाँच विफल।'), true);
     }
@@ -2265,9 +2280,14 @@ try {
       renderChecks((body.results || []).map(function (item) {
         return { label: item.id, status: item.status, detail: item.detail };
       }));
+      var missing = body.missing || [];
+      var failed = body.failed || [];
       text('setupStatus', body.ok
         ? '✅ Setup verify हुआ — अब वीडियो बनाया जा सकता है।'
-        : '⛔ कुछ checks fail हुए — नीचे देखें। कोई नकली success नहीं दिखाई गई।', !body.ok);
+        : (missing.length
+            ? '⛔ ' + missing.join(', ') + ' set ही नहीं है।'
+            : '⚠️ ' + failed.join(', ') + ' configure तो है, पर verify नहीं हुआ — यह "गायब" नहीं है।') +
+          keyShapeNote(body.keyShape), !body.ok);
     } catch (error) {
       text('setupStatus', '❌ ' + (error.message || 'Verify विफल।'), true);
     } finally {
