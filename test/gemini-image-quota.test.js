@@ -1,6 +1,12 @@
 const test = require("node:test");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-"));
+
 const assert = require("node:assert/strict");
 const { withTemporaryRetries, extractRetryHint, quotaInfo } = require("../server.js");
+const { authedHeaders } = require("./helpers");
 
 test("429 RESOURCE_EXHAUSTED is never retried", async () => {
   let calls = 0;
@@ -74,7 +80,7 @@ test("image route preserves successful scenes and stops after a scene-level 429"
     const address = server.address();
     const response = await fetch(`http://127.0.0.1:${address.port}/api/images`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: await authedHeaders(`http://127.0.0.1:${address.port}`),
       body: JSON.stringify({ script: "test script" })
     });
     const body = await response.json();

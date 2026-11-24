@@ -1,6 +1,9 @@
 {
   "name": "baba-ai-youtube-agent",
   "version": "1.0.0",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "build": "node build.js",
@@ -11,5 +14,11 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "ffmpeg-static": "^5.2.0"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.1"
+  },
+  "optionalDependencies": {
+    "rhubarb-lip-sync-wasm": "^0.1.8"
   }
 }

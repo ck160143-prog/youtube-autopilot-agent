@@ -3,12 +3,120 @@ require("dotenv").config();
 
 const express = require("express");
 const { GoogleGenAI } = require("@google/genai");
+const fs = require("fs");
+const path = require("path");
+
+const dataRoot = process.env.DATA_DIR || path.join(__dirname, "data");
 
 const app = express();
 
 // Render payloads contain base64-encoded scene images plus narration; allow the documented 12 MB image + 8 MB audio payload with base64 overhead.
 app.use(express.json({ limit: "35mb" }));
-app.use(express.static("dist"));
+// Serve the built dashboard. Paths are absolute so `npm start` works from any
+// cwd, and a missing build falls back to the source page instead of a 404.
+const distDir = path.join(__dirname, "dist");
+app.use(express.static(distDir));
+if (!fs.existsSync(path.join(distDir, "index.html"))) {
+  app.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
+}
+
+/* ---- Phase 3: sessions, CSRF, rate limiting ---- */
+const {
+  AuthStore, sessionMiddleware, requireAuth, csrfMiddleware,
+  cookieHeader, clearCookieHeader, readCookie, SESSION_COOKIE,
+} = require("./lib/auth");
+const { createRateLimiter } = require("./lib/ratelimit");
+const { redactSecrets } = require("./lib/setup");
+
+app.set("trust proxy", 1);
+const authStore = new AuthStore({ dir: dataRoot }).load();
+const rateLimit = createRateLimiter({ multiplier: Number(process.env.API_RATE_LIMIT_MULTIPLIER) || 1 });
+
+app.use("/api", sessionMiddleware(authStore));
+// Rate limit before CSRF/auth so a flood is rejected cheaply, and the bucket
+// can key on the resolved user.
+app.use("/api", rateLimit);
+app.use("/api", csrfMiddleware());
+
+// Public endpoints: liveness, auth status, login/register and the OAuth
+// redirect targets (which carry their own state validation).
+const PUBLIC_API_PATHS = new Set([
+  "/health", "/auth/status", "/auth/login", "/auth/register", "/youtube/callback",
+]);
+app.use("/api", (req, res, next) => {
+  if (PUBLIC_API_PATHS.has(req.path)) return next();
+  if (req.path === "/youtube/connect" && !req.user) {
+    return res.redirect("/?login=1");
+  }
+  return requireAuth(req, res, next);
+});
+
+app.get("/api/auth/status", (req, res) => {
+  return res.json({
+    authenticated: Boolean(req.user),
+    registrationOpen: authStore.userCount() === 0 || Boolean(process.env.APP_REGISTRATION_KEY),
+    user: req.user || null,
+  });
+});
+
+app.post("/api/auth/register", (req, res) => {
+  try {
+    const { username, password, registrationKey } = req.body || {};
+    const user = authStore.register({ username, password, registrationKey });
+    if (user.role === "owner") {
+      // First account adopts everything created before authentication existed.
+      projectStore.adoptOwner(user.id);
+      characterLibrary.adoptOwner(user.id);
+    }
+    const session = authStore.createSession(user.id);
+    res.setHeader("Set-Cookie", cookieHeader(session.id));
+    return res.status(201).json({ user, csrfToken: session.csrfToken });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message || "Account नहीं बना।" });
+  }
+});
+
+app.post("/api/auth/login", (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const session = authStore.login(username, password);
+    res.setHeader("Set-Cookie", cookieHeader(session.id));
+    const user = authStore.getUser(session.userId);
+    return res.json({ user, csrfToken: session.csrfToken });
+  } catch (error) {
+    return res.status(error.statusCode || 401).json({ error: error.message || "Login विफल।" });
+  }
+});
+
+app.post("/api/auth/logout", requireAuth, (req, res) => {
+  const id = readCookie(req, SESSION_COOKIE);
+  if (id) authStore.destroySession(id);
+  res.setHeader("Set-Cookie", clearCookieHeader());
+  return res.json({ success: true });
+});
+
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  return res.json({ user: req.user, csrfToken: req.session ? req.session.csrfToken : null });
+});
+
+// Optional access gate for a personal deployment. Off unless APP_ACCESS_KEY is
+// set, so local development is unchanged; when set, every /api request must
+// present the key (header or cookie) except the health check and the OAuth
+// redirect endpoints, which a browser reaches without custom headers.
+const ACCESS_KEY = process.env.APP_ACCESS_KEY || "";
+if (ACCESS_KEY) {
+  app.use("/api", (req, res, next) => {
+    const open = req.path === "/health" || req.path === "/youtube/callback" || req.path === "/youtube/connect";
+    if (open) return next();
+    const cookie = String(req.headers.cookie || "").split(";").map(v => v.trim())
+      .find(v => v.startsWith("baba_access_key="));
+    const supplied = req.get("x-access-key") || (cookie ? decodeURIComponent(cookie.split("=").slice(1).join("=")) : "");
+    const expected = Buffer.from(ACCESS_KEY);
+    const given = Buffer.from(String(supplied));
+    if (given.length === expected.length && crypto.timingSafeEqual(given, expected)) return next();
+    return res.status(401).json({ error: "Access key जरूरी है। Settings में APP_ACCESS_KEY भरें।" });
+  });
+}
 
 const crypto = require("crypto");
 
@@ -40,6 +148,24 @@ function safeLog(label, error) {
 
 function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// A hung provider call would otherwise block the single-job worker forever.
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("Gemini request समय पर जवाब नहीं दे रही (" + label + ")।");
+      error.statusCode = 504;
+      reject(error);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function geminiTimeoutMs() {
+  const raw = Number(process.env.GEMINI_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1000 ? Math.min(raw, 600000) : 90000;
 }
 
 async function withTemporaryRetries(operation, maxRetries = 2) {
@@ -138,7 +264,7 @@ function quotaMessage(kind, model, error) {
       (hint ? " Google का retry/reset संकेत: " + hint + "." : "") +
       " Google AI Studio में उसी API key/project का usage और quota जाँचें।";
   }
-  return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1").message;
+  return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image").message;
 }
 
 let aiClientFactory = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -152,29 +278,57 @@ function resetAIClientFactory() {
 }
 
 function getAIClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
 
   if (!apiKey) {
     const error = new Error("GEMINI_API_KEY सेट नहीं है।");
     error.code = "NO_API_KEY";
     throw error;
   }
+  // A pasted key with a newline or a space fails inside the SDK with a
+  // confusing message; fail here with an actionable one instead.
+  if (/\s/.test(apiKey)) {
+    const error = new Error("GEMINI_API_KEY में whitespace/newline है। Key को फिर से साफ़ करके सेट करें।");
+    error.code = "BAD_API_KEY";
+    error.statusCode = 500;
+    throw error;
+  }
 
   return aiClientFactory();
+}
+
+// A missing key is a configuration state, never a server fault. Every Gemini
+// route answers with the same shape: 503 + blocked:true + setup.steps.
+const GEMINI_SETUP_STEPS = [
+  "Google AI Studio (aistudio.google.com/app/apikey) पर key बनाएँ",
+  "GEMINI_API_KEY को .env या hosting के environment में डालें",
+  "सर्वर रीस्टार्ट करके 'Verify setup' दबाएँ",
+];
+
+function geminiKeyBlocked(featureLabel) {
+  const label = featureLabel ? " " + featureLabel + " BLOCKED है।" : "";
+  return {
+    error: "GEMINI_API_KEY सेट नहीं है।" + label + " Dashboard का Setup panel खोलें या README देखें।",
+    blocked: true,
+    setup: { steps: GEMINI_SETUP_STEPS.slice() },
+  };
 }
 
 function sendAPIError(res, error, fallbackMessage, kind) {
   safeLog(fallbackMessage, error);
 
   if (error.code === "NO_API_KEY") {
-    return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
+    return res.status(503).json(geminiKeyBlocked());
+  }
+  if (error.code === "BAD_API_KEY") {
+    return res.status(500).json({ error: redactSecrets(error.message) });
   }
   if (isQuotaError(error)) {
     const operationKind = kind || "script";
     const model = operationKind === "voice"
       ? (process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts")
       : operationKind === "images"
-        ? (process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1")
+        ? (process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image")
         : (error.model || process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash");
     return res.status(429).json({ error: quotaMessage(operationKind, model, error) });
   }
@@ -191,13 +345,21 @@ function sendAPIError(res, error, fallbackMessage, kind) {
   if (status === 400) {
     return res.status(502).json({ error: "Gemini ने request अस्वीकार की (HTTP 400)। मॉडल/feature compatibility या request format जाँचें।" });
   }
-  return res.status(500).json({ error: fallbackMessage + " (server status " + (status || "unknown") + ") Render Logs जाँचें।" });
+  return res.status(500).json({ error: redactSecrets(fallbackMessage) + " (server status " + (status || "unknown") + ") Render Logs जाँचें।" });
 }
 
 // 1. सर्वर की स्थिति
 app.get("/api/health", (req, res) => {
+  // Liveness only: this stays 200 so the platform health check never fails a
+  // deploy. Readiness is reported separately, because "process is serving" and
+  // "the pipeline can run" are different claims.
+  const blocked = [];
+  if (!process.env.GEMINI_API_KEY) blocked.push("GEMINI_API_KEY");
+  if (!ffmpegTools.ffmpegVersionSync()) blocked.push("FFMPEG");
   res.json({
     status: "ok",
+    ready: blocked.length === 0,
+    blocked,
     geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
     message: "BABA AI सर्वर चल रहा है।",
   });
@@ -222,7 +384,7 @@ app.post("/api/voice", async (req, res) => {
       });
     }
 
-    const model = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
+    const model = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
     const voiceName = "Kore";
     const cacheKey = crypto.createHash("sha256")
       .update(JSON.stringify([model, voiceName, text]))
@@ -472,7 +634,7 @@ app.post("/api/images", async (req, res) => {
 
     const ai = getAIClient();
     const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
-    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
+    const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
     const visualStyle = ["3d-cartoon", "cinematic", "realistic"].includes(req.body?.visualStyle) ? req.body.visualStyle : "3d-cartoon";
     const stylePrompt = visualStyle === "3d-cartoon"
       ? "High-quality polished 3D animated Indian comedy cartoon, stylized expressive characters, detailed Indian roadside tea stall or village street when appropriate, cinematic soft lighting, vibrant but natural colors, family-friendly, consistent character designs across every scene. Same characters must keep identical face, hairstyle, outfit and body proportions in all scenes. Clearly 3D CGI animation render, not a real photograph, not live-action. "
@@ -558,7 +720,9 @@ ${script.slice(0, 18000)}
       try {
         // A 429 is project/key quota exhaustion: never send more image requests to fallback models.
         // Only model-compatibility errors (400/404) may try one explicitly configured fallback.
-        const imageModels = [...new Set([imageModel, "gemini-3.1-flash-image"])];
+        // Declared default first; the previously declared model stays as the only
+        // model-compatibility fallback, so the candidate set is unchanged.
+        const imageModels = [...new Set([imageModel, "gemini-nano-banana-2.1"])];
         let imageResponse = null;
         let lastImageError = null;
         for (let modelIndex = 0; modelIndex < imageModels.length; modelIndex++) {
@@ -660,7 +824,8 @@ ${script.slice(0, 18000)}
   } catch (error) {
     safeLog("Gemini scene image plan failed", error);
     if (error.code === "NO_API_KEY") {
-      return res.status(500).json({ error: "सर्वर पर Gemini API key configure नहीं है।" });
+      // Configuration state, not a server fault: same blocked shape as /api/voice.
+      return res.status(503).json(geminiKeyBlocked("Image generation"));
     }
     if (isQuotaError(error)) {
       const failedModel = quotaModel || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
@@ -824,13 +989,109 @@ app.post("/api/youtube/disconnect", (req, res) => {
   clearYoutubeSession(res);
   return res.json({ success: true });
 });
+// Upload preflight: everything the real upload would check, minus the upload.
+// It never calls Google's upload endpoints; the only optional network call is a
+// read-only channels.list when `verifyToken` is requested.
+app.post("/api/youtube/upload/preflight", async (req, res) => {
+  const body = req.body || {};
+  const checks = [];
+  const push = (id, ok, detail) => checks.push({ id, ok: Boolean(ok), detail });
+
+  push("OAUTH_CONFIG", youtubeConfigReady(),
+    youtubeConfigReady() ? "client id/secret/redirect + APP_SESSION_SECRET present" : "YOUTUBE_* env vars या APP_SESSION_SECRET गायब हैं");
+
+  let token = null;
+  try {
+    token = youtubeConfigReady() ? readYoutubeSession(req) : null;
+  } catch (_) { token = null; }
+  push("CHANNEL_CONNECTED", Boolean(token && token.access_token),
+    token && token.access_token
+      ? "चैनल connected" + (token.channel && token.channel.title ? " (" + token.channel.title + ")" : "")
+      : "पहले 'YouTube चैनल Connect करें'");
+
+  if (token && token.access_token && body.verifyToken === true) {
+    try {
+      const fresh = await getYoutubeAccessToken(req, res);
+      const probe = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+        headers: { Authorization: "Bearer " + fresh },
+      });
+      const data = await probe.json().catch(() => ({}));
+      push("TOKEN_VALID", probe.ok && Boolean(data.items && data.items[0]),
+        probe.ok ? "token वाज़िब है" : "token reject हुआ (HTTP " + probe.status + ")");
+    } catch (error) {
+      push("TOKEN_VALID", false, redactSecrets(error.message || "token check विफल"));
+    }
+  }
+
+  // Video: either a project that has been rendered, or an explicit size/mime.
+  let bytes = null;
+  let mime = String(body.mime || "video/mp4").split(";")[0];
+  if (body.projectId) {
+    const project = ownedProjectById(req, res, String(body.projectId));
+    if (!project) return;
+    const file = project.render && project.render.videoPath;
+    if (file && fs.existsSync(file)) {
+      bytes = fs.statSync(file).size;
+      push("VIDEO_FILE", true, "rendered MP4 मौजूद है (" + (bytes / 1024 / 1024).toFixed(1) + " MB)");
+    } else {
+      push("VIDEO_FILE", false, "इस project का rendered MP4 नहीं मिला — पहले render करें");
+    }
+  } else {
+    bytes = Number(body.size) || null;
+    push("VIDEO_FILE", bytes !== null, bytes !== null ? "declared size " + (bytes / 1024 / 1024).toFixed(1) + " MB" : "size या projectId भेजें");
+  }
+  if (bytes !== null) {
+    push("VIDEO_SIZE_LIMIT", bytes <= 90 * 1024 * 1024, bytes <= 90 * 1024 * 1024 ? "90 MB सीमा के अंदर" : "90 MB से बड़ा — hosted upload नहीं होगा");
+  }
+  push("VIDEO_MIME", ["video/mp4", "video/quicktime", "video/webm"].includes(mime), "mime: " + mime);
+
+  const title = String(body.title || "").trim();
+  const description = String(body.description || "");
+  const privacy = String(body.privacy || "private");
+  push("TITLE", title.length > 0 && title.length <= 100, title ? title.length + "/100 अक्षर" : "title जरूरी है");
+  push("DESCRIPTION", description.length <= 5000, description.length + "/5000 अक्षर");
+  push("PRIVACY", ["private", "unlisted", "public"].includes(privacy), "privacy: " + privacy);
+
+  const ok = checks.every(item => item.ok);
+  return res.json({
+    ok,
+    checks,
+    wouldUpload: false,
+    note: ok
+      ? "सब कुछ तैयार है। असली upload आपके explicit confirm के बिना नहीं होगा।"
+      : "जो checks fail हुए हैं उन्हें पहले ठीक करें। कोई upload नहीं हुआ।",
+  });
+});
+
 app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }), async (req, res) => {
+  // Publishing is irreversible: the client must state the confirmation again
+  // in the request itself, not just in the UI.
+  if (String(req.get("x-confirm-upload") || "").toLowerCase() !== "yes") {
+    return res.status(409).json({
+      error: "Upload के लिए explicit confirmation चाहिए (x-confirm-upload: yes)।",
+      code: "CONFIRM_REQUIRED",
+    });
+  }
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
   if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: "MP4 वीडियो फ़ाइल भेजें।" });
   if (req.body.length > 90 * 1024 * 1024) return res.status(413).json({ error: "इस hosted upload में 90 MB तक की फ़ाइल स्वीकार है।" });
-  const title = String(req.headers["x-video-title"] || "").trim().slice(0, 100);
-  const description = String(req.headers["x-video-description"] || "").slice(0, 5000);
-  const privacy = String(req.headers["x-video-privacy"] || "private");
+  let title = String(req.headers["x-video-title"] || "").trim().slice(0, 100);
+  let description = String(req.headers["x-video-description"] || "").slice(0, 5000);
+  let privacy = String(req.headers["x-video-privacy"] || "private");
+  // Non-Latin-1 text (Hindi titles/descriptions) cannot travel in an HTTP
+  // header: browsers reject header values above 0xFF before the request is
+  // sent. Metadata therefore also accepts a base64 JSON blob.
+  const metaHeader = req.headers["x-video-meta-b64"];
+  if (metaHeader) {
+    try {
+      const meta = JSON.parse(Buffer.from(String(metaHeader), "base64").toString("utf8"));
+      if (typeof meta.title === "string") title = meta.title.trim().slice(0, 100);
+      if (typeof meta.description === "string") description = meta.description.slice(0, 5000);
+      if (typeof meta.privacy === "string") privacy = meta.privacy;
+    } catch (_) {
+      return res.status(400).json({ error: "Video metadata decode नहीं हुई।" });
+    }
+  }
   const mime = String(req.headers["content-type"] || "video/mp4").split(";")[0];
   if (!title) return res.status(400).json({ error: "YouTube वीडियो का title भरें।" });
   if (!["private", "unlisted", "public"].includes(privacy)) return res.status(400).json({ error: "Privacy private/unlisted/public में से चुनें।" });
@@ -871,9 +1132,7 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
 
 
 /* ---- Render a narrated slideshow MP4 from generated scene images + Gemini TTS ---- */
-const fs = require("fs");
 const os = require("os");
-const path = require("path");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
@@ -903,9 +1162,9 @@ function validateRenderPayload(body) {
   }
   return null;
 }
-const renderJobs = new Map();
-const MAX_RENDER_JOBS = 1;
-const MAX_RETAINED_RENDER_JOBS = 30;
+// One render runs at a time; a second request waits in the persistent queue
+// instead of being rejected, so long videos survive a server restart.
+const MAX_RENDER_JOBS = 2;
 
 async function renderToFile(body) {
   const scenes = body.scenes;
@@ -915,7 +1174,7 @@ async function renderToFile(body) {
   try {
     // Keep filesystem failures inside this route's JSON error boundary.
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "baba-render-"));
-    const ffmpegPath = require("ffmpeg-static");
+    const ffmpegPath = require("./lib/ffmpeg").resolveFfmpegPath();
     if (!ffmpegPath) throw Object.assign(new Error("FFmpeg binary उपलब्ध नहीं।"), { statusCode: 503 });
     const imagePaths = [];
     for (let i = 0; i < scenes.length; i++) {
@@ -972,57 +1231,1008 @@ async function renderToFile(body) {
 app.post("/api/render", async (req, res) => {
   const invalid = validateRenderPayload(req.body);
   if (invalid) return res.status(invalid.status).json({ error: invalid.error });
-  const activeJobs = Array.from(renderJobs.values()).filter(j => j.status === "queued" || j.status === "processing").length;
-  if (activeJobs >= MAX_RENDER_JOBS) return res.status(429).json({ error: "अभी दूसरे वीडियो render हो रहे हैं। थोड़ी देर बाद retry करें।" });
-  if (renderJobs.size >= MAX_RETAINED_RENDER_JOBS) {
-    for (const [id, oldJob] of renderJobs) {
-      if (oldJob.status === "completed" || oldJob.status === "failed") {
-        if (oldJob.tempDir) fs.promises.rm(oldJob.tempDir, { recursive: true, force: true }).catch(() => {});
-        renderJobs.delete(id);
-        if (renderJobs.size < MAX_RETAINED_RENDER_JOBS) break;
-      }
-    }
-  }
-  const jobId = require("crypto").randomUUID();
-  const job = { id: jobId, status: "queued", createdAt: Date.now(), updatedAt: Date.now(), error: null, tempDir: null, outputPath: null, size: null };
-  renderJobs.set(jobId, job);
-  res.status(202).json({ jobId, status: job.status, statusUrl: "/api/render/status/" + jobId });
-  setImmediate(async () => {
-    job.status = "processing"; job.updatedAt = Date.now();
-    try {
-      const result = await renderToFile(req.body);
-      job.tempDir = result.tempDir; job.outputPath = result.outputPath; job.size = result.size;
-      job.status = "completed"; job.updatedAt = Date.now();
-    } catch (error) {
-      safeLog("Background render job failed", error);
-      job.status = "failed"; job.error = error.statusCode ? error.message : "वीडियो render नहीं हो सका। FFmpeg/Render resources जाँचें और retry करें।";
-      job.updatedAt = Date.now();
-    }
-  });
+  // The queue is persistent: a render accepted before a restart resumes from
+  // its stored payload instead of being lost with the process.
+  const backlog = jobQueue.list({ type: "render" }).filter(job => job.status === "queued" || job.status === "processing");
+  if (backlog.length >= MAX_RENDER_JOBS) return res.status(429).json({ error: "अभी दूसरे वीडियो render हो रहे हैं। थोड़ी देर बाद retry करें।" });
+  const job = jobQueue.create({ type: "render", ownerId: req.user.id, payload: req.body, maxAttempts: 1 });
+  res.status(202).json({ jobId: job.id, status: job.status, statusUrl: "/api/render/status/" + job.id });
 });
 
 app.get("/api/render/status/:jobId", (req, res) => {
-  const job = renderJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: "Render job नहीं मिला या server restart के बाद हट गया।" });
-  return res.json({ jobId: job.id, status: job.status, error: job.error, size: job.size,
+  const job = jobQueue.get(req.params.jobId);
+  // Another user's job id must be indistinguishable from an unknown one.
+  if (!job || (job.ownerId && job.ownerId !== req.user.id)) {
+    return res.status(404).json({ error: "Render job नहीं मिला।" });
+  }
+  return res.json({ jobId: job.id, status: job.status, error: job.error, size: job.result && job.result.size,
     downloadUrl: job.status === "completed" ? "/api/render/download/" + job.id : null,
     updatedAt: new Date(job.updatedAt).toISOString() });
 });
 
 app.get("/api/render/download/:jobId", (req, res) => {
-  const job = renderJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: "Render job नहीं मिला या server restart के बाद हट गया।" });
-  if (job.status !== "completed" || !job.outputPath) return res.status(409).json({ error: "वीडियो अभी डाउनलोड के लिए तैयार नहीं है।" });
+  const job = jobQueue.get(req.params.jobId);
+  if (!job || (job.ownerId && job.ownerId !== req.user.id)) {
+    return res.status(404).json({ error: "Render job नहीं मिला।" });
+  }
+  if (job.status !== "completed" || !job.result || !job.result.outputPath) {
+    return res.status(409).json({ error: "वीडियो अभी डाउनलोड के लिए तैयार नहीं है।" });
+  }
+  const outputPath = job.result.outputPath;
+  const size = job.result.size;
+  if (!fs.existsSync(outputPath)) return res.status(410).json({ error: "Rendered फ़ाइल अब उपलब्ध नहीं है। दोबारा render करें।" });
   res.setHeader("Content-Type", "video/mp4");
   res.setHeader("Content-Disposition", 'attachment; filename="BABA-AI-video.mp4"');
-  res.setHeader("Content-Length", String(job.size));
-  return res.sendFile(job.outputPath, err => {
+  if (size) res.setHeader("Content-Length", String(size));
+  return res.sendFile(outputPath, err => {
     if (err) safeLog("MP4 download failed", err);
-    if (job.tempDir) fs.promises.rm(job.tempDir, { recursive: true, force: true }).catch(() => {});
-    renderJobs.delete(job.id);
+    if (job.result.tempDir) fs.promises.rm(job.result.tempDir, { recursive: true, force: true }).catch(() => {});
+    jobQueue.remove(job.id);
   });
 });
 
+
+/* ---- Phase 2: characters, story engine, project pipeline, real renderer ---- */
+const { CharacterLibrary } = require("./lib/characters");
+const characterLibrary = new CharacterLibrary({
+  file: path.join(dataRoot, "characters.json"),
+}).load();
+
+const { ProjectStore, createProject } = require("./lib/projects");
+const projectStore = new ProjectStore({ root: path.join(dataRoot, "projects") });
+const recoveredProjects = projectStore.recoverInterrupted();
+if (recoveredProjects) console.log("Resumed " + recoveredProjects + " interrupted project(s) from disk");
+
+const storyEngine = require("./lib/story");
+const timelineEngine = require("./lib/timeline");
+const pipeline = require("./lib/pipeline");
+const ffmpegTools = require("./lib/ffmpeg");
+
+// Persistent queue: job state (and the render payload) is written to disk, so
+// jobs accepted before a restart are resumed instead of silently disappearing.
+const { JobQueue } = require("./lib/jobs");
+const jobQueue = new JobQueue({ dir: path.join(dataRoot, "jobs") }).load();
+jobQueue.logger = line => safeLog(line);
+jobQueue.handler("render", async job => {
+  const result = await renderToFile(job.payload);
+  return { tempDir: result.tempDir, outputPath: result.outputPath, size: result.size };
+});
+jobQueue.handler("project", async job => {
+  if (runningProjects.has(job.projectId)) {
+    throw Object.assign(new Error("प्रोजेक्ट पहले से चल रहा है।"), { statusCode: 409 });
+  }
+  runningProjects.set(job.projectId, { startedAt: Date.now() });
+  try {
+    await runProjectStage(job.projectId, job.stage);
+  } finally {
+    runningProjects.delete(job.projectId);
+  }
+  return { projectId: job.projectId, stage: job.stage };
+});
+jobQueue.start();
+
+// One background job per project; a second request for the same project is
+// rejected instead of silently racing the first one.
+const runningProjects = new Map();
+
+function geminiProviders() {
+  const ai = getAIClient();
+  const scriptModel = process.env.GEMINI_SCRIPT_MODEL || "gemini-3.8-flash";
+  const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+  const ttsModel = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
+  return {
+    text: {
+      generate: async prompt => {
+        const generated = await withTimeout(
+          generateTextWithQuotaFallback(ai, prompt, scriptModel),
+          geminiTimeoutMs(), "text " + scriptModel
+        );
+        return generated.response.text;
+      },
+    },
+    image: {
+      generate: async prompt => {
+        const response = await withTimeout(withTemporaryRetries(() => ai.models.generateContent({
+          model: imageModel,
+          contents: prompt,
+          config: { responseModalities: ["TEXT", "IMAGE"] },
+        })), geminiTimeoutMs(), "image " + imageModel);
+        const part = (response.candidates?.[0]?.content?.parts || [])
+          .find(item => item.inlineData?.data && String(item.inlineData.mimeType || "").startsWith("image/"));
+        if (!part) {
+          throw Object.assign(new Error("Gemini ने image payload नहीं दिया।"), { statusCode: 502 });
+        }
+        return { mimeType: part.inlineData.mimeType, imageBase64: part.inlineData.data };
+      },
+    },
+    voice: {
+      generate: async (text, options = {}) => {
+        const voiceName = options.voiceName || "Kore";
+        const response = await withTimeout(withTemporaryRetries(() => ai.models.generateContent({
+          model: ttsModel,
+          contents: [{ parts: [{ text }] }],
+          config: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+          },
+        })), geminiTimeoutMs(), "voice " + ttsModel);
+        const part = (response.candidates?.[0]?.content?.parts || []).find(item => item.inlineData?.data);
+        if (!part) {
+          throw Object.assign(new Error("Gemini ने audio payload नहीं दिया।"), { statusCode: 502 });
+        }
+        return {
+          mimeType: part.inlineData.mimeType || "audio/L16;rate=24000",
+          audioBase64: part.inlineData.data,
+          voiceName,
+        };
+      },
+    },
+  };
+}
+
+// Every project lookup goes through here so one user can never read, render or
+// delete another user's project.
+function ownedProjectById(req, res, id) {
+  const project = projectStore.get(id);
+  if (!project) {
+    res.status(404).json({ error: "प्रोजेक्ट नहीं मिला।" });
+    return null;
+  }
+  if (project.ownerId && project.ownerId !== req.user.id) {
+    res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
+    return null;
+  }
+  return project;
+}
+
+function ownedProject(req, res) {
+  const project = projectStore.get(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "प्रोजेक्ट नहीं मिला।" });
+    return null;
+  }
+  if (project.ownerId && project.ownerId !== req.user.id) {
+    res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
+    return null;
+  }
+  return project;
+}
+
+function blocked(message) {
+  return { blocked: true, error: message };
+}
+
+// Honest feature matrix: what is wired, what needs a key, what does not exist.
+app.get("/api/capabilities", async (req, res) => {
+  const ffmpegOk = await ffmpegTools.ffmpegAvailable();
+  const hasKey = Boolean(process.env.GEMINI_API_KEY);
+  const lipEngine = lipsyncEngine.resolveEngine();
+  const rigged = characterLibrary.listFor(req.user.id).filter(c => c.rig && c.rig.animationReady);
+  const features = {
+    story: hasKey ? "available" : "blocked",
+    sceneImages: hasKey ? "available" : "blocked",
+    voice: hasKey ? "available" : "blocked",
+    render: ffmpegOk ? "available" : "blocked",
+    captions: ffmpegOk ? "available" : "blocked",
+    music: ffmpegOk ? "available" : "blocked",
+    // 2D puppet animation: real mouth sprites + real Rhubarb cues. Only the
+    // characters that actually have a rig can animate, and only with an engine.
+    characterAnimation: rigged.length ? "available" : "blocked",
+    lipSync: lipEngine ? (rigged.length ? "available" : "blocked") : "blocked",
+    youtubeUpload: youtubeConfigReady() ? "available" : "blocked",
+  };
+  const reasons = [];
+  if (!hasKey) reasons.push("GEMINI_API_KEY सेट नहीं है — story, images और voice नहीं चलेंगे।");
+  if (!ffmpegOk) reasons.push("FFmpeg binary नहीं मिला — rendering नहीं चलेगी।");
+  if (!youtubeConfigReady()) reasons.push("YouTube OAuth configure नहीं है — upload नहीं चलेगा।");
+  if (!lipEngine) {
+    reasons.push("Lip-sync engine installed नहीं है (npm install rhubarb-lip-sync-wasm)।");
+  } else if (!rigged.length) {
+    reasons.push("किसी character के पास mouth sprites (rig) नहीं हैं — animation तभी चलेगी।");
+  }
+  return res.json({
+    features,
+    blockedReasons: reasons,
+    models: Object.fromEntries(configuredModels().map(model => [model.role, model.id])),
+    ffmpeg: { available: ffmpegOk, version: ffmpegOk ? await ffmpegTools.ffmpegVersion() : null },
+    animationProvider: lipEngine ? lipsyncEngine.engineLabel() : "none",
+    animationReadyCharacters: rigged.map(c => ({ id: c.id, name: c.name, shapes: c.rig.shapes })),
+    animationMode: lipEngine && rigged.length
+      ? "2D puppet: mouth sprites swapped on real Rhubarb cues (not full-body 3D animation)"
+      : "none",
+    limits: {
+      maxDurationMinutes: 30,
+      maxScenes: 150,
+      renderResolution: "720p default, 1080p optional",
+      renderMode: "Ken Burns camera motion + optional 2D mouth overlay on rigged characters",
+    },
+  });
+});
+
+// ---- Setup audit: what is configured, what is missing, and how to fix it ----
+const { auditSetup, setupGuideFor } = require("./lib/setup");
+const lipsyncEngine = require("./lib/lipsync");
+const { MODEL_CHECKS, configuredModels, listModelIds } = require("./lib/models");
+const fontsLib = require("./lib/fonts");
+
+function setupRuntime() {
+  return {
+    env: process.env,
+    // resolveFfmpegPath() always returns something (it falls back to "ffmpeg"),
+    // so presence alone is not proof that a working binary exists.
+    ffmpeg: { available: ffmpegTools.ffmpegAvailableSync(), version: null },
+    fontFile: fontsLib.resolveFontFile(),
+    youtubeReady: youtubeConfigReady(),
+    lipSync: { available: Boolean(lipsyncEngine.resolveEngine()), source: lipsyncEngine.resolveEngine() ? lipsyncEngine.resolveEngine().source : "none" },
+    dataDir: dataRoot,
+  };
+}
+
+app.get("/api/setup", async (req, res) => {
+  try {
+    const runtime = setupRuntime();
+    if (runtime.ffmpeg.available) runtime.ffmpeg.version = await ffmpegTools.ffmpegVersion();
+    return res.json(auditSetup(runtime));
+  } catch (error) {
+    return res.status(500).json({ error: "Setup audit विफल: " + redactSecrets(error.message || error) });
+  }
+});
+
+// One real check per item. With a key present this calls models.list() (free
+// metadata, no tokens) so a bad key is reported as bad instead of discovered
+// halfway through a render.
+app.post("/api/setup/verify", async (req, res) => {
+  const runtime = setupRuntime();
+  const results = [];
+  const push = (id, status, detail) => results.push({ id, status, detail });
+
+  // ffmpegVersion() returns null (instead of throwing) when the binary cannot
+  // run, so a null version must never be reported as "ok".
+  try {
+    const version = await ffmpegTools.ffmpegVersion();
+    if (!version) push("FFMPEG", "blocked", "FFmpeg binary नहीं चला — FFMPEG_PATH दें या ffmpeg install करें");
+    else {
+      runtime.ffmpeg.version = version;
+      push("FFMPEG", "ok", "ffmpeg " + version);
+    }
+  } catch (error) {
+    push("FFMPEG", "blocked", redactSecrets(error.message || "FFmpeg नहीं चला"));
+  }
+
+  try {
+    const font = fontsLib.resolveFontFile();
+    const bytes = font ? fs.readFileSync(font) : null;
+    push("DEVANAGARI_FONT", bytes && bytes.length > 100 * 1024 ? "ok" : "warn",
+      bytes ? ("font " + (bytes.length / 1024).toFixed(0) + " KB") : "bundled font नहीं मिला");
+  } catch (error) {
+    push("DEVANAGARI_FONT", "warn", redactSecrets(error.message || "font पढ़ा नहीं गया"));
+  }
+
+  try {
+    fs.mkdirSync(dataRoot, { recursive: true });
+    const probe = path.join(dataRoot, ".write-probe-" + process.pid);
+    fs.writeFileSync(probe, "ok");
+    fs.rmSync(probe, { force: true });
+    push("DATA_DIR", "ok", "writable");
+  } catch (error) {
+    push("DATA_DIR", "blocked", redactSecrets(error.message || "data directory लिखने योग्य नहीं"));
+  }
+
+  const engine = lipsyncEngine.resolveEngine();
+  push("LIPSYNC_ENGINE", engine ? "ok" : "blocked", engine ? engine.label : "not installed (optional)");
+
+  push("YOUTUBE_OAUTH", youtubeConfigReady() ? "ok" : "blocked",
+    youtubeConfigReady() ? "configured (secrets hidden)" : "not configured");
+
+  const key = String(process.env.GEMINI_API_KEY || "").trim();
+  let modelIds = null;
+  if (!key) {
+    push("GEMINI_API_KEY", "blocked", "not set");
+  } else {
+    try {
+      const ai = getAIClient();
+      const listed = await Promise.race([
+        ai.models.list(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 15000)),
+      ]);
+      // One metadata call answers both questions: is the key valid, and which of
+      // the configured model IDs can this key actually use?
+      modelIds = await listModelIds(listed);
+      push("GEMINI_API_KEY", "ok", "key accepted by Gemini API" + (modelIds.size ? " (" + modelIds.size + " models visible)" : ""));
+    } catch (error) {
+      push("GEMINI_API_KEY", "blocked", redactSecrets(error.message || "Gemini ने key reject की"));
+    }
+  }
+
+  // Availability is claimed only for IDs actually present in models.list. An
+  // absent ID is reported as missing — it is never presented as usable.
+  const modelAvailability = [];
+  for (const model of configuredModels()) {
+    let status = "unknown";
+    let detail = "models.list नहीं हो सका — availability unknown";
+    if (modelIds) {
+      const seen = modelIds.has(model.id);
+      status = seen ? "ok" : (model.required ? "blocked" : "warn");
+      detail = seen
+        ? "इस key के लिए models.list में मिला"
+        : (model.required
+          ? "models.list में नहीं मिला — model ID या इस key की access जाँचें"
+          : "models.list में नहीं मिला — यह fallback इस्तेमाल नहीं हो पाएगा (optional)");
+    }
+    modelAvailability.push({ role: model.role, id: model.id, required: model.required, status });
+    push(model.checkId, status, detail);
+  }
+
+  const audit = auditSetup(runtime);
+  // Only the checks a render actually needs decide the verdict: YouTube and the
+  // optional lip-sync engine must not fail an otherwise working setup.
+  const REQUIRED = ["FFMPEG", "DEVANAGARI_FONT", "DATA_DIR", "GEMINI_API_KEY",
+    "GEMINI_SCRIPT_MODEL", "GEMINI_IMAGE_MODEL", "GEMINI_TTS_MODEL"];
+  const ok = results.filter(item => REQUIRED.includes(item.id)).every(item => item.status === "ok");
+  return res.json({
+    verifiedAt: new Date().toISOString(),
+    ok,
+    missing: results.filter(item => item.status === "blocked").map(item => item.id),
+    results,
+    models: modelAvailability,
+    setupGuide: audit.setupGuide,
+    note: "Secrets कभी response में नहीं आते।",
+  });
+});
+
+app.get("/api/setup/guide/:checkId", (req, res) => {
+  const guide = setupGuideFor(String(req.params.checkId || "").toUpperCase());
+  if (!guide) return res.status(404).json({ error: "इस check के लिए guide नहीं है।" });
+  return res.json(Object.assign({ id: req.params.checkId }, guide));
+});
+
+// ---- Character library ----
+app.get("/api/characters", (req, res) => {
+  return res.json({ characters: characterLibrary.listFor(req.user.id) });
+});
+
+app.post("/api/characters", (req, res) => {
+  try {
+    const body = { ...(req.body || {}), ownerId: req.user.id };
+    const existing = characterLibrary.listFor(req.user.id);
+    const index = existing.findIndex(c => c.id === body.id);
+    const saved = characterLibrary.upsert(body, index >= 0 ? index : existing.length);
+    return res.json({ character: saved });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message || "किरदार सेव नहीं हुआ।" });
+  }
+});
+
+app.delete("/api/characters/:id", (req, res) => {
+  const character = characterLibrary.get(req.params.id);
+  if (!character || (character.ownerId && character.ownerId !== req.user.id)) {
+    return res.status(404).json({ error: "किरदार नहीं मिला।" });
+  }
+  characterLibrary.remove(req.params.id);
+  return res.json({ success: true, characters: characterLibrary.listFor(req.user.id) });
+});
+
+// ---- Animation rig: real mouth sprites on disk, nothing simulated ----
+const { MOUTH_SHAPES } = require("./lib/characters");
+const lipsync = require("./lib/lipsync");
+const animator = require("./lib/animator");
+
+function decodeSprite(value) {
+  const raw = String(value || "");
+  const match = raw.match(/^data:([^;]+);base64,(.*)$/s);
+  const mime = match ? match[1].toLowerCase() : null;
+  const body = match ? match[2] : raw;
+  if (!body) return null;
+  const bytes = Buffer.from(body, "base64");
+  if (!bytes.length) return null;
+  if (bytes.length > 2 * 1024 * 1024) return null;
+  const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (!png && !jpeg) return null;
+  if (mime && !/^image\/(png|jpeg)$/.test(mime)) return null;
+  return { bytes, mime: png ? "image/png" : "image/jpeg" };
+}
+
+function ownedCharacter(req, res) {
+  const character = characterLibrary.get(req.params.id);
+  if (!character || (character.ownerId && character.ownerId !== req.user.id)) {
+    res.status(404).json({ error: "किरदार नहीं मिला।" });
+    return null;
+  }
+  return character;
+}
+
+app.get("/api/characters/:id", (req, res) => {
+  const character = ownedCharacter(req, res);
+  if (!character) return;
+  const rig = character.rig || null;
+  return res.json({
+    character,
+    animation: {
+      ready: Boolean(rig && rig.animationReady),
+      shapes: rig ? rig.shapes : [],
+      anchor: rig ? rig.anchor : null,
+      lipSyncEngine: lipsync.engineLabel(),
+      message: rig && rig.animationReady
+        ? "Animation rig तैयार है।"
+        : "Mouth sprites अपलोड करें तभी lip-sync चलेगा।",
+    },
+  });
+});
+
+// Upload one or more mouth/expression sprites. Base64 bodies are validated by
+// magic bytes and written as real files under data/characters/<id>/.
+app.post("/api/characters/:id/rig", (req, res) => {
+  const character = ownedCharacter(req, res);
+  if (!character) return;
+  const body = req.body || {};
+  const existing = character.rig || {};
+  const next = {
+    mouth: Object.assign({}, existing.mouth || {}),
+    expressions: Object.assign({}, existing.expressions || {}),
+    anchor: Object.assign({}, existing.anchor || {}, body.anchor || {}),
+    source: "manual",
+  };
+
+  let written = 0;
+  const failures = [];
+  for (const shape of MOUTH_SHAPES) {
+    const value = body.mouth && body.mouth[shape];
+    if (!value) continue;
+    const sprite = decodeSprite(value);
+    if (!sprite) { failures.push(shape); continue; }
+    const file = characterLibrary.spritePath(character.id, "mouth", shape);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, sprite.bytes);
+    next.mouth[shape] = file;
+    written += 1;
+  }
+  for (const name of ["neutral", "happy", "sad", "angry", "surprised"]) {
+    const value = body.expressions && body.expressions[name];
+    if (!value) continue;
+    const sprite = decodeSprite(value);
+    if (!sprite) { failures.push(name); continue; }
+    const file = characterLibrary.spritePath(character.id, "expression", name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, sprite.bytes);
+    next.expressions[name] = file;
+    written += 1;
+  }
+  if (!written) {
+    return res.status(400).json({
+      error: "कोई सही image नहीं मिली। PNG/JPEG अपलोड करें।",
+      invalid: failures,
+    });
+  }
+  const updated = characterLibrary.setRig(character.id, next, req.user.id);
+  return res.json({
+    character: updated,
+    written,
+    invalid: failures,
+    animationReady: Boolean(updated.rig && updated.rig.animationReady),
+    shapes: updated.rig ? updated.rig.shapes : [],
+  });
+});
+
+app.delete("/api/characters/:id/rig", (req, res) => {
+  const character = ownedCharacter(req, res);
+  if (!character) return;
+  const updated = characterLibrary.removeRig(character.id, req.user.id);
+  return res.json({ character: updated, success: true });
+});
+
+// Analyse narration and return the mouth-cue timeline (used by the dashboard
+// preview and by the renderer). Blocked, with install steps, when no engine.
+app.post("/api/characters/:id/lipsync", async (req, res) => {
+  const character = ownedCharacter(req, res);
+  if (!character) return;
+  const audioBase64 = String((req.body || {}).audioBase64 || "");
+  if (!audioBase64) return res.status(400).json({ error: "audioBase64 चाहिए।" });
+  if (!lipsync.resolveEngine()) {
+    return res.status(503).json(Object.assign(blocked(
+      "Lip-sync engine installed नहीं है (npm install rhubarb-lip-sync-wasm या RHUBARB_PATH)।"
+    ), { setup: { steps: [
+      "npm install rhubarb-lip-sync-wasm",
+      "या native binary का path RHUBARB_PATH में सेट करें",
+    ] } }));
+  }
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-lipsync-"));
+  const audioPath = path.join(tempDir, "narration.audio");
+  try {
+    fs.writeFileSync(audioPath, Buffer.from(audioBase64, "base64"));
+    const result = await lipsync.analyseAudio({
+      audioPath,
+      runFfmpeg: ffmpegTools.runFfmpeg,
+      dialogText: String((req.body || {}).dialogText || "").slice(0, 4000),
+    });
+    return res.json({
+      cues: result.cues,
+      durationSeconds: result.durationSeconds,
+      shapes: result.shapes,
+      engine: result.engine,
+      source: result.source,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message || "Lip-sync विफल।" });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ---- Story generation (requires a real provider key) ----
+app.post("/api/story", async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Story generation BLOCKED है।"));
+  }
+  try {
+    const { topic, language, style, durationMinutes, characterIds } = req.body || {};
+    if (typeof topic !== "string" || !topic.trim()) {
+      return res.status(400).json({ error: "कहानी का विषय लिखें।" });
+    }
+    if (topic.trim().length > 300) {
+      return res.status(400).json({ error: "विषय 300 अक्षरों से छोटा रखें।" });
+    }
+    const minutes = Math.min(30, Math.max(1, Number(durationMinutes) || 1));
+    const sceneCount = storyEngine.planSceneCount(minutes);
+    const all = characterLibrary.listFor(req.user.id);
+    const selected = Array.isArray(characterIds) && characterIds.length
+      ? all.filter(c => characterIds.includes(c.id))
+      : all.slice(0, 4);
+    const prompt = storyEngine.buildStoryPrompt({
+      topic: topic.trim(),
+      language: language === "English" ? "English" : "हिंदी",
+      style: ["3d-cartoon", "cinematic", "realistic"].includes(style) ? style : "3d-cartoon",
+      sceneCount,
+      characters: selected,
+      durationMinutes: minutes,
+    });
+    const providers = geminiProviders();
+    const text = await providers.text.generate(prompt);
+    const parsed = storyEngine.parseStory(text, {
+      sceneCount,
+      characters: selected,
+      language: language === "English" ? "English" : "हिंदी",
+      style: ["3d-cartoon", "cinematic", "realistic"].includes(style) ? style : "3d-cartoon",
+    });
+    return res.json({ story: parsed, sceneCount, provider: "gemini" });
+  } catch (error) {
+    return sendAPIError(res, error, "कहानी नहीं बन सकी।");
+  }
+});
+
+// ---- Projects ----
+app.get("/api/projects", (req, res) => {
+  return res.json({ projects: projectStore.listFor(req.user.id) });
+});
+
+app.post("/api/projects", (req, res) => {
+  try {
+    const body = req.body || {};
+    if (typeof body.topic !== "string" || !body.topic.trim()) {
+      return res.status(400).json({ error: "प्रोजेक्ट का विषय लिखें।" });
+    }
+    const project = createProject({
+      ownerId: req.user.id,
+      topic: body.topic,
+      language: body.language,
+      style: body.style,
+      aspect: body.aspect,
+      quality: body.quality,
+      durationMinutes: body.durationMinutes,
+      sceneCount: Math.min(150, Math.max(3, Number(body.sceneCount) || storyEngine.planSceneCount(body.durationMinutes))),
+    });
+    projectStore.save(project);
+    return res.status(201).json({ project });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message || "प्रोजेक्ट नहीं बना।" });
+  }
+});
+
+app.get("/api/projects/:id", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  return res.json({ project });
+});
+
+app.delete("/api/projects/:id", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (runningProjects.has(req.params.id)) {
+    return res.status(409).json({ error: "प्रोजेक्ट अभी चल रहा है; पहले रुकवाएँ।" });
+  }
+  const removed = projectStore.remove(req.params.id);
+  if (!removed) return res.status(404).json({ error: "प्रोजेक्ट नहीं मिला।" });
+  return res.json({ success: true });
+});
+
+function projectStageTask(stage) {
+  return async current => { await runProjectStage(current.id, stage); };
+}
+
+function startProjectJob(id, task, options = {}) {
+  if (runningProjects.has(id)) {
+    return { started: false, status: 409, error: "इस प्रोजेक्ट का काम पहले से चल रहा है।" };
+  }
+  const project = projectStore.get(id);
+  if (!project) return { started: false, status: 404, error: "प्रोजेक्ट नहीं मिला।" };
+  runningProjects.set(id, { startedAt: Date.now() });
+  // Track the stage on disk so a restart resumes the same work instead of
+  // leaving the project stuck in "interrupted".
+  const job = options.stage
+    ? jobQueue.track({
+      id: options.jobId, type: "project", projectId: id, stage: options.stage,
+      ownerId: project.ownerId || null, maxAttempts: 2,
+    })
+    : null;
+  setImmediate(async () => {
+    try {
+      await task(project);
+      if (job) jobQueue.complete(job.id, { projectId: id, stage: options.stage });
+    } catch (error) {
+      safeLog("Project job failed", error);
+      project.status = "failed";
+      project.error = error.statusCode && error.statusCode >= 500 && error.statusCode < 600
+        ? (error.message || "काम विफल रहा।")
+        : (error.message || "काम विफल रहा।");
+      project.progress = { ...(project.progress || {}), stage: "failed", message: project.error, updatedAt: new Date().toISOString() };
+      projectStore.save(project);
+      if (job) jobQueue.fail(job.id, error);
+    } finally {
+      runningProjects.delete(id);
+    }
+  });
+  return { started: true, status: 202, project };
+}
+
+function progressSaver(current) {
+  return event => {
+    current.progress = { ...current.progress, ...event, updatedAt: new Date().toISOString() };
+    projectStore.save(current);
+  };
+}
+
+// A stage is a pure function of the project on disk: finished scenes are
+// skipped and missing ones rebuilt, so the same task can be replayed after a
+// restart (either by the queue worker or by an explicit resume).
+async function runProjectStage(projectId, stage) {
+  const project = projectStore.get(projectId);
+  if (!project) throw Object.assign(new Error("प्रोजेक्ट नहीं मिला।"), { statusCode: 404 });
+  if (!["story", "assets", "render", "automate"].includes(stage)) {
+    throw Object.assign(new Error("अनजान project stage: " + stage), { statusCode: 400 });
+  }
+  if (project.status === "cancelled") return project;
+  const characters = characterLibrary.listFor(project.ownerId);
+  const saveProgress = progressSaver(project);
+  if (stage === "story") {
+    projectStore.setStatus(project, "story", "कहानी लिखी जा रही है…");
+    await pipeline.generateStory(project, { provider: geminiProviders(), characters: characters.slice(0, 4) });
+    projectStore.setStatus(project, "story", "कहानी तैयार (" + project.story.scenes.length + " दृश्य)");
+    return project;
+  }
+  if (stage === "assets") {
+    if (!project.story) throw Object.assign(new Error("पहले कहानी बनाएँ।"), { statusCode: 409 });
+    projectStore.setStatus(project, "generating", "Images और आवाज़ बन रही हैं…");
+    await pipeline.generateAssets(project, {
+      provider: geminiProviders(), store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, onProgress: saveProgress,
+    });
+    projectStore.setStatus(project, "assets", "सभी scenes के assets तैयार");
+    projectStore.save(project);
+    return project;
+  }
+  if (stage === "render") {
+    if (!project.story) throw Object.assign(new Error("पहले कहानी बनाएँ।"), { statusCode: 409 });
+    projectStore.setStatus(project, "rendering", "MP4 render हो रहा है…");
+    const result = await pipeline.render(project, {
+      store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
+      characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
+    });
+    project.status = "completed";
+    project.error = null;
+    project.progress = {
+      stage: "completed", percent: 100,
+      message: "MP4 तैयार (" + (result.size / 1024 / 1024).toFixed(1) + " MB, " + Math.round(result.duration) + " सेकंड)",
+      updatedAt: new Date().toISOString(),
+    };
+    projectStore.save(project);
+    return project;
+  }
+  // automate: story -> assets -> render, resuming at whatever step is missing.
+  if (!project.story) {
+    projectStore.setStatus(project, "story", "कहानी लिखी जा रही है…");
+    await pipeline.generateStory(project, { provider: geminiProviders(), characters: characters.slice(0, 4) });
+    projectStore.save(project);
+  }
+  if (project.status === "cancelled") {
+    project.progress = { ...(project.progress || {}), stage: "cancelled", message: "कहानी के बाद रोका गया", updatedAt: new Date().toISOString() };
+    return projectStore.save(project);
+  }
+  const missing = project.story.scenes.filter(scene => {
+    const asset = project.assets.scenes[scene.index];
+    return !asset || !asset.image || !asset.audio;
+  });
+  if (missing.length) {
+    projectStore.setStatus(project, "generating", "दृश्य और आवाज़ बन रहे हैं…");
+    await pipeline.generateAssets(project, {
+      provider: geminiProviders(), store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, onProgress: saveProgress,
+    });
+  }
+  if (project.status === "cancelled") {
+    project.progress = { ...(project.progress || {}), stage: "cancelled", message: "assets के बाद रोका गया", updatedAt: new Date().toISOString() };
+    return projectStore.save(project);
+  }
+  projectStore.setStatus(project, "rendering", "MP4 render हो रहा है…");
+  const result = await pipeline.render(project, {
+    store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
+    characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
+  });
+  if (project.status === "cancelled") {
+    project.progress = { ...(project.progress || {}), stage: "cancelled", message: "render से पहले रोका गया", updatedAt: new Date().toISOString() };
+    return projectStore.save(project);
+  }
+  project.status = "completed";
+  project.error = null;
+  project.progress = {
+    stage: "completed", percent: 100,
+    message: "MP4 तैयार (" + (result.size / 1024 / 1024).toFixed(1) + " MB, " + Math.round(result.duration) + " सेकंड)",
+    updatedAt: new Date().toISOString(),
+  };
+  projectStore.save(project);
+  return project;
+}
+
+app.post("/api/projects/:id/story", async (req, res) => {
+  const id = req.params.id;
+  // Ownership first: a missing key must not reveal whether a project exists.
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Story generation BLOCKED है।"));
+  }
+  if (runningProjects.has(id)) return res.status(409).json({ error: "प्रोजेक्ट पहले से चल रहा है।" });
+  const started = startProjectJob(id, projectStageTask("story"), { stage: "story" });
+  if (!started.started) return res.status(started.status).json({ error: started.error });
+  return res.status(202).json({ project: projectStore.get(id) });
+});
+
+app.post("/api/projects/:id/assets", (req, res) => {
+  const id = req.params.id;
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Images और voice BLOCKED हैं।"));
+  }
+  if (!project.story) return res.status(409).json({ error: "पहले कहानी बनाएँ।" });
+  const started = startProjectJob(id, projectStageTask("assets"), { stage: "assets" });
+  if (!started.started) return res.status(started.status).json({ error: started.error });
+  return res.status(202).json({ project: projectStore.get(id) });
+});
+
+app.post("/api/projects/:id/render", (req, res) => {
+  const id = req.params.id;
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.story) return res.status(409).json({ error: "पहले कहानी बनाएँ।" });
+  const started = startProjectJob(id, projectStageTask("render"), { stage: "render" });
+  if (!started.started) return res.status(started.status).json({ error: started.error });
+  return res.status(202).json({ project: projectStore.get(id) });
+});
+
+// One-click automation: story -> assets -> render, resumable at every step.
+app.post("/api/projects/:id/automate", (req, res) => {
+  const id = req.params.id;
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Automatic pipeline BLOCKED है।"));
+  }
+  const started = startProjectJob(id, projectStageTask("automate"), { stage: "automate" });
+  if (!started.started) return res.status(started.status).json({ error: started.error });
+  return res.status(202).json({ project: projectStore.get(id) });
+});
+
+// Retry only the failed scene: existing images/audio for other scenes are kept.
+app.post("/api/projects/:id/scenes/:index/retry", async (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Retry BLOCKED है।"));
+  }
+  if (!project.story) return res.status(409).json({ error: "पहले कहानी बनाएँ।" });
+  const index = Number(req.params.index);
+  const scene = project.story.scenes.find(item => Number(item.index) === index);
+  if (!scene) return res.status(404).json({ error: "दृश्य नहीं मिला।" });
+  if (runningProjects.has(project.id)) return res.status(409).json({ error: "प्रोजेक्ट पहले से चल रहा है।" });
+
+  const asset = project.assets.scenes[index] || {};
+  if (asset.image && asset.image.path) fs.rmSync(asset.image.path, { force: true });
+  if (asset.audio && asset.audio.path) fs.rmSync(asset.audio.path, { force: true });
+  delete project.assets.scenes[index];
+  projectStore.save(project);
+
+  try {
+    await pipeline.generateAssets(project, {
+      provider: geminiProviders(),
+      store: projectStore,
+      runFfmpeg: ffmpegTools.runFfmpeg,
+      onlyScenes: [index],
+    });
+    project.status = project.render ? "completed" : "assets";
+    projectStore.save(project);
+    return res.json({ project, retried: index });
+  } catch (error) {
+    project.status = "failed";
+    project.error = error.message || "दृश्य दोबारा नहीं बन सका।";
+    projectStore.save(project);
+    return sendAPIError(res, error, "दृश्य दोबारा नहीं बन सका।");
+  }
+});
+
+app.get("/api/projects/:id/video", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.render || !project.render.videoPath || !fs.existsSync(project.render.videoPath)) {
+    return res.status(409).json({ error: "MP4 अभी तैयार नहीं है।" });
+  }
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Content-Disposition", "inline");
+  return res.sendFile(path.resolve(project.render.videoPath));
+});
+
+app.get("/api/projects/:id/scenes/:index/image", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  const asset = project.assets.scenes[Number(req.params.index)];
+  if (!asset || !asset.image || !fs.existsSync(asset.image.path)) {
+    return res.status(404).json({ error: "इस दृश्य की image अभी नहीं है।" });
+  }
+  res.setHeader("Content-Type", asset.image.mime || "image/png");
+  return res.sendFile(path.resolve(asset.image.path));
+});
+
+app.get("/api/projects/:id/download", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.render || !project.render.videoPath || !fs.existsSync(project.render.videoPath)) {
+    return res.status(409).json({ error: "MP4 अभी तैयार नहीं है।" });
+  }
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Content-Disposition", 'attachment; filename="BABA-AI-' + project.id + '.mp4"');
+  return res.sendFile(path.resolve(project.render.videoPath));
+});
+
+app.get("/api/projects/:id/captions", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.timeline || !project.story) return res.status(409).json({ error: "captions अभी तैयार नहीं हैं।" });
+  const cues = require("./lib/captions").buildSegments(
+    require("./lib/captions").segmentsFromTimeline(project.timeline, project.story.scenes)
+  );
+  const srt = require("./lib/captions").buildSrt(cues);
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="BABA-AI-' + project.id + '.srt"');
+  return res.send(srt);
+});
+
+app.post("/api/projects/:id/cancel", (req, res) => {
+  const owned = ownedProject(req, res);
+  if (!owned) return;
+  if (!runningProjects.has(req.params.id)) {
+    return res.status(409).json({ error: "यह प्रोजेक्ट अभी नहीं चल रहा।" });
+  }
+  // The current step finishes, then the job stops before the next stage.
+  const project = projectStore.get(req.params.id);
+  if (project) {
+    project.status = "cancelled";
+    project.progress = { ...(project.progress || {}), stage: "cancelled", message: "उपयोगकर्ता ने रोका", updatedAt: new Date().toISOString() };
+    projectStore.save(project);
+  }
+  return res.json({ success: true });
+});
+
+
+// ---- SEO package for a finished project (title, description, tags) ----
+app.get("/api/projects/:id/seo", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.seo) return res.status(404).json({ error: "अभी SEO तैयार नहीं है।" });
+  return res.json({ seo: project.seo });
+});
+
+app.post("/api/projects/:id/seo", async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। SEO BLOCKED है।"));
+  }
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.story) return res.status(409).json({ error: "पहले कहानी बनाएँ।" });
+  try {
+    const scenes = project.story.scenes.slice(0, 12).map(s => s.title + ": " + s.narration).join("\n");
+    const prompt = [
+      "You are a YouTube SEO expert for a Hindi kids' cartoon channel.",
+      "Story title: " + project.story.title,
+      "Language: " + (project.language === "English" ? "English" : "Hindi"),
+      "Story beats:",
+      scenes,
+      "",
+      "Return ONLY valid JSON (no markdown) with this exact schema:",
+      '{"title":"string max 100 chars","description":"string max 5000 chars",' +
+        '"tags":["string"],"hashtags":["#string"],"thumbnailText":"string max 40 chars"}',
+      "Rules: no misleading claims, no fake engagement bait, no guaranteed results.",
+    ].join("\n");
+    const text = await geminiProviders().text.generate(prompt);
+    const cleaned = String(text || "").replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    const parsed = JSON.parse(cleaned.slice(start, end + 1));
+    const seo = {
+      title: String(parsed.title || project.story.title).slice(0, 100),
+      description: String(parsed.description || "").slice(0, 5000),
+      tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 30).map(t => String(t).slice(0, 60)) : [],
+      hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags.slice(0, 20).map(t => String(t).slice(0, 60)) : [],
+      thumbnailText: String(parsed.thumbnailText || "").slice(0, 40),
+      generatedAt: new Date().toISOString(),
+    };
+    project.seo = seo;
+    projectStore.save(project);
+    return res.json({ seo });
+  } catch (error) {
+    return sendAPIError(res, error, "SEO तैयार नहीं हुआ।");
+  }
+});
+
+// ---- Thumbnail from the first scene ----
+app.get("/api/projects/:id/thumbnail", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.thumbnail || !fs.existsSync(project.thumbnail.path)) {
+    return res.status(404).json({ error: "अभी thumbnail तैयार नहीं है।" });
+  }
+  res.setHeader("Content-Type", "image/jpeg");
+  return res.sendFile(path.resolve(project.thumbnail.path));
+});
+
+app.post("/api/projects/:id/thumbnail", async (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  const asset = project.assets.scenes[1];
+  if (!asset || !asset.image || !fs.existsSync(asset.image.path)) {
+    return res.status(409).json({ error: "thumbnail के लिए पहले दृश्य 1 की image चाहिए।" });
+  }
+  const outPath = path.join(projectStore.dirFor(project.id), "thumbnail.jpg");
+  const base = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720";
+  const fontFile = require("./lib/fonts").resolveFontFile();
+  const title = String((project.seo && project.seo.thumbnailText) || (project.story && project.story.title) || "")
+    .replace(/[:'"\\\n\r{}]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+  let mode = "image-only";
+  let filter = base;
+  if (fontFile && fs.existsSync(fontFile) && title) {
+    filter = base + ",drawtext=fontfile='" + fontFile + "':text='" + title +
+      "':fontcolor=white:fontsize=64:borderw=5:bordercolor=black:x=(w-text_w)/2:y=h-text_h-70";
+    mode = "image+title";
+  }
+  try {
+    await ffmpegTools.runFfmpeg([
+      "-hide_banner", "-loglevel", "error", "-y", "-i", asset.image.path,
+      "-vf", filter, "-frames:v", "1", "-q:v", "3", outPath,
+    ]);
+    project.thumbnail = { path: outPath, mode, fontFile: Boolean(fontFile) };
+    projectStore.save(project);
+    return res.json({ thumbnail: project.thumbnail });
+  } catch (error) {
+    // A missing font must not lose the thumbnail: fall back to the plain frame.
+    try {
+      await ffmpegTools.runFfmpeg([
+        "-hide_banner", "-loglevel", "error", "-y", "-i", asset.image.path,
+        "-vf", base, "-frames:v", "1", "-q:v", "3", outPath,
+      ]);
+      project.thumbnail = { path: outPath, mode: "image-only", fontFile: false };
+      projectStore.save(project);
+      return res.json({ thumbnail: project.thumbnail, warning: "Font उपलब्ध नहीं था; title text छोड़ा गया।" });
+    } catch (fallbackError) {
+      return sendAPIError(res, fallbackError, "Thumbnail नहीं बनी।");
+    }
+  }
+});
 
 // Unknown API routes must return JSON, not Express's default HTML 404 page.
 app.use("/api", (req, res) => {
@@ -1050,8 +2260,22 @@ const PORT = process.env.PORT || 3000;
 // Allow node:test to import retry/quota helpers without binding a server port.
 if (require.main === module) {
   app.listen(PORT, "0.0.0.0", () => {
+    const ffmpegBin = ffmpegTools.resolveFfmpegPath();
+    const ffmpegVer = ffmpegTools.ffmpegVersionSync();
     console.log("BABA AI Server running on port " + PORT);
+    // Never a secret: just which binary renders, and whether it runs at all.
+    console.log("FFmpeg: " + (ffmpegVer ? ffmpegVer + " (" + ffmpegBin + ")" : "NOT AVAILABLE (" + ffmpegBin + ")"));
+    if (!process.env.GEMINI_API_KEY) console.log("GEMINI_API_KEY: not set - generation is blocked");
   });
+}
+
+// Restart recovery runs once per process: jobs that were mid-flight when the
+// previous process died are requeued, and the worker resumes them from the
+// assets already saved on disk.
+const bootRecovery = jobQueue.recoverOnBoot();
+if (bootRecovery.requeued.length || bootRecovery.failed.length) {
+  console.log("Restart recovery: " + bootRecovery.requeued.length + " job(s) requeued, " +
+    bootRecovery.failed.length + " failed");
 }
 
 module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };

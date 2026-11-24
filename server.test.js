@@ -1,8 +1,15 @@
 "use strict";
 
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-"));
+
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { app, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory } = require("./server");
+const { authedHeaders } = require("./test/helpers");
 
 test("PCM duration uses decoded bytes and 24 kHz mono 16-bit defaults", () => {
   const oneSecondPcm = Buffer.alloc(24000 * 2);
@@ -13,6 +20,7 @@ test("PCM duration uses decoded bytes and 24 kHz mono 16-bit defaults", () => {
 
 let server;
 let baseUrl;
+let testSession;
 
 test("start test server", async () => {
   server = app.listen(0, "127.0.0.1");
@@ -21,6 +29,7 @@ test("start test server", async () => {
     server.once("error", reject);
   });
   baseUrl = "http://127.0.0.1:" + server.address().port;
+  testSession = await authedHeaders(baseUrl);
 });
 
 test("health endpoint returns JSON without exposing credentials", async () => {
@@ -56,7 +65,7 @@ test("script generation falls back once when primary Gemini model hits 429 quota
   try {
     const response = await fetch(baseUrl + "/api/script", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: testSession,
       body: JSON.stringify({ topic: "ताजमहल के रहस्य", duration: 5, language: "हिंदी" })
     });
     const body = await response.json();
@@ -95,7 +104,7 @@ test("script generation falls back when a configured Gemini model ID returns 404
   try {
     const response = await fetch(baseUrl + "/api/script", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: testSession,
       body: JSON.stringify({ topic: "ताजमहल के रहस्य", duration: 5, language: "हिंदी" })
     });
     const body = await response.json();
@@ -113,7 +122,7 @@ test("script generation falls back when a configured Gemini model ID returns 404
 test("invalid render input returns a JSON 400, not an HTML proxy-style error", async () => {
   const response = await fetch(baseUrl + "/api/render", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...testSession },
     body: JSON.stringify({ scenes: [], audioBase64: "" })
   });
   const contentType = response.headers.get("content-type") || "";
@@ -126,7 +135,7 @@ test("invalid render input returns a JSON 400, not an HTML proxy-style error", a
 test("malformed JSON requests receive a safe JSON 400", async () => {
   const response = await fetch(baseUrl + "/api/render", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { ...testSession },
     body: "{broken"
   });
   const contentType = response.headers.get("content-type") || "";
@@ -137,19 +146,19 @@ test("malformed JSON requests receive a safe JSON 400", async () => {
 });
 
 test("unknown render job status and download return JSON 404", async () => {
-  const statusResponse = await fetch(baseUrl + "/api/render/status/not-a-real-job");
+  const statusResponse = await fetch(baseUrl + "/api/render/status/not-a-real-job", { headers: testSession });
   const statusBody = await statusResponse.json();
   assert.equal(statusResponse.status, 404);
   assert.match(statusBody.error, /Render job नहीं मिला/);
 
-  const downloadResponse = await fetch(baseUrl + "/api/render/download/not-a-real-job");
+    const downloadResponse = await fetch(baseUrl + "/api/render/download/not-a-real-job", { headers: testSession });
   const downloadBody = await downloadResponse.json();
   assert.equal(downloadResponse.status, 404);
   assert.match(downloadBody.error, /Render job नहीं मिला/);
 });
 
 test("unknown API endpoint returns a JSON 404", async () => {
-  const response = await fetch(baseUrl + "/api/not-a-real-route");
+  const response = await fetch(baseUrl + "/api/not-a-real-route", { headers: testSession });
   const body = await response.json();
   assert.equal(response.status, 404);
   assert.match(body.error, /API endpoint नहीं मिला/);

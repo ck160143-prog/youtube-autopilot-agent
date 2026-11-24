@@ -1,14 +1,25 @@
+# Render Blueprint. `name` MUST match the existing Render web service
+# (youtube-autopilot-agent-1): a Blueprint sync adopts the live service when the
+# name matches and creates a *second* service when it does not.
 services:
   - type: web
-    name: baba-ai-youtube-agent
+    name: youtube-autopilot-agent-1
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    # Production tracks main only. Preview environments are created per PR by
+    # Render's repo binding and are not a production deploy.
+    branch: main
+    # Lockfile-exact install: no version drift between CI and production.
+    # ffmpeg-static downloads its binary during `npm ci`; if that download is
+    # unavailable the code falls back to the ffmpeg on PATH (Render's native
+    # runtime ships 4.1, which the renderer now supports).
+    buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
+      # Required: real story, images and Hindi voice are blocked without it.
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_SCRIPT_MODEL
@@ -17,6 +28,11 @@ services:
         value: gemini-3.1-flash-image
       - key: GEMINI_TTS_MODEL
         value: gemini-2.5-flash-preview-tts
+      # Optional: only used when GEMINI_SCRIPT_MODEL answers 404/429. Deliberately
+      # left without a value - its availability is not verified, so nothing is
+      # claimed here. Unset means the code default applies.
+      - key: GEMINI_SCRIPT_FALLBACK_MODEL
+        sync: false
       - key: YOUTUBE_CLIENT_ID
         sync: false
       - key: YOUTUBE_CLIENT_SECRET
@@ -25,3 +41,13 @@ services:
         sync: false
       - key: APP_SESSION_SECRET
         sync: false
+      # Required to create an account after the first one. sync:false keeps the
+      # value in Render's dashboard only - it is never written into the repo.
+      - key: APP_REGISTRATION_KEY
+        sync: false
+      # Optional knobs, unset by default:
+      #   FFMPEG_PRESET=ultrafast  -> faster encodes on a 512 MB free instance
+      #   FFMPEG_PATH=/path/ffmpeg -> use a specific binary instead of the bundled one
+      #   DATA_DIR=/var/data       -> only when a Render Disk is attached; the
+      #                               free filesystem is ephemeral, so projects
+      #                               and renders are lost on every redeploy.
