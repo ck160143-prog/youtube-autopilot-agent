@@ -2,7 +2,7 @@
 <html lang="hi">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Baba AI YouTube Agent</title>
 <style>
 *{box-sizing:border-box}
@@ -37,17 +37,115 @@ button:disabled{opacity:.5;cursor:not-allowed}
 #loadingOverlay{display:none;text-align:center;padding:20px}
 .info-box{background:#111725;border:1px solid #2a3050;border-radius:10px;padding:14px;margin-top:10px;font-size:13px;line-height:1.7;color:#b9bfd0}
 .info-box b{color:#b9a1ff}
+
+/* ---- Phase 3: sign-in gate ---- */
+#authGate{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(circle at 20% 10%,#2a1e5c,#0b0716 70%);padding:20px;}
+#authGate[hidden]{display:none;}
+.auth-card{width:100%;max-width:420px;background:#141022;border:1px solid #3a2f66;border-radius:16px;
+  padding:26px;box-shadow:0 18px 60px rgba(0,0,0,.6);}
+.auth-card h2{margin:0 0 8px;font-size:20px;}
+.auth-card input{width:100%;box-sizing:border-box;margin:8px 0;padding:11px 12px;border-radius:10px;
+  border:1px solid #443a70;background:#0d0a18;color:#fff;font-size:14px;}
+.auth-card input:focus{outline:2px solid #7c5cff;outline-offset:1px;}
+.auth-actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;}
+.auth-actions button{flex:1 1 140px;}
+.auth-note{font-size:12px;opacity:.75;margin-top:14px;line-height:1.5;}
+#authBar{display:flex;gap:10px;align-items:center;justify-content:flex-end;font-size:13px;margin:6px 0;}
+#authBar[hidden]{display:none;}
+
+/* ---- Phase 4: Android / small-screen friendly ---- */
+:root{--tap-min:46px}
+button{min-height:var(--tap-min);touch-action:manipulation}
+input,select,textarea{font-size:16px}
+#authGate{overflow:auto}
+.auth-card{max-height:92vh;overflow:auto}
+@media (max-width:768px){
+  header{position:sticky;top:0;z-index:40;padding:12px;backdrop-filter:blur(10px)}
+  header h1{font-size:21px}
+  header p{font-size:12px}
+  .container{padding:10px 10px calc(92px + env(safe-area-inset-bottom))}
+  .card{padding:14px;border-radius:12px;margin-bottom:12px}
+  h2{font-size:17px}
+  .grid{grid-template-columns:1fr}
+  button{width:100%;padding:15px;font-size:16px}
+  .auth-card{padding:18px}
+  .auth-actions{flex-direction:column}
+  .auth-actions button{flex:1 1 auto;width:100%}
+  .status{padding:10px}
+}
+@media (max-width:420px){
+  header h1{font-size:19px}
+  .container{padding-left:8px;padding-right:8px}
+  h2{font-size:16px}
+  .card{padding:12px}
+}
+/* Sticky action bar: thumbs reach it without scrolling on a phone. */
+#mobileBar{position:fixed;left:0;right:0;bottom:0;z-index:60;display:none;
+  background:#141022;border-top:1px solid #3a2f66;padding:8px 10px calc(8px + env(safe-area-inset-bottom))}
+#mobileBar[hidden]{display:none}
+#mobileBar .row{display:flex;gap:8px}
+#mobileBar button{margin:0;min-height:46px;font-size:14px}
+#mobileBar #mobileStartBtn{width:100%;min-height:50px;font-size:16px;font-weight:700;margin:0 0 8px}
+@media (max-width:768px){#mobileBar{display:block}body{padding-bottom:calc(150px + env(safe-area-inset-bottom))}}
+@media (prefers-reduced-motion: reduce){
+  .spinner{animation:none}
+  button{transition:none}
+}
 </style>
   <meta property="og:image" content="https://bolt.new/static/og_default.png">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://bolt.new/static/og_default.png">
 </head>
 <body>
+<nav id="mobileBar" aria-label="मोबाइल शॉर्टकट">
+  <button type="button" id="mobileStartBtn" class="green" onclick="startBabaVideo()">🚀 वीडियो बनाएँ</button>
+  <div class="row">
+    <button type="button" class="secondary" data-mobile="topic">🎯 नया वीडियो</button>
+    <button type="button" class="secondary" data-mobile="projects">📂 प्रोजेक्ट</button>
+    <button type="button" data-mobile="characters">🎭 पात्र</button>
+  </div>
+</nav>
+<div id="authBar" hidden>
+  <span id="authBarUser"></span>
+  <button class="secondary" onclick="window.babaAuth.logout()">साइन आउट</button>
+</div>
+<div id="authGate" hidden>
+  <div class="auth-card">
+    <h2>🔐 BABA AI — साइन इन</h2>
+    <p id="authGateMessage" class="status">अपना account चुनें।</p>
+    <input id="authUsername" placeholder="username (3–32 अक्षर, a-z 0-9 _)" autocomplete="username">
+    <input id="authPassword" type="password" placeholder="password (कम से कम 10 अक्षर)" autocomplete="current-password">
+    <input id="authRegKey" placeholder="registration key (सिर्फ नए account के लिए)" autocomplete="off">
+    <div class="auth-actions">
+      <button id="authLoginBtn">→ साइन इन</button>
+      <button id="authRegisterBtn" class="secondary">नया account बनाएँ</button>
+    </div>
+    <p class="auth-note">पहला account मालिक (owner) बनता है और पहले से बने प्रोजेक्ट उसी को मिलते हैं। उसके बाद नया account सिर्फ <code>APP_REGISTRATION_KEY</code> से खुलता है।</p>
+  </div>
+</div>
 <header>
 <h1>🤖 BABA AI</h1>
 <p>आपका अपना YouTube Automation Agent</p>
 </header>
 <div class="container">
+
+<div class="card" id="heroStartCard">
+<button type="button" id="heroStartBtn" class="green" onclick="startBabaVideo()">🚀 वीडियो बनाएँ</button>
+<p class="small">नीचे कहानी या विषय लिखें — BABA AI हिंदी कहानी, तस्वीरें, हिंदी आवाज़, संगीत, subtitles और पूरा MP4 तैयार करेगा। YouTube पर अपलोड हमेशा आपकी अनुमति से ही होगा।</p>
+</div>
+
+<div class="card" id="setupCard" hidden>
+<h2>🛠️ Setup जाँच</h2>
+<p class="small">क्या configure है और क्या गायब है — असली जाँच, कोई दिखावा नहीं। Secret values कभी नहीं दिखतीं।</p>
+<div id="setupChecks"></div>
+<div id="setupGuide"></div>
+<div class="grid">
+<button id="setupVerifyBtn" class="secondary">🔍 Verify setup (असली जाँच)</button>
+<button id="setupRefreshBtn" class="secondary">🔄 स्थिति दोबारा लोड करें</button>
+</div>
+<p id="setupStatus" class="status" role="status">…</p>
+</div>
 
 <div class="card">
 <h2>📺 YouTube Channel</h2>
@@ -84,7 +182,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <button onclick="makeOutline()">📝 वीडियो की रूपरेखा बनाएँ</button>
 <button class="green" onclick="generateFullScript()" id="btnGenerateScript">🤖 पूरी AI स्क्रिप्ट बनाएँ</button>
 <button class="green" id="btnRunFullAutomation" onclick="runFullAutomation()">🚀 पूरा ऑटोमैटिक काम शुरू करें</button>
-<p class="small">यह एजेंट क्रम से स्क्रिप्ट → SEO → तस्वीरें → हिंदी आवाज़ → MP4 बनाएगा। हर चरण पूरा होते ही एजेंट अगला चरण अपने-आप शुरू करेगा। MP4 तैयार होने पर YouTube पर Private upload करेगा; quota या कनेक्शन त्रुटि पर रुककर कारण दिखाएगा।</p>
+<p class="small">यह एजेंट क्रम से स्क्रिप्ट → SEO → तस्वीरें → हिंदी आवाज़ → MP4 बनाएगा। हर चरण पूरा होते ही एजेंट अगला चरण अपने-आप शुरू करेगा। <b>YouTube पर कुछ भी अपने-आप अपलोड नहीं होगा</b> — upload सिर्फ आपके "अभी YouTube पर अपलोड करें" दबाने और पुष्टि करने पर ही होता है।</p>
 <button class="secondary" onclick="saveProject()">💾 प्रोजेक्ट सेव करें</button>
 </div>
 
@@ -140,6 +238,72 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <h2>📦 प्रोजेक्ट डाउनलोड</h2>
 <p class="small">पूरा प्रोजेक्ट ZIP फ़ाइल के रूप में डाउनलोड करें (बिना API keys या secrets के)।</p>
 <a href="/baba-ai-youtube-agent.zip" download="baba-ai-youtube-agent.zip" style="display:block;width:100%;padding:13px;margin-top:10px;border:0;border-radius:9px;background:#18865d;color:white;font-weight:bold;font-size:15px;cursor:pointer;text-align:center;text-decoration:none;transition:opacity .2s">⬇️ प्रोजेक्ट ZIP डाउनलोड करें</a>
+</div>
+
+<div class="card" id="p2CharactersCard">
+<h2>🎨 Phase 2 — Character Library</h2>
+<p class="small">किरदार एक बार बनाएँ और हर वीडियो में वही चेहरा, कपड़े, रंग और आवाज़ रखें। यह जानकारी हर scene के image prompt और हर voice request में जुड़ती है, इसलिए एक ही किरदार पहचाना जाता है।</p>
+<div class="grid">
+<div><label>नाम *</label><input id="p2CharName" maxlength="60" placeholder="Toto"></div>
+<div><label>आवाज़</label><select id="p2CharGender"><option value="female">महिला</option><option value="male">पुरुष</option></select></div>
+</div>
+<label>चेहरा / शरीर</label><input id="p2CharLook" maxlength="600" placeholder="Cute orange baby tiger, black stripes, big expressive eyes">
+<label>कपड़े</label><input id="p2CharOutfit" maxlength="300" placeholder="Blue T-shirt">
+<label>रंग</label><input id="p2CharColors" maxlength="200" placeholder="orange, black stripes, blue">
+<button class="green" onclick="p2.saveCharacter()">💾 किरदार सेव करें</button>
+<div id="p2CharacterList"></div>
+<details id="p2RigPanel">
+<summary>🎭 Animation rig — mouth sprites (lip-sync के लिए)</summary>
+<p class="small">हर mouth shape (A–H, X) के लिए PNG/JPEG अपलोड करें। यही sprites render के समय Rhubarb के cues पर swap होते हैं। बिना sprites के कोई animation नहीं दिखती।</p>
+<label>किरदार</label>
+<select id="p2RigCharacter"></select>
+<div id="p2RigInputs" class="grid"></div>
+<label>मुँह की position — X</label>
+<input type="range" id="p2RigX" min="0" max="1" step="0.01" value="0.39">
+<label>मुँह की position — Y</label>
+<input type="range" id="p2RigY" min="0" max="1" step="0.01" value="0.55">
+<label>मुँह की चौड़ाई (frame का %)</label>
+<input type="range" id="p2RigW" min="0.05" max="0.6" step="0.01" value="0.22">
+<button id="p2RigSaveBtn" class="green">🎭 Rig सहेजें</button>
+<button id="p2RigDeleteBtn" class="secondary" style="margin-top:8px">Rig हटाएँ</button>
+<p id="p2RigStatus" class="status" role="status">पहले ऊपर किरदार सेव करें।</p>
+</details>
+</div>
+
+<div class="card" id="p2AutomationCard">
+<h2>⚡ Phase 2 — One-Click Cartoon Video</h2>
+<div id="p2Capabilities" class="small">स्थिति लोड हो रही है…</div>
+<label>Access key (अगर सर्वर पर APP_ACCESS_KEY सेट है)</label>
+<input id="p2AccessKey" type="password" autocomplete="off" placeholder="सर्वर पर APP_ACCESS_KEY सेट हो तो यहाँ भरें">
+<label>कहानी / विषय *</label>
+<textarea id="p2Topic" placeholder="जैसे: टोटो और जंगल की खोज"></textarea>
+<div class="grid">
+<div><label>अवधि</label><select id="p2Duration">
+<option value="1">1 मिनट</option><option value="2">2 मिनट</option><option value="3">3 मिनट</option>
+<option value="5">5 मिनट</option><option value="10">10 मिनट</option><option value="15">15 मिनट</option>
+<option value="20">20 मिनट</option><option value="25">25 मिनट</option><option value="30">30 मिनट</option>
+</select></div>
+<div><label>स्टाइल</label><select id="p2Style">
+<option value="3d-cartoon">🎭 3D कार्टून</option><option value="cinematic">🎬 सिनेमैटिक</option><option value="realistic">📷 रियलिस्टिक</option>
+</select></div>
+</div>
+<div class="grid">
+<div><label>फॉर्मेट</label><select id="p2Aspect">
+<option value="16:9">16:9 YouTube</option><option value="9:16">9:16 Shorts</option><option value="1:1">1:1 Square</option>
+</select></div>
+<div><label>रेज़ोल्यूशन</label><select id="p2Quality"><option value="720p">720p</option><option value="1080p">1080p</option></select></div>
+</div>
+<label>किरदार (कम से कम एक चुनें)</label>
+<div id="p2Cast" class="small">कोई किरदार सेव नहीं है। पहले ऊपर किरदार बनाएँ।</div>
+<button class="green" id="p2StartBtn" onclick="p2.start()">🚀 बनाएँ और पूरा वीडियो तैयार करें</button>
+<p class="small">यह असली pipeline है: कहानी → हर scene की image → हर scene की हिंदी आवाज़ → FFmpeg से MP4। जो चरण API key के बिना नहीं चलता, वह ऊपर BLOCKED दिखता है।</p>
+<div id="p2ProgressWrap" style="display:none;margin-top:12px">
+<div style="background:#111725;border-radius:8px;overflow:hidden"><div id="p2ProgressBar" style="height:12px;width:0%;background:#18865d;transition:width .4s"></div></div>
+</div>
+<div id="p2Status" class="status" aria-live="polite">तैयार।</div>
+<div id="p2ProjectView"></div>
+<h3>सेव किए गए प्रोजेक्ट</h3>
+<div id="p2ProjectList"></div>
 </div>
 
 <div class="card">
@@ -208,18 +372,29 @@ function showUploadForm() {
   info.style.display = 'block'; status.textContent = 'YouTube upload form तैयार है।';
 }
 
+function b64utf8(text) {
+  // btoa() cannot encode Devanagari; encode UTF-8 bytes first.
+  return btoa(unescape(encodeURIComponent(String(text == null ? "" : text))));
+}
+function videoMetaHeader(title, description, privacy) {
+  return b64utf8(JSON.stringify({ title: title, description: description, privacy: privacy }));
+}
+
 async function uploadRenderedVideo() {
   if(!lastRenderedVideoBlob){document.getElementById('ytUploadResult').textContent='पहले MP4 वीडियो बनाएँ।';return;}
   var title=document.getElementById('ytTitle').value.trim();
   if(!title){document.getElementById('ytUploadResult').textContent='YouTube title भरें।';return;}
   var button=document.getElementById('ytUploadButton'), result=document.getElementById('ytUploadResult');
+  var privacy=document.getElementById('ytPrivacy').value;
+  if(!window.confirm('इस वीडियो को अपने YouTube चैनल पर ' + privacy + ' के रूप में upload करें?')) {
+    result.textContent='Upload रद्द कर दिया गया (permission नहीं मिली)。';
+    return;
+  }
   if(button)button.disabled=true;
   result.textContent='तैयार MP4 YouTube पर upload हो रहा है…';
   try{
     var response=await fetch('/api/youtube/upload',{method:'POST',headers:{
-      'Content-Type':'video/mp4','X-Video-Title':title,
-      'X-Video-Description':document.getElementById('ytDescription').value,
-      'X-Video-Privacy':document.getElementById('ytPrivacy').value
+      'Content-Type':'video/mp4','X-Confirm-Upload':'yes','X-Video-Meta-B64':videoMetaHeader(title,document.getElementById('ytDescription').value,privacy)
     },body:lastRenderedVideoBlob});
     var data=await readApiJson(response);if(!response.ok)throw new Error(data.error||'Upload विफल।');
     result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy;
@@ -232,12 +407,16 @@ async function uploadVideoToYouTube() {
   var result = document.getElementById('ytUploadResult'), button = document.getElementById('ytUploadButton');
   if (!file || !title) { result.textContent = 'वीडियो फ़ाइल और title दोनों भरें।'; return; }
   if (file.size > 90 * 1024 * 1024) { result.textContent = 'फ़ाइल 90 MB से बड़ी है।'; return; }
+  if (!window.confirm('इस वीडियो को अपने YouTube चैनल पर upload करें?')) {
+    result.textContent = 'Upload रद्द कर दिया गया (permission नहीं मिली)。';
+    return;
+  }
   button.disabled = true; result.textContent = 'YouTube पर वीडियो भेजा जा रहा है…';
   try {
     var response = await fetch('/api/youtube/upload', { method:'POST', headers:{
-      'Content-Type':file.type || 'video/mp4','X-Video-Title':title,
-      'X-Video-Description':document.getElementById('ytDescription').value,
-      'X-Video-Privacy':document.getElementById('ytPrivacy').value
+      'Content-Type':file.type || 'video/mp4',
+      'X-Confirm-Upload':'yes',
+      'X-Video-Meta-B64':videoMetaHeader(title,document.getElementById('ytDescription').value,document.getElementById('ytPrivacy').value)
     }, body:file });
     var data = await readApiJson(response); if (!response.ok) throw new Error(data.error || 'Upload नहीं हो सका।');
     result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy;
@@ -344,7 +523,7 @@ async function runFullAutomation() {
     if (typeof window.markWorkflowStage === 'function') window.markWorkflowStage('विषय');
     document.getElementById('result').textContent = '';
     // हर रन में वर्तमान topic के लिए नया script/SEO बनाएँ; पिछले topic की सामग्री reuse न हो।
-    status.textContent = 'ऑटोमेशन 1/5: वर्तमान विषय के लिए नई AI स्क्रिप्ट बना रहा है…';
+    status.textContent = 'ऑटोमेशन 1/3: वर्तमान विषय के लिए नई AI स्क्रिप्ट बना रहा है…';
     await generateFullScript();
     if (!document.getElementById('script').value.trim() ||
         !/^✅ पूरी AI स्क्रिप्ट तैयार हो गई/i.test(document.getElementById('result').textContent || '')) {
@@ -354,7 +533,7 @@ async function runFullAutomation() {
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
     stage = 'YouTube SEO';
-    status.textContent = 'ऑटोमेशन 2/5: वर्तमान विषय के लिए नया YouTube SEO बना रहा है…';
+    status.textContent = 'ऑटोमेशन 2/3: वर्तमान विषय के लिए नया YouTube SEO बना रहा है…';
     currentSEO = '';
     await generateSEO();
     if (!String(currentSEO || '').trim() ||
@@ -365,7 +544,7 @@ async function runFullAutomation() {
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
     stage = 'वीडियो';
-    status.textContent = 'ऑटोमेशन 3/5: तस्वीरें → हिंदी आवाज़ → MP4 क्रम से बना रहा है…';
+    status.textContent = 'ऑटोमेशन 3/3: तस्वीरें → हिंदी आवाज़ → MP4 क्रम से बना रहा है…';
     // पुराने topic की तस्वीरें इस वीडियो में न मिलें।
     savedSceneImages = [];
     savedFailedScenes = [];
@@ -381,9 +560,10 @@ async function runFullAutomation() {
     }
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
 
-    stage = 'YouTube पर Private upload';
-    status.textContent = 'ऑटोमेशन 4/5: जुड़े हुए YouTube चैनल पर वीडियो Private रूप में अपलोड कर रहा है…';
-    // अपलोड अपने-आप होगा, लेकिन डिफ़ॉल्ट Private रहेगा ताकि अधूरा/गलत वीडियो सार्वजनिक न हो।
+    stage = 'वीडियो तैयार';
+    status.textContent = 'ऑटोमेशन पूरा: MP4 तैयार है। YouTube upload आपकी अनुमति के बिना नहीं होगा।';
+    // YouTube पर कुछ भी अपने-आप अपलोड नहीं होता। यहाँ सिर्फ upload form पहले से
+    // भरा जाता है; असली upload आपके "अभी YouTube पर अपलोड करें" दबाने पर ही होता है।
     showUploadForm();
     var titleField = document.getElementById('ytTitle');
     var descriptionField = document.getElementById('ytDescription');
@@ -392,16 +572,10 @@ async function runFullAutomation() {
     if (descriptionField) descriptionField.value = extractAutoUploadDescription(String(currentSEO || '')).slice(0, 5000);
     if (privacyField) privacyField.value = 'private';
     if (typeof refreshYouTubeStatus === 'function') await refreshYouTubeStatus();
-    var ytResult = document.getElementById('ytUploadResult');
-    if (!ytResult) throw new Error('YouTube upload form तैयार नहीं हुआ। MP4 बना है; Upload सेक्शन से दोबारा कोशिश करें।');
-    await uploadRenderedVideo();
-    var uploadMessage = ytResult.textContent || '';
-    if (!/^✅ Upload सफल:/.test(uploadMessage)) throw new Error('वीडियो तैयार है, लेकिन YouTube upload पूरा नहीं हुआ: ' + uploadMessage);
-    if (typeof window.markWorkflowStage === 'function') window.markWorkflowStage('YouTube अपलोड');
     if (typeof window.saveWorkflowCheckpoint === 'function') window.saveWorkflowCheckpoint(false);
     var result = document.getElementById('result');
-    status.textContent = '✅ ऑटोमेशन पूरा: स्क्रिप्ट → SEO → तस्वीरें → हिंदी आवाज़ → MP4 → YouTube पर Private upload सफल। वीडियो अभी सार्वजनिक नहीं है।';
-    if (result) result.textContent = '✅ पूरा workflow सफल। YouTube पर Private वीडियो अपलोड हो गया: ' + uploadMessage.replace('✅ Upload सफल: ', '');
+    status.textContent = '✅ ऑटोमेशन पूरा: स्क्रिप्ट → SEO → तस्वीरें → हिंदी आवाज़ → MP4 तैयार। YouTube upload आपकी अनुमति के बिना नहीं होगा।';
+    if (result) result.textContent = '✅ वीडियो तैयार है। YouTube पर अपलोड करना हो तो नीचे "अभी YouTube पर अपलोड करें" दबाएँ — वह आपसे पुष्टि भी माँगेगा।';
     var info = document.getElementById('featureInfo');
     if (info) info.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
@@ -836,7 +1010,7 @@ async function generateAutoVideo() {
       mime='audio/L16;rate=24000';
     }
     var pcmLength=pcmParts.reduce(function(n,p){return n+p.length;},0);
-    if(pcmLength>8*1024*1024) throw new Error('Narration बहुत बड़ी है। छोटी script से retry करें।');
+    if(pcmLength>16*1024*1024) throw new Error('Narration बहुत बड़ी है। छोटी script से retry करें।');
     var merged=new Uint8Array(pcmLength), offset=0;
     pcmParts.forEach(function(p){merged.set(p,offset);offset+=p.length;});
     var binary=''; for(var k=0;k<merged.length;k+=32768) binary+=String.fromCharCode.apply(null,merged.subarray(k,k+32768));
@@ -1273,6 +1447,940 @@ try {
     var observer=new MutationObserver(inspect);['result','featureStatus','seoResult'].forEach(function(id){if(el(id))observer.observe(el(id),{childList:true,subtree:true,characterData:true});});
     if(localStorage.getItem(KEY)){try{render(previous());setStatus('पिछला checkpoint मिला। “सेव काम वापस लाएँ” दबाकर जारी रखें।');}catch(_){}}else window.saveWorkflowCheckpoint(false);
   });
+})();
+</script>
+<script>
+/* ---- Phase 2: character library + one-click cartoon video pipeline ---- */
+(function () {
+  'use strict';
+  var P2 = {};
+
+  // Attach the optional access key to every API call without touching the
+  // Phase 1 code paths.
+  var rawFetch = window.fetch.bind(window);
+  // Every API call carries the access key (when set) and, for state-changing
+  // requests, the per-session CSRF token from the sign-in response.
+  window.fetch = function (url, options) {
+    var key = null;
+    try { key = window.localStorage.getItem('babaAccessKey'); } catch (_) { key = null; }
+    var method = String((options && options.method) || 'GET').toUpperCase();
+    var needsCsrf = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+    if (typeof url === 'string' && url.indexOf('/api/') === 0 && (key || (needsCsrf && window.__babaCsrf))) {
+      options = Object.assign({}, options || {});
+      var headers = Object.assign({}, (options && options.headers) || {});
+      if (key) headers['x-access-key'] = key;
+      if (needsCsrf && window.__babaCsrf) headers['x-csrf-token'] = window.__babaCsrf;
+      options.headers = headers;
+    }
+    return rawFetch(url, options).then(function (response) {
+      if (response.status === 401 && window.babaAuth && typeof window.babaAuth.showGate === 'function') {
+        window.babaAuth.showGate('सेशन खत्म हो गया है। दोबारा साइन इन करें।');
+      }
+      return response;
+    });
+  };
+  var characters = [];
+  var projects = [];
+  var currentId = null;
+  var pollTimer = null;
+  var RUNNING = { story: 1, generating: 1, assets: 1, rendering: 1 };
+
+  function el(id) { return document.getElementById(id); }
+  function setStatus(text, isError) {
+    var node = el('p2Status');
+    if (!node) return;
+    node.textContent = text;
+    node.className = 'status' + (isError ? ' error-status' : '');
+  }
+  function setProgress(percent) {
+    var wrap = el('p2ProgressWrap');
+    var bar = el('p2ProgressBar');
+    if (!wrap || !bar) return;
+    wrap.style.display = 'block';
+    bar.style.width = Math.max(0, Math.min(100, Number(percent) || 0)) + '%';
+  }
+
+  P2.api = async function (url, options) {
+    var response = await fetch(url, options);
+    var raw = await response.text();
+    var data;
+    try { data = raw ? JSON.parse(raw) : {}; }
+    catch (_) { throw new Error('API से JSON नहीं मिला (HTTP ' + response.status + ')'); }
+    if (!response.ok) {
+      var error = new Error(data.error || ('HTTP ' + response.status));
+      error.blocked = Boolean(data.blocked);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  };
+
+  function badge(state) {
+    return state === 'available' ? '✅' : '⛔ BLOCKED';
+  }
+
+  P2.loadCapabilities = async function () {
+    var node = el('p2Capabilities');
+    try {
+      var caps = await P2.api('/api/capabilities');
+      var f = caps.features || {};
+      var parts = [
+        'कहानी ' + badge(f.story),
+        'तस्वीरें ' + badge(f.sceneImages),
+        'आवाज़ ' + badge(f.voice),
+        'रेंडर ' + badge(f.render),
+        'captions ' + badge(f.captions),
+        'music ' + badge(f.music)
+      ];
+      node.textContent = 'वास्तविक स्थिति — ' + parts.join(' · ') +
+        ' · FFmpeg ' + (caps.ffmpeg && caps.ffmpeg.available ? caps.ffmpeg.version : 'नहीं मिला');
+      var blockedNote = document.createElement('p');
+      blockedNote.className = 'small';
+      blockedNote.style.color = '#ffb4a2';
+      blockedNote.textContent = 'Character animation और lip-sync: ⛔ BLOCKED (कोई motion-video provider जुड़ा नहीं है)। यह वीडियो generated scene images पर camera motion वाला असली MP4 है, 3D character animation नहीं।';
+      node.appendChild(blockedNote);
+      (caps.blockedReasons || []).forEach(function (reason) {
+        var line = document.createElement('p');
+        line.className = 'small';
+        line.style.color = '#ffd18a';
+        line.textContent = '• ' + reason;
+        node.appendChild(line);
+      });
+    } catch (error) {
+      node.textContent = 'स्थिति नहीं मिली: ' + (error.message || 'unknown');
+    }
+  };
+
+  P2.loadCharacters = async function () {
+    try {
+      var data = await P2.api('/api/characters');
+      characters = data.characters || [];
+    } catch (_) { characters = []; }
+    P2.renderCharacters();
+    P2.renderCast();
+    if (window.babaSetup && window.babaSetup.setCharacters) window.babaSetup.setCharacters(characters);
+  };
+
+  P2.renderCharacters = function () {
+    var node = el('p2CharacterList');
+    if (!node) return;
+    node.replaceChildren();
+    if (!characters.length) {
+      var empty = document.createElement('p');
+      empty.className = 'small';
+      empty.textContent = 'अभी कोई किरदार सेव नहीं है।';
+      node.appendChild(empty);
+      return;
+    }
+    characters.forEach(function (character) {
+      var row = document.createElement('div');
+      row.style.cssText = 'margin-top:12px;padding:10px;border:1px solid #343a51;border-radius:10px';
+      var name = document.createElement('strong');
+      name.textContent = character.name + ' · ' + (character.voiceGender === 'male' ? 'पुरुष आवाज़' : 'महिला आवाज़') +
+        (character.voiceName ? ' (' + character.voiceName + ')' : '');
+      row.appendChild(name);
+      if (character.look) {
+        var look = document.createElement('p');
+        look.className = 'small';
+        look.textContent = character.look + (character.outfit ? ' · ' + character.outfit : '');
+        row.appendChild(look);
+      }
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'secondary';
+      remove.textContent = 'हटाएँ';
+      remove.addEventListener('click', function () { P2.deleteCharacter(character.id); });
+      row.appendChild(remove);
+      node.appendChild(row);
+    });
+  };
+
+  P2.renderCast = function () {
+    var node = el('p2Cast');
+    if (!node) return;
+    node.replaceChildren();
+    if (!characters.length) {
+      var empty = document.createElement('p');
+      empty.className = 'small';
+      empty.textContent = 'कोई किरदार सेव नहीं है। पहले ऊपर किरदार बनाएँ।';
+      node.appendChild(empty);
+      return;
+    }
+    characters.forEach(function (character) {
+      var label = document.createElement('label');
+      label.style.cssText = 'display:flex;gap:8px;align-items:center;margin:6px 0;font-size:14px;color:#d8dbe6';
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'p2CastBox';
+      box.value = character.id;
+      box.style.width = 'auto';
+      box.checked = true;
+      var text = document.createElement('span');
+      text.textContent = character.name + (character.outfit ? ' — ' + character.outfit : '');
+      label.appendChild(box);
+      label.appendChild(text);
+      node.appendChild(label);
+    });
+  };
+
+  P2.saveCharacter = async function () {
+    var payload = {
+      name: el('p2CharName').value.trim(),
+      voiceGender: el('p2CharGender').value,
+      look: el('p2CharLook').value.trim(),
+      outfit: el('p2CharOutfit').value.trim(),
+      colors: el('p2CharColors').value.trim()
+    };
+    if (!payload.name) { setStatus('किरदार का नाम लिखें।', true); return; }
+    try {
+      await P2.api('/api/characters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      ['p2CharName', 'p2CharLook', 'p2CharOutfit', 'p2CharColors'].forEach(function (id) { el(id).value = ''; });
+      setStatus('किरदार सेव हो गया।');
+      await P2.loadCharacters();
+    } catch (error) {
+      setStatus(error.message || 'किरदार सेव नहीं हुआ।', true);
+    }
+  };
+
+  P2.deleteCharacter = async function (id) {
+    try {
+      await P2.api('/api/characters/' + encodeURIComponent(id), { method: 'DELETE' });
+      await P2.loadCharacters();
+      setStatus('किरदार हटा दिया गया।');
+    } catch (error) {
+      setStatus(error.message || 'किरदार नहीं हटा।', true);
+    }
+  };
+
+  P2.loadProjects = async function () {
+    try {
+      var data = await P2.api('/api/projects');
+      projects = data.projects || [];
+    } catch (_) { projects = []; }
+    P2.renderProjectList();
+  };
+
+  P2.renderProjectList = function () {
+    var node = el('p2ProjectList');
+    if (!node) return;
+    node.replaceChildren();
+    if (!projects.length) {
+      var empty = document.createElement('p');
+      empty.className = 'small';
+      empty.textContent = 'अभी कोई प्रोजेक्ट नहीं है।';
+      node.appendChild(empty);
+      return;
+    }
+    projects.forEach(function (project) {
+      var row = document.createElement('div');
+      row.style.cssText = 'margin-top:8px;padding:10px;border:1px solid #343a51;border-radius:10px';
+      var title = document.createElement('strong');
+      title.textContent = (project.topic || 'बिना विषय') + ' · ' + (project.status || 'draft');
+      row.appendChild(title);
+      var meta = document.createElement('p');
+      meta.className = 'small';
+      meta.textContent = (project.durationMinutes || '?') + ' मिनट · ' + (project.sceneCount || '?') + ' दृश्य' +
+        (project.progress && project.progress.message ? ' · ' + project.progress.message : '');
+      row.appendChild(meta);
+      var open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'secondary';
+      open.textContent = 'खोलें';
+      open.addEventListener('click', function () {
+        currentId = project.id;
+        P2.refreshProject();
+      });
+      row.appendChild(open);
+      node.appendChild(row);
+    });
+  };
+
+  P2.start = async function () {
+    var topic = el('p2Topic').value.trim();
+    if (!topic) { setStatus('कहानी का विषय लिखें।', true); return; }
+    var selected = Array.prototype.slice.call(document.querySelectorAll('.p2CastBox:checked')).map(function (b) { return b.value; });
+    if (!selected.length) { setStatus('कम से कम एक किरदार चुनें।', true); return; }
+    var button = el('p2StartBtn');
+    button.disabled = true;
+    setStatus('प्रोजेक्ट बनाया जा रहा है…');
+    try {
+      var created = await P2.api('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topic: topic,
+          durationMinutes: Number(el('p2Duration').value) || 1,
+          style: el('p2Style').value,
+          aspect: el('p2Aspect').value,
+          quality: el('p2Quality').value
+        })
+      });
+      currentId = created.project.id;
+      await P2.api('/api/projects/' + currentId + '/automate', { method: 'POST' });
+      setStatus('ऑटोमेशन शुरू: कहानी → images → आवाज़ → MP4।');
+      P2.refreshProject();
+    } catch (error) {
+      setStatus((error.blocked ? 'BLOCKED: ' : '') + (error.message || 'शुरू नहीं हुआ।'), true);
+    } finally {
+      button.disabled = false;
+    }
+  };
+
+  P2.refreshProject = async function () {
+    if (!currentId) return;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    try {
+      var data = await P2.api('/api/projects/' + encodeURIComponent(currentId));
+      P2.renderProjectView(data.project);
+      if (RUNNING[data.project.status]) {
+        pollTimer = setTimeout(P2.refreshProject, 2500);
+      }
+    } catch (error) {
+      setStatus(error.message || 'प्रोजेक्ट स्थिति नहीं मिली।', true);
+    }
+  };
+
+  P2.renderProjectView = function (project) {
+    var node = el('p2ProjectView');
+    if (!node || !project) return;
+    node.replaceChildren();
+    setProgress(project.progress ? project.progress.percent : 0);
+
+    var heading = document.createElement('h3');
+    heading.textContent = project.story ? project.story.title : (project.topic || 'प्रोजेक्ट');
+    node.appendChild(heading);
+
+    var meta = document.createElement('p');
+    meta.className = 'small';
+    meta.textContent = 'स्थिति: ' + project.status + ' · ' + (project.durationMinutes || '?') + ' मिनट · ' +
+      (project.sceneCount || '?') + ' दृश्य · ' + (project.aspect || '16:9') + ' · ' + (project.quality || '720p');
+    node.appendChild(meta);
+
+    if (project.error) {
+      var errorBox = document.createElement('p');
+      errorBox.className = 'status error-status';
+      errorBox.textContent = 'त्रुटि: ' + project.error;
+      node.appendChild(errorBox);
+    }
+
+    if (project.story && project.story.scenes) {
+      project.story.scenes.forEach(function (scene) {
+        var asset = (project.assets && project.assets.scenes && project.assets.scenes[scene.index]) || {};
+        var card = document.createElement('section');
+        card.style.cssText = 'margin-top:10px;padding:10px;border:1px solid #343a51;border-radius:10px';
+        var title = document.createElement('strong');
+        title.textContent = 'दृश्य ' + scene.index + ': ' + (scene.title || '');
+        card.appendChild(title);
+        if (asset.image) {
+          var image = document.createElement('img');
+          image.src = '/api/projects/' + encodeURIComponent(project.id) + '/scenes/' + scene.index + '/image';
+          image.alt = scene.title || 'scene';
+          image.style.cssText = 'width:100%;border-radius:8px;margin-top:8px;display:block';
+          image.loading = 'lazy';
+          card.appendChild(image);
+        }
+        var narration = document.createElement('p');
+        narration.className = 'small';
+        narration.textContent = scene.narration || '';
+        card.appendChild(narration);
+        (scene.dialogue || []).forEach(function (line) {
+          var dialogue = document.createElement('p');
+          dialogue.className = 'small';
+          dialogue.style.color = '#b9a1ff';
+          dialogue.textContent = line.character + ': ' + line.text;
+          card.appendChild(dialogue);
+        });
+        var flags = document.createElement('p');
+        flags.className = 'small';
+        flags.textContent = 'image: ' + (asset.image ? '✅' : '⬜') + ' · आवाज़: ' + (asset.audio ? '✅' : '⬜');
+        card.appendChild(flags);
+        var retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'secondary';
+        retry.textContent = '🔁 सिर्फ़ यह दृश्य दोबारा बनाएँ';
+        retry.addEventListener('click', function () { P2.retryScene(scene.index); });
+        card.appendChild(retry);
+        node.appendChild(card);
+      });
+    }
+
+    if (project.render && project.render.videoPath) {
+      var video = document.createElement('video');
+      video.controls = true;
+      video.src = '/api/projects/' + encodeURIComponent(project.id) + '/video';
+      video.style.cssText = 'width:100%;border-radius:10px;margin-top:12px';
+      node.appendChild(video);
+
+      var info = document.createElement('p');
+      info.className = 'small';
+      info.textContent = 'MP4 ' + (project.render.size / 1024 / 1024).toFixed(1) + ' MB · ' +
+        Math.round(project.render.duration) + ' सेकंड · captions: ' + (project.render.captions || 'none') +
+        ' · music: ' + (project.render.music ? project.render.music.source : 'none') + ' · ' +
+        (project.render.layout ? project.render.layout.width + 'x' + project.render.layout.height : '');
+      node.appendChild(info);
+
+      var download = document.createElement('a');
+      download.href = '/api/projects/' + encodeURIComponent(project.id) + '/download';
+      download.textContent = '⬇️ MP4 डाउनलोड करें';
+      download.style.cssText = 'display:block;padding:10px 0;color:#b9a1ff';
+      node.appendChild(download);
+
+      var srt = document.createElement('a');
+      srt.href = '/api/projects/' + encodeURIComponent(project.id) + '/captions';
+      srt.textContent = '⬇️ Hindi captions (.srt) डाउनलोड करें';
+      srt.style.cssText = 'display:block;padding:10px 0;color:#b9a1ff';
+      node.appendChild(srt);
+
+      var confirmRow = document.createElement('label');
+      confirmRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin:10px 0;font-size:13px';
+      var confirmBox = document.createElement('input');
+      confirmBox.type = 'checkbox';
+      confirmBox.id = 'p2UploadConfirm';
+      confirmBox.style.width = 'auto';
+      var confirmText = document.createElement('span');
+      confirmText.textContent = 'मैं इस वीडियो को अपने YouTube चैनल पर upload करने की पुष्टि करता/करती हूँ।';
+      confirmRow.appendChild(confirmBox);
+      confirmRow.appendChild(confirmText);
+      node.appendChild(confirmRow);
+
+      var upload = document.createElement('button');
+      upload.type = 'button';
+      upload.className = 'green';
+      upload.textContent = '📤 YouTube पर भेजें (Private)';
+      upload.addEventListener('click', function () { P2.uploadToYouTube(project); });
+      node.appendChild(upload);
+      var uploadResult = document.createElement('p');
+      uploadResult.id = 'p2UploadResult';
+      uploadResult.className = 'status';
+      uploadResult.setAttribute('role', 'status');
+      uploadResult.textContent = 'Upload से पहले पुष्टि जरूरी है।';
+      node.appendChild(uploadResult);
+
+      var toolRow = document.createElement('div');
+      toolRow.className = 'grid';
+      var seoButton = document.createElement('button');
+      seoButton.type = 'button';
+      seoButton.className = 'secondary';
+      seoButton.textContent = '🧠 SEO तैयार करें';
+      seoButton.addEventListener('click', function () { P2.generateSeo(project); });
+      toolRow.appendChild(seoButton);
+      var thumbButton = document.createElement('button');
+      thumbButton.type = 'button';
+      thumbButton.className = 'secondary';
+      thumbButton.textContent = '🖼️ Thumbnail बनाएँ';
+      thumbButton.addEventListener('click', function () { P2.generateThumbnail(project); });
+      toolRow.appendChild(thumbButton);
+      node.appendChild(toolRow);
+      var seoBox = document.createElement('div');
+      seoBox.id = 'p2SeoBox';
+      node.appendChild(seoBox);
+      var thumbBox = document.createElement('div');
+      thumbBox.id = 'p2ThumbBox';
+      node.appendChild(thumbBox);
+    }
+  };
+
+  P2.generateSeo = async function (project) {
+    var box = el('p2SeoBox');
+    if (!box) return;
+    box.textContent = 'SEO तैयार हो रहा है…';
+    try {
+      var data = await P2.api('/api/projects/' + encodeURIComponent(project.id) + '/seo', { method: 'POST' });
+      box.replaceChildren();
+      var seo = data.seo;
+      ['title: ' + seo.title, 'description: ' + seo.description, 'tags: ' + (seo.tags || []).join(', '),
+        'hashtags: ' + (seo.hashtags || []).join(' '), 'thumbnail text: ' + seo.thumbnailText].forEach(function (line) {
+        var p = document.createElement('p');
+        p.className = 'small';
+        p.textContent = line;
+        box.appendChild(p);
+      });
+    } catch (error) {
+      box.textContent = (error.blocked ? 'BLOCKED: ' : '') + (error.message || 'SEO नहीं बना।');
+    }
+  };
+
+  P2.generateThumbnail = async function (project) {
+    var box = el('p2ThumbBox');
+    if (!box) return;
+    box.textContent = 'Thumbnail बन रही है…';
+    try {
+      var data = await P2.api('/api/projects/' + encodeURIComponent(project.id) + '/thumbnail', { method: 'POST' });
+      box.replaceChildren();
+      if (data.warning) {
+        var warn = document.createElement('p');
+        warn.className = 'small';
+        warn.textContent = data.warning;
+        box.appendChild(warn);
+      }
+      var image = document.createElement('img');
+      image.src = '/api/projects/' + encodeURIComponent(project.id) + '/thumbnail';
+      image.alt = 'thumbnail';
+      image.style.cssText = 'width:100%;border-radius:8px';
+      box.appendChild(image);
+      var note = document.createElement('p');
+      note.className = 'small';
+      note.textContent = 'मोड: ' + data.thumbnail.mode + (data.thumbnail.mode === 'image-only' ? ' (title text के लिए CAPTION_FONT_FILE सेट करें)' : '');
+      box.appendChild(note);
+    } catch (error) {
+      box.textContent = (error.blocked ? 'BLOCKED: ' : '') + (error.message || 'Thumbnail नहीं बनी।');
+    }
+  };
+
+  P2.retryScene = async function (index) {
+    if (!currentId) return;
+    setStatus('दृश्य ' + index + ' दोबारा बनाया जा रहा है…');
+    try {
+      await P2.api('/api/projects/' + encodeURIComponent(currentId) + '/scenes/' + index + '/retry', { method: 'POST' });
+      setStatus('दृश्य ' + index + ' दोबारा बन गया।');
+      await P2.refreshProject();
+    } catch (error) {
+      setStatus((error.blocked ? 'BLOCKED: ' : '') + (error.message || 'retry विफल।'), true);
+    }
+  };
+
+  P2.uploadToYouTube = async function (project) {
+    var confirmBox = el('p2UploadConfirm');
+    var result = el('p2UploadResult');
+    if (!confirmBox || !confirmBox.checked) {
+      result.textContent = 'पहले ऊपर पुष्टि का चेकबॉक्स चुनें।';
+      return;
+    }
+    result.textContent = 'पहले preflight चल रहा है (कोई upload नहीं)…';
+    try {
+      var title = (project.story && project.story.title ? project.story.title : project.topic || 'BABA AI video').slice(0, 100);
+      var description = (project.story && project.story.scenes || []).slice(0, 5).map(function (s) { return s.narration; }).join('\n\n').slice(0, 5000);
+      // Preflight checks OAuth, channel, file, size and metadata — it never uploads.
+      var pre = await P2.api('/api/youtube/upload/preflight', {
+        method: 'POST',
+        body: JSON.stringify({ projectId: project.id, title: title, description: description, privacy: 'private' })
+      });
+      if (!pre.ok) {
+        var failed = (pre.checks || []).filter(function (c) { return !c.ok; }).map(function (c) { return c.id + ': ' + c.detail; });
+        throw new Error('Upload तैयार नहीं है — ' + failed.join(' | '));
+      }
+      if (!window.confirm('Preflight ठीक है। इस वीडियो को अपने चैनल पर PRIVATE upload करें?')) {
+        result.textContent = 'Upload रद्द: आपकी permission नहीं मिली। कुछ भी upload नहीं हुआ।';
+        return;
+      }
+      result.textContent = 'YouTube पर upload हो रहा है…';
+      var response = await fetch('/api/projects/' + encodeURIComponent(project.id) + '/video');
+      if (!response.ok) throw new Error('MP4 डाउनलोड नहीं हुआ।');
+      var blob = await response.blob();
+      var upload = await P2.api('/api/youtube/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'video/mp4',
+          'X-Confirm-Upload': 'yes',
+          'X-Video-Meta-B64': b64utf8(JSON.stringify({
+            title: title,
+            description: description,
+            privacy: 'private'
+          }))
+        },
+        body: blob
+      });
+      result.textContent = '✅ Upload सफल: ' + upload.url + ' | Privacy: ' + upload.privacy;
+    } catch (error) {
+      result.textContent = '❌ ' + (error.message || 'upload विफल।');
+    }
+  };
+
+  // One obvious way to start, used by the hero button and the mobile bar.
+  window.startBabaVideo = function () {
+    var gate = document.getElementById('authGate');
+    if (gate && !gate.hidden) {
+      var gateMessage = document.getElementById('authGateMessage');
+      if (gateMessage) gateMessage.textContent = 'वीडियो बनाने के लिए पहले साइन इन करें।';
+      return;
+    }
+    var topicField = document.getElementById('p2Topic');
+    var value = topicField && topicField.value ? topicField.value.trim() : '';
+    if (value && window.p2 && typeof window.p2.start === 'function') { window.p2.start(); return; }
+    var card = document.getElementById('p2AutomationCard');
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (topicField) { try { topicField.focus({ preventScroll: true }); } catch (_) { topicField.focus(); } }
+    var status = document.getElementById('p2Status');
+    if (status) status.textContent = 'पहले कहानी या विषय लिखें, फिर "बनाएँ" दबाएँ।';
+  };
+
+  // Mobile shortcuts: scroll to the card the user wants, no page hunting.
+  var MOBILE_TARGETS = {
+    topic: 'p2AutomationCard',
+    projects: 'p2ProjectList',
+    characters: 'p2CharactersCard'
+  };
+  document.addEventListener('click', function (event) {
+    var trigger = event.target && event.target.closest ? event.target.closest('[data-mobile]') : null;
+    if (!trigger) return;
+    var id = MOBILE_TARGETS[trigger.getAttribute('data-mobile')];
+    var node = id ? document.getElementById(id) : null;
+    if (!node) return;
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var field = node.querySelector ? node.querySelector('input,textarea,select') : null;
+    if (trigger.getAttribute('data-mobile') === 'topic') {
+      var storyField = document.getElementById('p2Topic');
+      var targetField = storyField || field;
+      if (targetField) { try { targetField.focus({ preventScroll: true }); } catch (_) { targetField.focus(); } }
+    }
+  });
+
+  window.p2 = P2;
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.babaAuth && window.babaAuth.onReady) window.babaAuth.onReady(function () { P2.init(); });
+    else P2.init();
+  });
+  P2.init = async function () {
+    try {
+      var savedKey = window.localStorage.getItem('babaAccessKey');
+      if (savedKey && el('p2AccessKey')) el('p2AccessKey').value = savedKey;
+      if (el('p2AccessKey')) {
+        el('p2AccessKey').addEventListener('input', function () {
+          try { window.localStorage.setItem('babaAccessKey', this.value); } catch (_) {}
+        });
+      }
+    } catch (_) {}
+    await P2.loadCapabilities();
+    await P2.loadCharacters();
+    await P2.loadProjects();
+  };
+})();
+</script>
+<script>
+/* ---- Phase 3: sign-in gate, CSRF token wiring, session handling ---- */
+(function () {
+  'use strict';
+
+  var csrfToken = null;
+  var ready = null;
+  var readyPromise = new Promise(function (resolve) { ready = resolve; });
+  var listeners = [];
+
+  function el(id) { return document.getElementById(id); }
+  function gate() { return el('authGate'); }
+  function bar() { return el('authBar'); }
+
+  function setCsrf(token) {
+    csrfToken = token || null;
+    window.__babaCsrf = csrfToken;
+  }
+
+  function showGate(message) {
+    if (gate()) gate().hidden = false;
+    if (bar()) bar().hidden = true;
+    if (message && el('authGateMessage')) {
+      el('authGateMessage').textContent = message;
+      el('authGateMessage').className = 'status error-status';
+    }
+  }
+
+  function hideGate() {
+    if (gate()) gate().hidden = true;
+    if (bar()) bar().hidden = false;
+  }
+
+  function showBar(user) {
+    if (!bar()) return;
+    bar().hidden = false;
+    if (el('authBarUser')) {
+      el('authBarUser').textContent = '👤 ' + user.username + (user.role === 'owner' ? ' (मालिक)' : '');
+    }
+  }
+
+  async function readJson(response) {
+    var raw = await response.text();
+    try { return raw ? JSON.parse(raw) : {}; }
+    catch (_) { return {}; }
+  }
+
+  function notify() {
+    listeners.forEach(function (fn) { try { fn(); } catch (_) {} });
+    listeners = [];
+    ready();
+  }
+
+  async function refreshStatus() {
+    try {
+      var response = await fetch('/api/auth/status', { cache: 'no-store' });
+      var body = await readJson(response);
+      if (!response.ok) { showGate('सर्वर से स्थिति नहीं मिली।'); return false; }
+      if (body.registrationOpen === false && el('authRegKey')) {
+        el('authRegKey').style.display = 'block';
+      }
+      if (!body.authenticated) { showGate(); return false; }
+      // The session cookie is HttpOnly, so the token comes from /me.
+      var me = await fetch('/api/auth/me', { cache: 'no-store' });
+      var meBody = await readJson(me);
+      setCsrf(meBody.csrfToken || null);
+      showBar(body.user || meBody.user || { username: 'user', role: 'member' });
+      hideGate();
+      notify();
+      return true;
+    } catch (_) {
+      showGate('सर्वर से संपर्क नहीं हो सका।');
+      return false;
+    }
+  }
+
+  async function submit(mode) {
+    var message = el('authGateMessage');
+    var username = (el('authUsername') && el('authUsername').value || '').trim();
+    var password = el('authPassword') && el('authPassword').value || '';
+    var registrationKey = (el('authRegKey') && el('authRegKey').value || '').trim();
+    if (message) { message.textContent = mode === 'register' ? 'Account बन रहा है…' : 'साइन इन हो रहा है…'; message.className = 'status'; }
+    var payload = { username: username, password: password };
+    if (mode === 'register') payload.registrationKey = registrationKey;
+    try {
+      var response = await fetch(mode === 'register' ? '/api/auth/register' : '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      var body = await readJson(response);
+      if (!response.ok) {
+        if (message) { message.textContent = '❌ ' + (body.error || ('HTTP ' + response.status)); message.className = 'status error-status'; }
+        return;
+      }
+      setCsrf(body.csrfToken || null);
+      showBar(body.user || { username: username, role: 'member' });
+      hideGate();
+      notify();
+      if (message) { message.textContent = '✅ साइन इन।'; message.className = 'status'; }
+      var passField = el('authPassword');
+      if (passField) passField.value = '';
+    } catch (error) {
+      if (message) { message.textContent = '❌ ' + (error.message || 'साइन इन विफल।'); message.className = 'status error-status'; }
+    }
+  }
+
+  window.babaAuth = {
+    onReady: function (fn) { listeners.push(fn); return readyPromise; },
+    showGate: showGate,
+    logout: async function () {
+      try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+      setCsrf(null);
+      showGate('साइन आउट हो गया।');
+      if (el('authBarUser')) el('authBarUser').textContent = '';
+    },
+    username: function () { var node = el('authBarUser'); return node ? node.textContent : ''; },
+    csrfToken: function () { return csrfToken; }
+  };
+
+  var loginBtn = el('authLoginBtn');
+  var registerBtn = el('authRegisterBtn');
+  if (loginBtn) loginBtn.addEventListener('click', function () { submit('login'); });
+  if (registerBtn) registerBtn.addEventListener('click', function () { submit('register'); });
+  [el('authUsername'), el('authPassword'), el('authRegKey')].forEach(function (node) {
+    if (!node) return;
+    node.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') submit('login');
+    });
+  });
+
+  document.addEventListener('DOMContentLoaded', function () { refreshStatus(); });
+})();
+</script>
+<script>
+/* ---- Phase 4: setup guide, animation rig upload, mobile helpers ---- */
+(function () {
+  'use strict';
+  var SHAPES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'X'];
+
+  function el(id) { return document.getElementById(id); }
+  function text(id, value, isError) {
+    var node = el(id);
+    if (!node) return;
+    node.textContent = value;
+    node.className = 'status' + (isError ? ' error-status' : '');
+  }
+  function b64(buffer) {
+    var bytes = new Uint8Array(buffer);
+    var binary = '';
+    for (var i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+  function readJson(response) {
+    return response.text().then(function (raw) {
+      try { return raw ? JSON.parse(raw) : {}; } catch (_) { return {}; }
+    });
+  }
+
+  // ---------- Setup audit ----------
+  function renderGuide(items) {
+    var box = el('setupGuide');
+    if (!box) return;
+    if (!items || !items.length) { box.innerHTML = ''; return; }
+    box.innerHTML = items.map(function (item) {
+      var steps = (item.steps || []).map(function (step) { return '<li>' + escapeHtml(step) + '</li>'; }).join('');
+      var docs = item.docs ? '<p class="small"><a href="' + item.docs + '" target="_blank" rel="noopener">दस्तावेज़</a></p>' : '';
+      return '<div class="info-box"><b>' + escapeHtml(item.title || item.id) + '</b><ol>' + steps + '</ol>' + docs + '</div>';
+    }).join('');
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
+
+  function renderChecks(checks) {
+    var box = el('setupChecks');
+    if (!box) return;
+    box.innerHTML = (checks || []).map(function (check) {
+      var icon = check.status === 'ok' ? '✅' : (check.status === 'warn' ? '⚠️' : '⛔');
+      return '<p class="small" style="margin:4px 0">' + icon + ' <b>' + escapeHtml(check.label) + '</b> — ' +
+        escapeHtml(check.detail) + '</p>';
+    }).join('');
+  }
+
+  async function loadSetup() {
+    text('setupStatus', 'Setup जाँची जा रही है…');
+    try {
+      var response = await fetch('/api/setup', { cache: 'no-store' });
+      var body = await readJson(response);
+      if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+      el('setupCard').hidden = false;
+      renderChecks(body.checks);
+      renderGuide(body.setupGuide);
+      text('setupStatus', body.ok
+        ? '✅ ज़रूरी चीज़ें तैयार हैं। Verify setup दबाकर असली जाँच करें।'
+        : '⛔ ' + (body.missing || []).join(', ') + ' गायब है — नीचे के steps अपनाएँ।', !body.ok);
+    } catch (error) {
+      text('setupStatus', '❌ ' + (error.message || 'Setup जाँच विफल।'), true);
+    }
+  }
+
+  async function verifySetup() {
+    var button = el('setupVerifyBtn');
+    if (button) button.disabled = true;
+    text('setupStatus', 'असली जाँच चल रही है (FFmpeg, font, data dir, और अगर key है तो Gemini)…');
+    try {
+      var response = await fetch('/api/setup/verify', { method: 'POST' });
+      var body = await readJson(response);
+      if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+      renderChecks((body.results || []).map(function (item) {
+        return { label: item.id, status: item.status, detail: item.detail };
+      }));
+      text('setupStatus', body.ok
+        ? '✅ Setup verify हुआ — अब वीडियो बनाया जा सकता है।'
+        : '⛔ कुछ checks fail हुए — नीचे देखें। कोई नकली success नहीं दिखाई गई।', !body.ok);
+    } catch (error) {
+      text('setupStatus', '❌ ' + (error.message || 'Verify विफल।'), true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  // ---------- Animation rig ----------
+  function fileToBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(b64(reader.result)); };
+      reader.onerror = function () { reject(new Error('फ़ाइल पढ़ी नहीं गई।')); };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function buildRigInputs() {
+    var box = el('p2RigInputs');
+    if (!box) return;
+    box.innerHTML = SHAPES.map(function (shape) {
+      return '<div><label>' + (shape === 'X' ? 'बंद मुँह (X)' : 'मुँह ' + shape) + '</label>' +
+        '<input type="file" accept="image/png,image/jpeg" data-rig-shape="' + shape + '"></div>';
+    }).join('');
+  }
+
+  function refreshRigCharacters(list) {
+    var select = el('p2RigCharacter');
+    if (!select) return;
+    var previous = select.value;
+    select.innerHTML = (list || []).map(function (character) {
+      return '<option value="' + escapeHtml(character.id) + '">' + escapeHtml(character.name) + '</option>';
+    }).join('');
+    if (previous) select.value = previous;
+  }
+
+  async function saveRig() {
+    var select = el('p2RigCharacter');
+    var id = select && select.value;
+    if (!id) { text('p2RigStatus', 'पहले कोई किरदार चुनें।', true); return; }
+    var inputs = document.querySelectorAll('[data-rig-shape]');
+    var mouth = {};
+    var pending = [];
+    inputs.forEach(function (input) {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      pending.push(fileToBase64(file).then(function (data) { mouth[input.getAttribute('data-rig-shape')] = data; }));
+    });
+    if (!pending.length) { text('p2RigStatus', 'कम से कम एक mouth image चुनें।', true); return; }
+    text('p2RigStatus', 'Sprites अपलोड हो रहे हैं…');
+    try {
+      await Promise.all(pending);
+      var payload = {
+        mouth: mouth,
+        anchor: {
+          x: Number(el('p2RigX').value),
+          y: Number(el('p2RigY').value),
+          width: Number(el('p2RigW').value)
+        }
+      };
+      var response = await fetch('/api/characters/' + encodeURIComponent(id) + '/rig', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      var body = await readJson(response);
+      if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+      text('p2RigStatus', '✅ Rig सहेजा गया — ' + (body.shapes || []).length + ' mouth shapes तैयार।' +
+        (body.animationReady ? '' : ' (अभी भी पूरा rig नहीं है)'));
+      window.p2 && window.p2.loadCharacters && window.p2.loadCharacters();
+    } catch (error) {
+      text('p2RigStatus', '❌ ' + (error.message || 'Rig सहेज नहीं हुआ।'), true);
+    }
+  }
+
+  async function deleteRig() {
+    var select = el('p2RigCharacter');
+    var id = select && select.value;
+    if (!id) return;
+    try {
+      var response = await fetch('/api/characters/' + encodeURIComponent(id) + '/rig', { method: 'DELETE' });
+      var body = await readJson(response);
+      if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+      text('p2RigStatus', 'Rig हटा दिया गया।');
+    } catch (error) {
+      text('p2RigStatus', '❌ ' + (error.message || 'Rig हटाने में समस्या।'), true);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    buildRigInputs();
+    var save = el('p2RigSaveBtn');
+    var remove = el('p2RigDeleteBtn');
+    var verify = el('setupVerifyBtn');
+    var refresh = el('setupRefreshBtn');
+    if (save) save.addEventListener('click', saveRig);
+    if (remove) remove.addEventListener('click', deleteRig);
+    if (verify) verify.addEventListener('click', verifySetup);
+    if (refresh) refresh.addEventListener('click', loadSetup);
+    // Load once the sign-in gate is resolved.
+    if (window.babaAuth && window.babaAuth.onReady) {
+      window.babaAuth.onReady(loadSetup);
+    } else {
+      loadSetup();
+    }
+  });
+
+  // Other scripts can refresh the character dropdown after saving a character.
+  window.babaSetup = {
+    load: loadSetup,
+    verify: verifySetup,
+    setCharacters: refreshRigCharacters
+  };
 })();
 </script>
 \n</body>

@@ -1,26 +1,27 @@
 name: BABA AI CI
 
 on:
+  push:
+    branches: [main, "arena/**"]
   pull_request:
     branches: [main]
-  push:
-    branches: [main, "fix/audit-api-errors-render-config"]
 
 jobs:
   test-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
+      # Lockfile-exact install: the same tree CI tests is the tree Render builds.
       - name: Install dependencies
-        run: npm install
-      - name: Run API regression tests
+        run: npm ci
+      - name: Run automated tests
         run: npm test
       - name: Build frontend and project ZIP
         run: npm run build

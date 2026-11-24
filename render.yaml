@@ -3,7 +3,8 @@ services:
     name: baba-ai-youtube-agent
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    # Lockfile-exact install: no version drift between CI and production.
+    buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -17,6 +18,11 @@ services:
         value: gemini-3.1-flash-image
       - key: GEMINI_TTS_MODEL
         value: gemini-2.5-flash-preview-tts
+      # Optional: only used when GEMINI_SCRIPT_MODEL answers 404/429. Deliberately
+      # left without a value - its availability is not verified, so nothing is
+      # claimed here. Unset means the code default applies.
+      - key: GEMINI_SCRIPT_FALLBACK_MODEL
+        sync: false
       - key: YOUTUBE_CLIENT_ID
         sync: false
       - key: YOUTUBE_CLIENT_SECRET
@@ -24,4 +30,8 @@ services:
       - key: YOUTUBE_REDIRECT_URI
         sync: false
       - key: APP_SESSION_SECRET
+        sync: false
+      # Required to create an account after the first one. sync:false keeps the
+      # value in Render's dashboard only - it is never written into the repo.
+      - key: APP_REGISTRATION_KEY
         sync: false

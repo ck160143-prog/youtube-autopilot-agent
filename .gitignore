@@ -17,3 +17,6 @@ dist/
 .DS_Store
 Thumbs.db
 *.log
+
+# Runtime data (projects, characters, generated assets)
+data/

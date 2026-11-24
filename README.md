@@ -1,86 +1,319 @@
-# BABA AI — YouTube Agent
+# BABA AI — YouTube Automation Agent
 
-Hindi-first web app for Gemini script/SEO generation, scene images and Hindi TTS, plus real Google OAuth channel connection and YouTube video upload.
+Hindi-first, free-first YouTube automation: a topic becomes a structured story, a
+consistent cast, per-scene images and Hindi voice, and a real FFmpeg MP4 — with
+captions, music and transition sound effects.
 
-## Current implemented features
+The pipeline is **provider-injected**: the same code runs against real Gemini or
+against a deterministic fake in tests. Nothing reports success unless a file was
+actually produced.
 
-- Gemini script and SEO endpoints.
-- Scene image generation (up to 3 images per request; Gemini quota/billing may apply), with Wikimedia Commons fallback on Gemini quota errors when suitable images are found and attribution details returned.
-- Hindi TTS endpoint (provider quota/billing may apply).
-- Google OAuth 2.0 connect/status/disconnect.
-- YouTube Data API v3 resumable upload for an already-rendered MP4/MOV/WebM, up to 90 MB per request. Upload defaults to **Private**; user must explicitly choose another privacy level.
-- Frontend form for video file, title, description and privacy.
+---
 
-## 3D cartoon mode
+## What actually works
 
-- The frontend defaults to **3D cartoon comedy** and also offers cinematic and realistic visual styles. Select a target duration from 1 to 5 minutes.
-- The selected style is passed to script generation and scene-image prompts. 3D prompts request consistent Indian cartoon characters, recurring outfits/hairstyles, expressive faces, and vertical 9:16 composition.
-- The current MP4 pipeline still combines scene stills and Hindi narration into a short narrated video/slideshow. It is **not** a full 3D character-animation or lip-sync engine. Character motion and dialogue-to-mouth synchronization are not guaranteed.
-- 3D image generation depends on the configured Gemini image model and its available quota/billing. In 3D-cartoon mode the app will not silently replace unavailable cartoon art with real Wikimedia photos; it will report the quota problem instead.
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Topic → structured Hindi story | ✅ real | Needs `GEMINI_API_KEY` |
+| Scene planning 10 / 20 / 50 / … 150 | ✅ real | 1 min → 10 scenes, 2 → 20, 5 → 50, 30 → 150 |
+| Character library (face, outfit, colours, voice) | ✅ real | Persisted in `data/characters.json` |
+| Character consistency in every prompt | ✅ real | Character bible repeated in each image prompt |
+| Scene images | ✅ real | Needs `GEMINI_API_KEY`; magic-byte validated |
+| Per-character Hindi voice | ✅ real | Needs `GEMINI_API_KEY`; male/female presets |
+| Camera motion (Ken Burns / pan) | ✅ real | Per scene, via FFmpeg `zoompan` |
+| Fade transitions | ✅ real | Dip-to-black per scene |
+| Hindi captions | ✅ real | SRT + ASS burn-in, soft-subtitle fallback |
+| Background music | ✅ real | Synthesised by FFmpeg — no third-party track |
+| Sound effects | ✅ real | One whoosh per scene boundary, synthesised |
+| Music ducking under narration | ✅ real | `sidechaincompress` |
+| 16:9, 9:16, 1:1 | ✅ real | 720p default, 1080p optional |
+| 1–30 minute videos | ✅ real | Chunked render, resume, bounded memory |
+| Resume / retry a single scene | ✅ real | Completed clips are reused, not re-encoded |
+| SEO package (title, description, tags) | ✅ real | Needs `GEMINI_API_KEY` |
+| Thumbnail | ✅ real | Frame from scene 1; title text needs `CAPTION_FONT_FILE` |
+| YouTube upload (private/unlisted/public) | ✅ real | Needs OAuth; Hindi metadata supported |
+| Multi-user accounts (owner/member) | ✅ real | scrypt hashes, server-side sessions in `data/` |
+| Project + character ownership | ✅ real | Another user gets 403, never a leak |
+| CSRF protection | ✅ real | Per-session token or same-origin proof on every write |
+| Rate limiting | ✅ real | Per-group windows (AI 20, render 10, upload 5, auth 10, general 120) |
+| Persistent job queue | ✅ real | `data/jobs/`, survives restart, resumes interrupted work |
+| Restart recovery | ✅ real | Mid-flight project → `interrupted`; job re-queued and resumed |
+| Bundled Devanagari font | ✅ real | `fonts/NotoSansDevanagari-Regular.ttf` (OFL), no system font needed |
+| Setup audit + fix guide | ✅ real | `/api/setup`, `/api/setup/verify`, in-dashboard steps; no secret ever returned |
+| Animation-ready characters (rig) | ✅ real | Upload mouth sprites A–H/X; validated by magic bytes, stored on disk |
+| Lip-sync analysis (Rhubarb) | ✅ real | MIT engine, CPU-only; audio → mouth-cue timeline |
+| 2D mouth animation on rigged characters | ✅ experimental | Sprites swapped on real cues; only when a rig + engine exist |
+| YouTube upload preflight | ✅ real | Validates OAuth/file/metadata, never uploads |
+| Android / small-screen dashboard | ✅ real | Sticky shortcuts, 46 px targets, 16 px inputs, safe-area |
+| **Full-body 3D character animation** | ⛔ **not implemented** | Needs a motion provider/GPU model; the dashboard says so |
 
-## Important limits (not falsely advertised as complete)
+The MP4 is a **narrated slideshow with camera motion**, not 3D character
+animation. Walking, running, expressions and lip-sync are not implemented; the
+dashboard reports them as `BLOCKED` instead of implying they exist.
 
-The repository includes an end-to-end narrated slideshow MP4 renderer using FFmpeg, with up to 3 scene images and Hindi TTS. The web UI offers 1–5 minute targets; the server accepts narration up to 300 seconds (5 minutes), uses a single active render job on constrained hosts, and raises the audio payload ceiling for longer narration. Actual 4–5 minute render success depends on available CPU, memory, provider quotas, and the host's runtime limits; the free Render instance may not reliably complete the longest jobs. The output is a narrated still-image slideshow, not a full-motion AI video or 3D character animation. The app also includes a browser Canvas thumbnail, checkpoint/export tools, Commons image fallback on Gemini image quota errors, and real YouTube upload for a rendered video. It does not include a durable multi-user token database, persistent upload queue, or automatic daily scheduler. The OAuth session is encrypted in a browser cookie; clearing browser cookies or losing the session requires reconnecting. Render's request-size/time limits can also affect large uploads. Do not upload files containing private or copyrighted material unless you have rights.
+---
 
-## Run locally
+## Quick start
 
-Requirements: Node.js 18+.
+Requirements: Node.js 20+, a real FFmpeg binary.
 
 ```bash
-npm install
-cp .env.example .env
-# Edit .env and set GEMINI_API_KEY plus YouTube OAuth values (if uploading)
-npm run build
-npm start
+npm ci                 # lockfile is authoritative
+cp .env.example .env   # fill in GEMINI_API_KEY (and YouTube OAuth if uploading)
+npm run build          # copies index.html into dist/
+npm start              # http://localhost:3000
 ```
 
-Open http://localhost:3000.
+If `ffmpeg-static` could not download its binary (restricted network), point the
+app at any FFmpeg:
 
-## Configure real YouTube OAuth
+```bash
+FFMPEG_PATH=/usr/bin/ffmpeg npm start
+```
 
-1. Open Google Cloud Console and create/select a project.
-2. Enable **YouTube Data API v3**.
-3. Configure the OAuth consent screen. Add your Google account as a test user while the app is in Testing.
-4. Create **OAuth Client ID → Web application**.
-5. Add the exact authorized redirect URI:
-   - Local: `http://localhost:3000/api/youtube/callback`
-   - Render: `https://YOUR-RENDER-SERVICE.onrender.com/api/youtube/callback`
-6. Add these to the Render service's **Environment** settings (not GitHub files):
-   - `YOUTUBE_CLIENT_ID`
-   - `YOUTUBE_CLIENT_SECRET`
-   - `YOUTUBE_REDIRECT_URI` (must exactly match the Google URI)
-   - `APP_SESSION_SECRET` (random string, at least 32 characters)
-   - `GEMINI_API_KEY` (for Gemini features)
-7. Save/redeploy Render. Visit your app, tap **YouTube चैनल Connect करें**, approve the Google permissions, then check status.
-8. In the app's video section, select a final rendered video, enter title/description, leave privacy **Private** for a test, and upload. Verify it in YouTube Studio before making it public.
+A Noto Sans Devanagari font ships in `fonts/` (SIL OFL 1.1), so burned Hindi
+captions and thumbnails render on hosts with no system fonts — including slim
+containers. `CAPTION_FONT_FILE` still overrides it if you want another font.
 
-Never paste OAuth secrets, Gemini keys, access tokens, or refresh tokens into GitHub, chat, or frontend code. Rotate any key that was accidentally exposed.
+### Setup guide (key न होने पर)
 
-## Environment variables
+डैशबोर्ड खुलते ही **Setup जाँच** कार्ड दिखता है: क्या configure है, क्या गायब है, और
+हर गायब चीज़ के exact steps। **Verify setup** असली जाँच चलाता है — FFmpeg, font, data
+directory, और अगर key है तो एक free `models.list` call से key accept होती है या नहीं।
+Key न होने पर कोई नकली success नहीं: हर AI route `503 {blocked: true, setup: {steps}}`
+देता है।
 
-See `.env.example`. No real credentials belong in that file.
+```bash
+curl -s -b cookies.txt -H "x-csrf-token: $TOKEN" -X POST http://localhost:3000/api/setup/verify
+```
 
-## Deployment
+`GET /api/setup/guide/<CHECK_ID>` सिर्फ एक check के steps देता है।
 
-Render should run the Node server with `npm start`. The static frontend is served from `dist` (build with `npm run build`). For production uploads, consider a persistent/object-storage based job pipeline and chunked transfer; this current hosted upload endpoint has a 90 MB body limit.
+### Lip-sync (optional, CPU-only)
 
-## Security notes
+```bash
+npm install rhubarb-lip-sync-wasm     # MIT, ~41 MB, WASM build
+# या native binary (ज़्यादा तेज़):
+RHUBARB_PATH=/usr/local/bin/rhubarb
+```
 
-- OAuth state is checked on callback.
-- OAuth token session data is encrypted with AES-256-GCM using `APP_SESSION_SECRET`, stored in an HttpOnly, SameSite=Lax cookie (Secure in production).
-- YouTube upload uses the authenticated user's OAuth token and requests confirmation through the app form; default visibility is private.
-- This is a personal/single-browser implementation, not a hardened public multi-tenant service. Restrict access to your deployment; do not share the connected app URL as an open upload service.
+फिर किरदार के **mouth sprites** अपलोड करें (dashboard में 🎭 Animation rig, या
+`POST /api/characters/:id/rig`)। जिन scenes में वही किरदार बोलता है, render के समय
+उसका मुँह असली cue timeline पर swap होता है। Sprites या engine न हों तो कुछ भी
+animate नहीं होता — slideshow ईमानदारी से slideshow रहती है।
 
+⚠️ **Hindi पर accuracy verify नहीं हुई.** Rhubarb का phoneme recognizer English
+model पर चलता है; इस sandbox में कोई real Hindi speech sample नहीं था। Engine काम
+करता है (audio → cues), पर Hindi मुँह-आकृतियों की सटीकता को अभी experimental ही
+समझना चाहिए।
 
-## Gemini image quota recovery
+### Accounts (multi-user)
 
-- Image generation stops immediately on HTTP 429 / `RESOURCE_EXHAUSTED`; it does not try another image model after a quota response.
-- The API returns a provider retry/reset hint when Google includes one. If Google does not provide a reset time, the app says so instead of inventing one.
-- Successful scene images remain available in the current browser tab if a later scene fails. The UI offers a retry action for failed scene prompts only; a retry can still fail until the provider quota resets.
-- MP4 generation can continue using successful images already present in the tab. If no generated image is available, the browser creates clearly labeled script-text PNG slides and combines those with narration; these are not represented as AI-generated artwork.
-- For local image generation, users can run a compatible local Stable Diffusion / ComfyUI setup on their own computer and download/import the resulting PNG/JPEG images. The hosted Render service does not silently claim to run a local model or provide unlimited image generation.
-- Workflow checkpoints preserve topic, script, SEO, and stage status in the same browser. Download scene images, voice audio, and MP4 files separately for durable backups; browser storage is not a permanent asset store.
+The dashboard opens with a sign-in gate. The **first** account becomes the
+owner and adopts every project/character created before authentication existed.
+After that, a new account needs the registration key:
+
+```bash
+APP_REGISTRATION_KEY="team-secret" npm start
+```
+
+- Passwords: scrypt (`N=16384, r=8, p=1`), never stored or logged in plain text.
+- Sessions: server-side in `data/sessions.json`, 7-day TTL, revocable, cookie is
+  `HttpOnly; SameSite=Lax` (`Secure` when `NODE_ENV=production`).
+- Every write needs the session's CSRF token (`x-csrf-token`) or a same-origin
+  `Origin`/`Sec-Fetch-Site` proof.
+- Every project and character is owned; another account gets `403` (or `404`
+  where existence would leak).
+- `/api/health` and `/api/auth/status` stay public.
+
+`APP_ACCESS_KEY` still works as an *additional* gate for personal deployments
+(every `/api/*` call needs `x-access-key` or the `baba_access_key` cookie).
+
+---
+
+## How a video is made
+
+```
+topic + duration + style + aspect
+  → story (N scenes: narration, dialogue, image prompt)
+  → per scene: image (Gemini) + voice (Gemini, per-character voice)
+  → timeline (real audio durations, scaled to the requested runtime)
+  → per scene clip (Ken Burns, fade, AAC audio, silence-padded narration)
+  → chunk concat → music bed + SFX (sidechain ducked)
+  → ASS caption burn-in (fallback: soft subtitle track)
+  → MP4 + SRT
+```
+
+Projects are stored in `data/projects/<id>.json` plus an asset directory. A
+crash or a cancelled run resumes from the last completed clip.
+
+### Duration and scene count
+
+| Requested | Scenes | Timeline |
+| --- | --- | --- |
+| 1 min | 10 | 60 s |
+| 2 min | 20 | 120 s |
+| 5 min | 50 | 300 s |
+| 10 min | 75 | 600 s |
+| 30 min | 150 | 1800 s |
+
+Scene durations come from the measured narration audio; when audio is missing
+the engine falls back to a word-count estimate (≈130 words/min for Hindi). Each
+scene is clamped to 2.5–22 s so no frame lingers.
+
+### Rendering limits
+
+- `720p` default (`1280×720`, `720×1280`, `720×720`); `1080p` optional.
+- `FFMPEG_PRESET` (`ultrafast` … `veryslow`) trades size for speed.
+- One render at a time per process; clips and chunks are reused on retry.
+- Rendered files live under `data/projects/<id>/render/`.
+
+---
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/health` | Liveness (public) |
+| GET | `/api/auth/status` | Session + registration state (public) |
+| POST | `/api/auth/register` | First account = owner; later ones need the key |
+| POST | `/api/auth/login` | Session cookie + CSRF token |
+| POST | `/api/auth/logout` | Revoke the session |
+| GET | `/api/auth/me` | Current user + CSRF token |
+| GET | `/api/setup` | Configuration audit + fix guide (no secrets) |
+| POST | `/api/setup/verify` | Real checks; **one** free `models.list` call verifies the key *and* every configured model ID |
+| GET | `/api/setup/guide/:checkId` | Steps for one missing piece |
+| GET | `/api/capabilities` | Honest feature matrix + blocked reasons |
+| GET/POST | `/api/characters` | Character library |
+| DELETE | `/api/characters/:id` | Remove a character |
+| GET | `/api/characters/:id` | Character + animation readiness |
+| POST | `/api/characters/:id/rig` | Upload mouth/expression sprites (base64 PNG/JPEG) |
+| DELETE | `/api/characters/:id/rig` | Remove the rig and its files |
+| POST | `/api/characters/:id/lipsync` | Analyse audio → mouth-cue timeline |
+| POST | `/api/story` | Topic → story JSON (key required) |
+| GET/POST | `/api/projects` | List / create a project |
+| GET | `/api/projects/:id` | Full project state + progress |
+| DELETE | `/api/projects/:id` | Delete project and assets |
+| POST | `/api/projects/:id/story` | Generate the story |
+| POST | `/api/projects/:id/assets` | Generate images + voice |
+| POST | `/api/projects/:id/render` | Render the MP4 |
+| POST | `/api/projects/:id/automate` | Story → assets → render in one job |
+| POST | `/api/projects/:id/scenes/:index/retry` | Re-do one scene only |
+| POST | `/api/projects/:id/cancel` | Stop after the current step |
+| GET | `/api/projects/:id/video` | Inline MP4 preview |
+| GET | `/api/projects/:id/download` | MP4 download |
+| GET | `/api/projects/:id/captions` | Hindi `.srt` |
+| POST/GET | `/api/projects/:id/seo` | SEO package |
+| POST/GET | `/api/projects/:id/thumbnail` | Thumbnail JPEG |
+| POST | `/api/youtube/upload/preflight` | Validate everything, **never uploads** |
+| POST | `/api/youtube/upload` | Resumable upload (OAuth + `x-confirm-upload: yes`) |
+
+Long operations return `202` with the project; poll `GET /api/projects/:id`.
+Every job is also recorded in the persistent queue (`data/jobs/`), so a restart
+resumes it instead of losing the work.
+A route that needs a missing credential returns `503` with `"blocked": true`,
+never a fake success.
+
+---
+
+## Environment
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | for AI | Story, images, voice, SEO |
+| `GEMINI_SCRIPT_MODEL` | no | Text model (default `gemini-3.8-flash`) |
+| `GEMINI_SCRIPT_FALLBACK_MODEL` | no | One-shot fallback on 404/429 (default `gemini-3.5-flash-lite`, **not verified** — check with *Verify setup*) |
+| `GEMINI_IMAGE_MODEL` | no | Image model (default `gemini-3.1-flash-image`) |
+| `GEMINI_TTS_MODEL` | no | TTS model (default `gemini-2.5-flash-preview-tts`) |
+| `YOUTUBE_CLIENT_ID` / `_SECRET` / `REDIRECT_URI` | for upload | OAuth app |
+| `APP_SESSION_SECRET` | for upload | ≥32 chars, encrypts the OAuth cookie |
+| `APP_ACCESS_KEY` | no | Optional extra API gate |
+| `APP_REGISTRATION_KEY` | no | Required to sign up after the first account |
+| `API_RATE_LIMIT_MULTIPLIER` | no | Scales every rate limit (e.g. `0.5` halves them) |
+| `GEMINI_TIMEOUT_MS` | no | Per-call Gemini timeout (default 90000, max 600000) |
+| `RHUBARB_PATH` | no | Native Rhubarb binary (WASM build is the fallback) |
+| `FFMPEG_PATH` | no | Explicit FFmpeg binary |
+| `FFMPEG_PRESET` | no | x264 preset (default `veryfast`) |
+| `CAPTION_FONT_FILE` | no | Devanagari TTF for burned captions/thumbnail |
+| `DATA_DIR` | no | Where projects/characters are stored (default `./data`) |
+
+Keys live only in the environment. Nothing is written to the frontend.
+
+---
 
 ## Tests
 
-Run `npm test` (Node.js 18+). Tests cover quota classification, retry hints, no retries on 429, and bounded retries for temporary 5xx errors.
+```bash
+FFMPEG_PATH=/path/to/ffmpeg npm test
+```
+
+158 tests (157 pass, 1 intentionally skipped), including browser-level
+sign-in/CSRF and mobile-layout tests (jsdom). The renderer and
+end-to-end tests run a **real** FFmpeg and assert on the produced MP4
+(container, streams, duration, size). They skip — with an explicit reason —
+when no FFmpeg binary is available; they never fake a pass.
+
+The full 30-minute render (150 scenes, real 720p) is opt-in because it takes
+many minutes:
+
+```bash
+RUN_LONG_RENDER=1 FFMPEG_PATH=/path/to/ffmpeg node --test test/render-30min.test.js
+```
+
+---
+
+## Verify your Gemini key and models (free)
+
+One `models.list` call is metadata only — it generates nothing and costs no
+quota. It is the only supported way to prove a model ID works for your key.
+
+```bash
+GEMINI_API_KEY=... node scripts/verify-models.js
+```
+
+Prints one line per configured model (`✅` available, `❌` required but missing,
+`⚠️` optional fallback missing) and exits non-zero when a required ID is absent.
+The key is never printed — not its value, not its length. In the dashboard the
+same check is **Verify setup** (`POST /api/setup/verify`), which uses the same
+single request to validate the key and every configured model ID.
+
+`GEMINI_SCRIPT_FALLBACK_MODEL` is optional and its default is **not verified**:
+leave it unset unless this command reports it available.
+
+---
+
+## Deployment
+
+`render.yaml` runs the Node server (`npm start`). `netlify.toml` only publishes
+the static `dist/`, so a Netlify deploy has no API — use it for the frontend
+alone or remove it.
+
+Free-tier caveats: 512 MB RAM, ephemeral disk, sleep after inactivity. A 30
+minute render will not finish on a free instance; the chunked renderer resumes,
+so re-running the same project continues from the last chunk.
+
+---
+
+## Security notes
+
+- Image payloads are validated by **magic bytes**, not declared MIME.
+- Audio is normalised to WAV before it reaches FFmpeg.
+- OAuth state is checked on callback; tokens are AES-256-GCM encrypted in an
+  HttpOnly, SameSite=Lax cookie.
+- YouTube metadata travels as base64 JSON so Hindi titles work (HTTP headers
+  cannot carry non-Latin-1 text).
+- Public uploads require an explicit confirmation step in the dashboard.
+- Optional `APP_ACCESS_KEY` gate for public deployments.
+- Multi-user accounts with scrypt hashes and revocable server-side sessions.
+- Per-session CSRF tokens on every state-changing route.
+- Sliding-window rate limits per route group, keyed by user (or IP when signed
+  out); `/api/health` and `/api/auth/status` are exempt.
+- Project/character ownership enforced server-side on every route.
+- Every AI response is passed through `redactSecrets()` before it reaches a client.
+- Provider calls have a hard timeout so a hung request cannot block the job queue.
+- YouTube upload requires `x-confirm-upload: yes` and the dashboard asks again;
+  preflight never touches Google's upload endpoints.
+- The dashboard's one-click automation stops at the MP4. **It never uploads to
+  YouTube**; upload is a separate button that asks for confirmation, and the
+  server still requires `x-confirm-upload: yes`.
+- **Not implemented**: full-body 3D character animation (see `GOAL.md`).
