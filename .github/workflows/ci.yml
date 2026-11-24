@@ -26,6 +26,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Run automated tests
-        run: npm test
+        # TAP output is kept so the failing test names can be surfaced as check
+        # annotations: a red run is diagnosable without opening the raw log.
+        run: |
+          set +e
+          node --test > test-output.tap 2>&1
+          status=$?
+          grep -E '^not ok ' test-output.tap | head -10 | while read -r line; do
+            echo "::error title=Failing test::${line#* - }"
+          done
+          tail -30 test-output.tap
+          exit $status
       - name: Build frontend and project ZIP
         run: npm run build
