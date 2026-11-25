@@ -26,7 +26,7 @@ const {
   cookieHeader, clearCookieHeader, readCookie, SESSION_COOKIE,
 } = require("./lib/auth");
 const { createRateLimiter } = require("./lib/ratelimit");
-const { redactSecrets } = require("./lib/setup");
+const { redactSecrets, readSecret, keyShape } = require("./lib/setup");
 
 app.set("trust proxy", 1);
 const authStore = new AuthStore({ dir: dataRoot }).load();
@@ -267,18 +267,18 @@ function quotaMessage(kind, model, error) {
   return quotaInfo(error, model || process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image").message;
 }
 
-let aiClientFactory = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiClientFactory = () => new GoogleGenAI({ apiKey: readSecret("GEMINI_API_KEY") });
 
 function setAIClientFactoryForTests(factory) {
   aiClientFactory = factory;
 }
 
 function resetAIClientFactory() {
-  aiClientFactory = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  aiClientFactory = () => new GoogleGenAI({ apiKey: readSecret("GEMINI_API_KEY") });
 }
 
 function getAIClient() {
-  const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
+  const apiKey = readSecret("GEMINI_API_KEY");
 
   if (!apiKey) {
     const error = new Error("GEMINI_API_KEY सेट नहीं है।");
@@ -354,13 +354,13 @@ app.get("/api/health", (req, res) => {
   // deploy. Readiness is reported separately, because "process is serving" and
   // "the pipeline can run" are different claims.
   const blocked = [];
-  if (!process.env.GEMINI_API_KEY) blocked.push("GEMINI_API_KEY");
+  if (!readSecret("GEMINI_API_KEY")) blocked.push("GEMINI_API_KEY");
   if (!ffmpegTools.ffmpegVersionSync()) blocked.push("FFMPEG");
   res.json({
     status: "ok",
     ready: blocked.length === 0,
     blocked,
-    geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    geminiKeyConfigured: Boolean(readSecret("GEMINI_API_KEY")),
     message: "BABA AI सर्वर चल रहा है।",
   });
 });
@@ -1405,7 +1405,7 @@ function blocked(message) {
 // Honest feature matrix: what is wired, what needs a key, what does not exist.
 app.get("/api/capabilities", async (req, res) => {
   const ffmpegOk = await ffmpegTools.ffmpegAvailable();
-  const hasKey = Boolean(process.env.GEMINI_API_KEY);
+  const hasKey = Boolean(readSecret("GEMINI_API_KEY"));
   const lipEngine = lipsyncEngine.resolveEngine();
   const rigged = characterLibrary.listFor(req.user.id).filter(c => c.rig && c.rig.animationReady);
   const features = {
@@ -1484,19 +1484,19 @@ app.get("/api/setup", async (req, res) => {
 app.post("/api/setup/verify", async (req, res) => {
   const runtime = setupRuntime();
   const results = [];
-  const push = (id, status, detail) => results.push({ id, status, detail });
+  const push = (id, status, detail, extra) => results.push(Object.assign({ id, status, detail }, extra || {}));
 
   // ffmpegVersion() returns null (instead of throwing) when the binary cannot
   // run, so a null version must never be reported as "ok".
   try {
     const version = await ffmpegTools.ffmpegVersion();
-    if (!version) push("FFMPEG", "blocked", "FFmpeg binary नहीं चला — FFMPEG_PATH दें या ffmpeg install करें");
+    if (!version) push("FFMPEG", "blocked", "FFmpeg binary नहीं चला — FFMPEG_PATH दें या ffmpeg install करें", { reason: "unavailable" });
     else {
       runtime.ffmpeg.version = version;
       push("FFMPEG", "ok", "ffmpeg " + version);
     }
   } catch (error) {
-    push("FFMPEG", "blocked", redactSecrets(error.message || "FFmpeg नहीं चला"));
+    push("FFMPEG", "blocked", redactSecrets(error.message || "FFmpeg नहीं चला"), { reason: "unavailable" });
   }
 
   try {
@@ -1515,19 +1515,21 @@ app.post("/api/setup/verify", async (req, res) => {
     fs.rmSync(probe, { force: true });
     push("DATA_DIR", "ok", "writable");
   } catch (error) {
-    push("DATA_DIR", "blocked", redactSecrets(error.message || "data directory लिखने योग्य नहीं"));
+    push("DATA_DIR", "blocked", redactSecrets(error.message || "data directory लिखने योग्य नहीं"), { reason: "unavailable" });
   }
 
   const engine = lipsyncEngine.resolveEngine();
-  push("LIPSYNC_ENGINE", engine ? "ok" : "blocked", engine ? engine.label : "not installed (optional)");
+  push("LIPSYNC_ENGINE", engine ? "ok" : "blocked", engine ? engine.label : "not installed (optional)",
+    engine ? undefined : { reason: "not_configured" });
 
   push("YOUTUBE_OAUTH", youtubeConfigReady() ? "ok" : "blocked",
-    youtubeConfigReady() ? "configured (secrets hidden)" : "not configured");
+    youtubeConfigReady() ? "configured (secrets hidden)" : "not configured",
+    youtubeConfigReady() ? undefined : { reason: "not_configured" });
 
-  const key = String(process.env.GEMINI_API_KEY || "").trim();
+  const key = readSecret("GEMINI_API_KEY");
   let modelIds = null;
   if (!key) {
-    push("GEMINI_API_KEY", "blocked", "not set");
+    push("GEMINI_API_KEY", "blocked", "not set", { reason: "not_set" });
   } else {
     try {
       const ai = getAIClient();
@@ -1540,7 +1542,7 @@ app.post("/api/setup/verify", async (req, res) => {
       modelIds = await listModelIds(listed);
       push("GEMINI_API_KEY", "ok", "key accepted by Gemini API" + (modelIds.size ? " (" + modelIds.size + " models visible)" : ""));
     } catch (error) {
-      push("GEMINI_API_KEY", "blocked", redactSecrets(error.message || "Gemini ने key reject की"));
+      push("GEMINI_API_KEY", "blocked", redactSecrets(error.message || "Gemini ने key reject की"), { reason: "rejected" });
     }
   }
 
@@ -1560,7 +1562,7 @@ app.post("/api/setup/verify", async (req, res) => {
           : "models.list में नहीं मिला — यह fallback इस्तेमाल नहीं हो पाएगा (optional)");
     }
     modelAvailability.push({ role: model.role, id: model.id, required: model.required, status });
-    push(model.checkId, status, detail);
+    push(model.checkId, status, detail, status === "blocked" ? { reason: "model_missing" } : undefined);
   }
 
   const audit = auditSetup(runtime);
@@ -1568,11 +1570,20 @@ app.post("/api/setup/verify", async (req, res) => {
   // optional lip-sync engine must not fail an otherwise working setup.
   const REQUIRED = ["FFMPEG", "DEVANAGARI_FONT", "DATA_DIR", "GEMINI_API_KEY",
     "GEMINI_SCRIPT_MODEL", "GEMINI_IMAGE_MODEL", "GEMINI_TTS_MODEL"];
-  const ok = results.filter(item => REQUIRED.includes(item.id)).every(item => item.status === "ok");
+  const isRequired = id => REQUIRED.includes(id);
+  const ok = results.filter(item => isRequired(item.id)).every(item => item.status === "ok");
+  // "Set नहीं है" और "set है पर verify नहीं हुआ" अलग-अलग बातें हैं। पहले दोनों को
+  // एक ही "missing" कहा जाता था, जिससे reject हुई key "गायब" दिखती थी।
+  const blocked = results.filter(item => item.status === "blocked" && isRequired(item.id));
+  const missing = blocked.filter(item => item.reason === "not_set").map(item => item.id);
+  const failed = blocked.filter(item => item.reason !== "not_set").map(item => item.id);
   return res.json({
     verifiedAt: new Date().toISOString(),
     ok,
-    missing: results.filter(item => item.status === "blocked").map(item => item.id),
+    missing,
+    failed,
+    // Shape only — the key itself never leaves the process.
+    keyShape: keyShape(process.env.GEMINI_API_KEY),
     results,
     models: modelAvailability,
     setupGuide: audit.setupGuide,
@@ -1761,7 +1772,7 @@ app.post("/api/characters/:id/lipsync", async (req, res) => {
 
 // ---- Story generation (requires a real provider key) ----
 app.post("/api/story", async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) {
+  if (!readSecret("GEMINI_API_KEY")) {
     return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Story generation BLOCKED है।"));
   }
   try {
@@ -1985,7 +1996,7 @@ app.post("/api/projects/:id/story", async (req, res) => {
   // Ownership first: a missing key must not reveal whether a project exists.
   const project = ownedProject(req, res);
   if (!project) return;
-  if (!process.env.GEMINI_API_KEY) {
+  if (!readSecret("GEMINI_API_KEY")) {
     return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Story generation BLOCKED है।"));
   }
   if (runningProjects.has(id)) return res.status(409).json({ error: "प्रोजेक्ट पहले से चल रहा है।" });
@@ -1998,7 +2009,7 @@ app.post("/api/projects/:id/assets", (req, res) => {
   const id = req.params.id;
   const project = ownedProject(req, res);
   if (!project) return;
-  if (!process.env.GEMINI_API_KEY) {
+  if (!readSecret("GEMINI_API_KEY")) {
     return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Images और voice BLOCKED हैं।"));
   }
   if (!project.story) return res.status(409).json({ error: "पहले कहानी बनाएँ।" });
@@ -2022,7 +2033,7 @@ app.post("/api/projects/:id/automate", (req, res) => {
   const id = req.params.id;
   const project = ownedProject(req, res);
   if (!project) return;
-  if (!process.env.GEMINI_API_KEY) {
+  if (!readSecret("GEMINI_API_KEY")) {
     return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Automatic pipeline BLOCKED है।"));
   }
   const started = startProjectJob(id, projectStageTask("automate"), { stage: "automate" });
@@ -2034,7 +2045,7 @@ app.post("/api/projects/:id/automate", (req, res) => {
 app.post("/api/projects/:id/scenes/:index/retry", async (req, res) => {
   const project = ownedProject(req, res);
   if (!project) return;
-  if (!process.env.GEMINI_API_KEY) {
+  if (!readSecret("GEMINI_API_KEY")) {
     return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Retry BLOCKED है।"));
   }
   if (!project.story) return res.status(409).json({ error: "पहले कहानी बनाएँ।" });
@@ -2139,7 +2150,7 @@ app.get("/api/projects/:id/seo", (req, res) => {
 });
 
 app.post("/api/projects/:id/seo", async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) {
+  if (!readSecret("GEMINI_API_KEY")) {
     return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। SEO BLOCKED है।"));
   }
   const project = ownedProject(req, res);
@@ -2265,7 +2276,7 @@ if (require.main === module) {
     console.log("BABA AI Server running on port " + PORT);
     // Never a secret: just which binary renders, and whether it runs at all.
     console.log("FFmpeg: " + (ffmpegVer ? ffmpegVer + " (" + ffmpegBin + ")" : "NOT AVAILABLE (" + ffmpegBin + ")"));
-    if (!process.env.GEMINI_API_KEY) console.log("GEMINI_API_KEY: not set - generation is blocked");
+    if (!readSecret("GEMINI_API_KEY")) console.log("GEMINI_API_KEY: not set - generation is blocked");
   });
 }
 
