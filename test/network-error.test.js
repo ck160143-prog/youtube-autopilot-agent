@@ -37,6 +37,21 @@ function fetchFailure(code) {
   return error;
 }
 
+test("a call that runs past its deadline is reported as unreachable, not as a 502", () => {
+  // Regression: AbortSignal.timeout() throws name=TimeoutError / code=ABORT_ERR,
+  // which used to fall through to the generic 502 branch.
+  const timeout = new Error("The operation was aborted due to timeout");
+  timeout.name = "TimeoutError";
+  timeout.code = "ABORT_ERR";
+  assert.equal(isNetworkError(timeout), true);
+  assert.match(networkErrorDetail(timeout), /ABORT_ERR/);
+
+  const aborted = new Error("This operation was aborted");
+  aborted.name = "AbortError";
+  aborted.code = "ABORT_ERR";
+  assert.equal(isNetworkError(aborted), true);
+});
+
 test("isNetworkError recognises DNS/TLS failures and rejects HTTP errors", () => {
   assert.equal(isNetworkError(fetchFailure("ENOTFOUND")), true);
   assert.equal(isNetworkError(fetchFailure("EAI_AGAIN")), true);

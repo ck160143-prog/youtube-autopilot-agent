@@ -10,10 +10,14 @@ services:
     # Render's repo binding and are not a production deploy.
     branch: main
     # Lockfile-exact install: no version drift between CI and production.
-    # ffmpeg-static downloads its binary during `npm ci`; if that download is
+    # jsdom is only used by the UI tests, so it is excluded from the runtime
+    # install: on a 512 MB free instance it is pure memory and disk pressure,
+    # and `npm run build` only needs build.js. Use `npm ci` (not --omit=dev) in
+    # CI so the tests keep the full tree.
+    # ffmpeg-static downloads its binary during install; if that download is
     # unavailable the code falls back to the ffmpeg on PATH (Render's native
     # runtime ships 4.1, which the renderer now supports).
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --omit=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
