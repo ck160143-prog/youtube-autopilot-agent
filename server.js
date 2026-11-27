@@ -314,9 +314,35 @@ function geminiKeyBlocked(featureLabel) {
   };
 }
 
+// A DNS/TLS/socket failure says nothing about the key: reporting it as
+// "key rejected" sends the user to rotate a perfectly good credential. The
+// underlying cause string is kept because it is actionable (ENOTFOUND,
+// certificate expired, proxy refused) and contains no secret.
+function networkErrorDetail(error) {
+  const cause = error && error.cause ? error.cause : null;
+  const code = String((cause && cause.code) || error?.code || "").slice(0, 40);
+  const text = String((cause && cause.message) || error?.message || "").slice(0, 120);
+  return [code, text].filter(Boolean).join(" — ").replace(/\s+/g, " ").trim();
+}
+
+function isNetworkError(error) {
+  const status = getStatus(error);
+  if (status >= 400) return false;
+  const code = String((error && error.cause && error.cause.code) || error?.code || "");
+  if (/^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|CERT_|UNABLE_TO_)/i.test(code)) return true;
+  return /fetch failed|network|getaddrinfo|socket hang up/i.test(String(error?.message || ""));
+}
+
 function sendAPIError(res, error, fallbackMessage, kind) {
   safeLog(fallbackMessage, error);
 
+  if (isNetworkError(error)) {
+    return res.status(503).json({
+      error: "Gemini सर्वर तक पहुँच नहीं बनी (network/DNS/TLS)। यह API key की गलती नहीं है — key बदलने की ज़रूरत नहीं। होस्टिंग का outbound network, proxy या firewall जाँचें, फिर दोबारा कोशिश करें।",
+      code: "NETWORK_UNREACHABLE",
+      reason: networkErrorDetail(error),
+    });
+  }
   if (error.code === "NO_API_KEY") {
     return res.status(503).json(geminiKeyBlocked());
   }
@@ -345,6 +371,8 @@ function sendAPIError(res, error, fallbackMessage, kind) {
   if (status === 400) {
     return res.status(502).json({ error: "Gemini ने request अस्वीकार की (HTTP 400)। मॉडल/feature compatibility या request format जाँचें।" });
   }
+  // Never echo the provider's raw message to the client: it can carry request
+  // fragments. The status code is enough to act on; details stay in safeLog.
   return res.status(500).json({ error: redactSecrets(fallbackMessage) + " (server status " + (status || "unknown") + ") Render Logs जाँचें।" });
 }
 
@@ -989,6 +1017,19 @@ app.post("/api/youtube/disconnect", (req, res) => {
   clearYoutubeSession(res);
   return res.json({ success: true });
 });
+// YouTube counts tags as one comma-separated string capped at 500 characters,
+// and a tag longer than 60 characters is rejected outright. Normalising here
+// keeps the preflight honest: it checks the same rules the insert will enforce.
+function normalizeYoutubeTags(tags) {
+  const cleaned = (tags || [])
+    .map(tag => String(tag == null ? "" : tag).replace(/[<>]/g, "").trim())
+    .filter(Boolean)
+    .filter(tag => tag.length <= 60)
+    .slice(0, 30);
+  const length = cleaned.join(",").length;
+  return { tags: cleaned, length, ok: length <= 500 };
+}
+
 // Upload preflight: everything the real upload would check, minus the upload.
 // It never calls Google's upload endpoints; the only optional network call is a
 // read-only channels.list when `verifyToken` is requested.
@@ -1048,6 +1089,18 @@ app.post("/api/youtube/upload/preflight", async (req, res) => {
   const title = String(body.title || "").trim();
   const description = String(body.description || "");
   const privacy = String(body.privacy || "private");
+  const tags = Array.isArray(body.tags) ? body.tags.map(t => String(t).trim()).filter(Boolean) : [];
+  const normalizedTags = normalizeYoutubeTags(tags);
+  push("TAGS", normalizedTags.ok,
+    tags.length
+      ? normalizedTags.ok
+        ? normalizedTags.tags.length + " tags, " + normalizedTags.length + "/500 अक्षर"
+        : "tags बहुत लंबे: " + normalizedTags.length + "/500 अक्षर (YouTube सीमा)"
+      : "कोई tag नहीं — video खोज में कम दिखेगा");
+  // YouTube requires snippet.categoryId on insert; a missing value is a failed
+  // upload, so it is validated here where nothing is published.
+  const categoryId = String(body.categoryId || process.env.DEFAULT_YOUTUBE_CATEGORY_ID || "22");
+  push("CATEGORY", /^[0-9]{1,3}$/.test(categoryId), "categoryId: " + categoryId);
   push("TITLE", title.length > 0 && title.length <= 100, title ? title.length + "/100 अक्षर" : "title जरूरी है");
   push("DESCRIPTION", description.length <= 5000, description.length + "/5000 अक्षर");
   push("PRIVACY", ["private", "unlisted", "public"].includes(privacy), "privacy: " + privacy);
@@ -1078,6 +1131,10 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   let title = String(req.headers["x-video-title"] || "").trim().slice(0, 100);
   let description = String(req.headers["x-video-description"] || "").slice(0, 5000);
   let privacy = String(req.headers["x-video-privacy"] || "private");
+  // YouTube requires snippet.categoryId on insert. "22" is People & Blogs, the
+  // right shelf for a Hindi kids' cartoon channel, and is a valid default.
+  let categoryId = String(req.headers["x-video-category"] || process.env.DEFAULT_YOUTUBE_CATEGORY_ID || "22");
+  let tags = String(req.headers["x-video-tags"] || "").split(",").map(t => t.trim()).filter(Boolean);
   // Non-Latin-1 text (Hindi titles/descriptions) cannot travel in an HTTP
   // header: browsers reject header values above 0xFF before the request is
   // sent. Metadata therefore also accepts a base64 JSON blob.
@@ -1088,6 +1145,8 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       if (typeof meta.title === "string") title = meta.title.trim().slice(0, 100);
       if (typeof meta.description === "string") description = meta.description.slice(0, 5000);
       if (typeof meta.privacy === "string") privacy = meta.privacy;
+      if (Array.isArray(meta.tags)) tags = meta.tags.map(t => String(t).slice(0, 60)).slice(0, 30);
+      if (meta.categoryId !== undefined) categoryId = String(meta.categoryId).trim().slice(0, 3);
     } catch (_) {
       return res.status(400).json({ error: "Video metadata decode नहीं हुई।" });
     }
@@ -1104,7 +1163,15 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=UTF-8",
         "X-Upload-Content-Type": mime, "X-Upload-Content-Length": String(req.body.length) },
-      body: JSON.stringify({ snippet: { title, description }, status: { privacyStatus: privacy, selfDeclaredMadeForKids: false } })
+      body: JSON.stringify({
+        snippet: {
+          title,
+          description,
+          categoryId,
+          ...(tags.length ? { tags } : {}),
+        },
+        status: { privacyStatus: privacy, selfDeclaredMadeForKids: false },
+      })
     });
     if (!init.ok) {
       const details = await init.json().catch(() => ({}));
@@ -1542,7 +1609,16 @@ app.post("/api/setup/verify", async (req, res) => {
       modelIds = await listModelIds(listed);
       push("GEMINI_API_KEY", "ok", "key accepted by Gemini API" + (modelIds.size ? " (" + modelIds.size + " models visible)" : ""));
     } catch (error) {
-      push("GEMINI_API_KEY", "blocked", redactSecrets(error.message || "Gemini ने key reject की"), { reason: "rejected" });
+      // Distinguish "Google rejected this key" from "Google was unreachable".
+      // The old code labelled both "rejected", which sends the user to rotate a
+      // valid key when the real fault was DNS, TLS or the host's firewall.
+      if (isNetworkError(error)) {
+        push("GEMINI_API_KEY", "blocked",
+          "Gemini API तक पहुँच नहीं बनी (key की जाँच नहीं हो सकी): " + networkErrorDetail(error),
+          { reason: "network", retryable: true });
+      } else {
+        push("GEMINI_API_KEY", "blocked", redactSecrets(error.message || "Gemini ने key reject की"), { reason: "rejected" });
+      }
     }
   }
 
@@ -2205,7 +2281,11 @@ app.get("/api/projects/:id/thumbnail", (req, res) => {
 app.post("/api/projects/:id/thumbnail", async (req, res) => {
   const project = ownedProject(req, res);
   if (!project) return;
-  const asset = project.assets.scenes[1];
+  // Scene assets are stored 0-based (pipeline writes assets.scenes[scene.index]),
+  // so scene "1" in the UI is index 0. Reading [1] used to 409 here even though
+  // the first scene's image existed, and skipped scene 1 entirely.
+  const scenes = (project.assets && project.assets.scenes) || [];
+  const asset = scenes[0] || scenes[1];
   if (!asset || !asset.image || !fs.existsSync(asset.image.path)) {
     return res.status(409).json({ error: "thumbnail के लिए पहले दृश्य 1 की image चाहिए।" });
   }
@@ -2289,4 +2369,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, normalizeYoutubeTags, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };

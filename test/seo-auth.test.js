@@ -132,6 +132,32 @@ test("thumbnail is a real JPEG built from scene 1", { skip: SKIP_NO_FFMPEG }, as
   assert.equal(bytes[1], 0xd8, "payload is a real JPEG");
 });
 
+test("thumbnail uses scene index 0, the layout the pipeline actually writes", { skip: SKIP_NO_FFMPEG }, async () => {
+  // Regression: the route read assets.scenes[1], but the pipeline stores scene 1
+  // at index 0. A one-scene project (or any project whose later scenes failed)
+  // therefore got 409 even though the first scene's image existed.
+  const store = new ProjectStore({ root: path.join(dataDir, "projects") });
+  const project = createProject({ topic: "zero-based", durationMinutes: 1, sceneCount: 3 });
+  const sceneDir = path.join(store.dirFor(project.id), "scenes");
+  fs.mkdirSync(sceneDir, { recursive: true });
+  const imagePath = path.join(sceneDir, "scene-0000.png");
+  fs.writeFileSync(imagePath, Buffer.from(PNG_1X1, "base64"));
+  project.assets.scenes[0] = { image: { path: imagePath, mime: "image/png" } };
+  store.save(project);
+
+  const response = await call("/api/projects/" + project.id + "/thumbnail", {
+    method: "POST", headers: { "x-access-key": "test-access-key" },
+  });
+  assert.equal(response.status, 200, "scene index 0 must be enough for a thumbnail");
+  const image = await call("/api/projects/" + project.id + "/thumbnail", {
+    headers: { "x-access-key": "test-access-key" },
+  });
+  assert.equal(image.status, 200);
+  const bytes = Buffer.from(await image.arrayBuffer());
+  assert.equal(bytes[0], 0xff);
+  assert.equal(bytes[1], 0xd8, "payload is a real JPEG");
+});
+
 test("thumbnail without a scene image returns 409, not a fake file", async () => {
   const store = new ProjectStore({ root: path.join(dataDir, "projects") });
   const project = createProject({ topic: "empty", durationMinutes: 1, sceneCount: 3 });

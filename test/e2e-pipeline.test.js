@@ -96,6 +96,7 @@ test.before(async () => {
   const scene = path.join(dir, "scene.png");
   await ffmpegTools.runFfmpeg([
     "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x2a6b4a:s=640x640:d=1",
+    "-vf", "drawbox=x=80:y=80:w=480:h=480:color=white:t=fill",
     "-frames:v", "1", "-y", scene,
   ]);
   scenePng = fs.readFileSync(scene).toString("base64");

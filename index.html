@@ -139,6 +139,7 @@ input,select,textarea{font-size:16px}
 <h2>🛠️ Setup जाँच</h2>
 <p class="small">क्या configure है और क्या गायब है — असली जाँच, कोई दिखावा नहीं। Secret values कभी नहीं दिखतीं।</p>
 <div id="setupChecks"></div>
+<p id="setupYouTubeStatus" class="small" role="status">YouTube OAuth — जाँच बाकी है।</p>
 <div id="setupGuide"></div>
 <div class="grid">
 <button id="setupVerifyBtn" class="secondary">🔍 Verify setup (असली जाँच)</button>
@@ -157,28 +158,30 @@ input,select,textarea{font-size:16px}
 <div class="card">
 <h2>🔎 वीडियो का विषय</h2>
 <label>अपना विषय लिखें</label>
-<input id="topic" placeholder="जैसे: ताजमहल के रहस्य">
+<input id="topic" placeholder="जैसे: ताजमहल के रहस्य" oninput="checkTopicStyleMatch()">
 <label>वीडियो की भाषा</label>
 <select id="language">
 <option>हिंदी</option>
 <option>English</option>
 </select>
 <label>वीडियो का विज़ुअल स्टाइल</label>
-<select id="visualStyle">
+<select id="visualStyle" onchange="checkTopicStyleMatch()">
 <option value="3d-cartoon" selected>🎭 3D कार्टून कॉमेडी (Recommended)</option>
 <option value="cinematic">🎬 सिनेमैटिक</option>
 <option value="realistic">📷 वास्तविक तस्वीरें</option>
 </select>
 <p class="small">3D मोड में AI एक जैसे कार्टून किरदारों और भारतीय लोकेशन वाली तस्वीरें बनाने की कोशिश करेगा। MP4 अभी दृश्यों + हिंदी आवाज़ का वीडियो है; वास्तविक 3D character animation/lip-sync अलग सुविधा है। AI इमेज API की quota/बिलिंग लागू हो सकती है।</p>
+<p id="topicStyleHint" class="status" role="status" style="display:none"></p>
 <label>वीडियो की अवधि</label>
-<select id="duration">
+<select id="duration" onchange="checkDurationLimit()">
 <option value="1" selected>1 मिनट</option>
 <option value="2">2 मिनट</option>
 <option value="3">3 मिनट</option>
 <option value="4">4 मिनट</option>
 <option value="5">5 मिनट</option>
 </select>
-<p class="small">चुनी गई अवधि के अनुसार स्क्रिप्ट और narration तैयार होंगे। MP4 में अधिकतम 3 स्थिर दृश्य + हिंदी आवाज़ (slideshow शैली) जुड़ेंगे। Free hosting पर 4–5 मिनट का render समय/मेमोरी के कारण असफल हो सकता है; असफल होने पर स्क्रिप्ट और assets सुरक्षित रहेंगे।</p>
+<p id="durationHint" class="small"></p>
+<p class="small">चुनी गई अवधि के अनुसार स्क्रिप्ट और narration तैयार होंगे। 1 मिनट में 10 दृश्य बनते हैं; MP4 इन दृश्यों + हिंदी आवाज़ का असली वीडियो है (camera motion के साथ)। Free hosting पर 2 मिनट से लंबा render समय/मेमोरी के कारण असफल हो सकता है; असफल होने पर स्क्रिप्ट और assets सुरक्षित रहेंगे।</p>
 <button onclick="makeOutline()">📝 वीडियो की रूपरेखा बनाएँ</button>
 <button class="green" onclick="generateFullScript()" id="btnGenerateScript">🤖 पूरी AI स्क्रिप्ट बनाएँ</button>
 <button class="green" id="btnRunFullAutomation" onclick="runFullAutomation()">🚀 पूरा ऑटोमैटिक काम शुरू करें</button>
@@ -344,15 +347,76 @@ function setBadge(text, isAI) {
 }
 
 function connectYouTube() { window.location.href = '/api/youtube/connect'; }
-async function refreshYouTubeStatus() {
-  var status = document.getElementById('channelStatus');
-  try {
-    var response = await fetch('/api/youtube/status'); var data = await readApiJson(response);
-    status.textContent = !data.configured ? 'OAuth credentials Render में सेट नहीं हैं। README के setup steps करें।' :
-      data.connected ? '✅ Connected: ' + (data.channel?.title || 'YouTube चैनल') + ' (' + (data.channel?.id || '') + ')' :
-      'अभी चैनल Connect नहीं है। Connect बटन दबाएँ।';
-  } catch (_) { status.textContent = 'कनेक्शन स्थिति नहीं मिल सकी।'; }
+
+// One message, derived once, used by every panel. The top card and the Setup
+// card can never disagree because they render the same string.
+function youtubeStatusMessage(data) {
+  if (!data || !data.configured) return '⛔ OAuth credentials Render में सेट नहीं हैं। Setup जाँच देखें।';
+  if (data.connected) return '✅ Connected: ' + (data.channel?.title || 'YouTube चैनल') + ' (' + (data.channel?.id || '') + ')';
+  return '🟡 credentials सेट हैं, पर चैनल Connect नहीं है। Connect बटन दबाएँ।';
 }
+
+async function refreshConnectionStatus() {
+  var top = document.getElementById('channelStatus');
+  var setup = document.getElementById('setupYouTubeStatus');
+  var stamp = 'आखिरी जाँच: ' + new Date().toLocaleTimeString();
+  var message;
+  try {
+    var response = await fetch('/api/youtube/status', { cache: 'no-store' });
+    var data = await readApiJson(response);
+    message = youtubeStatusMessage(data);
+  } catch (_) {
+    message = 'कनेक्शन स्थिति नहीं मिल सकी।';
+  }
+  if (top) top.textContent = message + ' · ' + stamp;
+  if (setup) setup.textContent = 'YouTube OAuth — ' + message + ' · ' + stamp;
+}
+
+function refreshYouTubeStatus() { return refreshConnectionStatus(); }
+
+// Topic/style mismatch: a gentle suggestion, never a block. A keyword
+// heuristic on purpose — no model call, so it stays free and instant.
+function checkTopicStyleMatch() {
+  var hint = document.getElementById('topicStyleHint');
+  var topicEl = document.getElementById('topic');
+  var styleEl = document.getElementById('visualStyle');
+  if (!hint || !topicEl || !styleEl) return;
+  var topic = (topicEl.value || '').trim();
+  var style = styleEl.value || '';
+  if (!topic) { hint.style.display = 'none'; hint.textContent = ''; return; }
+  var serious = /रहस्य|इतिहास|तथ्य|विज्ञान|जीवनी|युद्ध|स्मारक|ताजमहल|महल|किला|धरोहर|खोज|रहस्यमय|राजनीति|अर्थव्यवस्था|taj\s*mahal|rahasya|itihaas|history|mystery|science|facts|biography|monument|fort|palace|heritage|discovery/i.test(topic);
+  if (serious && style === '3d-cartoon') {
+    hint.style.display = 'block';
+    hint.style.color = '#ffd18a';
+    hint.textContent = '⚠️ सुझाव: यह विषय गंभीर/जानकारी वाला लगता है। "3D कार्टून कॉमेडी" की जगह "🎬 सिनेमैटिक" बेहतर रहेगा। रोका नहीं जा रहा — आप चाहें तो ऐसे ही बना सकते हैं।';
+    return;
+  }
+  if (style === '3d-cartoon') {
+    hint.style.display = 'block';
+    hint.style.color = '#8ef0c0';
+    hint.textContent = '✅ विषय और स्टाइल मेल खाते हैं।';
+    return;
+  }
+  hint.style.display = 'none';
+  hint.textContent = '';
+}
+
+// Free hosting: 1 minute is the safe default, anything longer is a real risk.
+function checkDurationLimit() {
+  var hint = document.getElementById('durationHint');
+  var selector = document.getElementById('duration');
+  if (!hint || !selector) return;
+  var minutes = Number(selector.value) || 1;
+  if (minutes <= 1) {
+    hint.style.color = '#8ef0c0';
+    hint.textContent = '✅ 1 मिनट (default): 10 दृश्य — Free hosting के लिए सबसे सुरक्षित।';
+    return;
+  }
+  hint.style.color = '#ffd18a';
+  hint.textContent = '⚠️ ' + minutes + ' मिनट का वीडियो Free hosting पर render समय/मेमोरी की वजह से असफल हो सकता है (अनुशंसित: 1–2 मिनट)। असफल होने पर स्क्रिप्ट और assets सुरक्षित रहेंगे।';
+}
+
+checkDurationLimit();
 function showUploadForm() {
   var status = document.getElementById('featureStatus'), info = document.getElementById('featureInfo');
   info.innerHTML = '<p class="small">तैयार MP4 चुनें। Upload आपके OAuth-connected चैनल पर होगा। Hosted सीमा 90 MB है।</p>' +
@@ -1399,7 +1463,7 @@ try {
   function render(data){
     var node=el('workflowCheckpointStages'); if(!node)return;
     var done=Array.isArray(data.completed)?data.completed:[];
-    node.textContent='चरण स्थिति: '+stages.map(function(s){return (done.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
+    node.textContent='इस प्रोजेक्ट की प्रगति (इस ब्राउज़र में): '+stages.map(function(s){return (done.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
   }
   function snapshot(){
     var old=previous(),topic=el('topic')?.value||'';
@@ -1532,12 +1596,12 @@ try {
         'captions ' + badge(f.captions),
         'music ' + badge(f.music)
       ];
-      node.textContent = 'वास्तविक स्थिति — ' + parts.join(' · ') +
+      node.textContent = 'सिस्टम क्षमता (इस deployment में क्या चल सकता है) — ' + parts.join(' · ') +
         ' · FFmpeg ' + (caps.ffmpeg && caps.ffmpeg.available ? caps.ffmpeg.version : 'नहीं मिला');
       var blockedNote = document.createElement('p');
       blockedNote.className = 'small';
-      blockedNote.style.color = '#ffb4a2';
-      blockedNote.textContent = 'Character animation और lip-sync: ⛔ BLOCKED (कोई motion-video provider जुड़ा नहीं है)। यह वीडियो generated scene images पर camera motion वाला असली MP4 है, 3D character animation नहीं।';
+      blockedNote.style.color = '#ffd18a';
+      blockedNote.textContent = 'Character animation और lip-sync: ⛔ BLOCKED — यह बग नहीं है। Free mode में वीडियो generated scene images पर camera motion वाला असली MP4 है, 3D character animation नहीं। Lip-sync के लिए mouth sprites + motion provider चाहिए (optional, बिना भी वीडियो बनता है)।';
       node.appendChild(blockedNote);
       (caps.blockedReasons || []).forEach(function (reason) {
         var line = document.createElement('p');
@@ -2034,7 +2098,21 @@ try {
     if (window.babaAuth && window.babaAuth.onReady) window.babaAuth.onReady(function () { P2.init(); });
     else P2.init();
   });
+  // One reload path for every list. Deduplicated so two auth events in a row
+  // cannot start a parallel fetch storm.
+  P2.reloadAll = function () {
+    if (P2._reloadPromise) return P2._reloadPromise;
+    P2._reloadPromise = (async function () {
+      await P2.loadCapabilities();
+      await P2.loadCharacters();
+      await P2.loadProjects();
+    })().then(function () { P2._reloadPromise = null; }, function () { P2._reloadPromise = null; });
+    return P2._reloadPromise;
+  };
+
   P2.init = async function () {
+    if (P2._booted) { await P2.reloadAll(); return; }
+    P2._booted = true;
     try {
       var savedKey = window.localStorage.getItem('babaAccessKey');
       if (savedKey && el('p2AccessKey')) el('p2AccessKey').value = savedKey;
@@ -2044,10 +2122,11 @@ try {
         });
       }
     } catch (_) {}
-    await P2.loadCapabilities();
-    await P2.loadCharacters();
-    await P2.loadProjects();
+    await P2.reloadAll();
   };
+
+  // Sign-in/sign-out both raise this event: refetch everything the account owns.
+  document.addEventListener('baba:authchange', function () { P2.reloadAll(); });
 })();
 </script>
 <script>
@@ -2101,6 +2180,12 @@ try {
     listeners.forEach(function (fn) { try { fn(); } catch (_) {} });
     listeners = [];
     ready();
+    // Tell every module that the signed-in account changed. Without this the
+    // Character Library keeps the previous session's rows after sign-out and
+    // never refetches after a fresh sign-in (notify() had emptied listeners).
+    try {
+      document.dispatchEvent(new CustomEvent('baba:authchange'));
+    } catch (_) {}
   }
 
   async function refreshStatus() {
@@ -2165,6 +2250,7 @@ try {
       setCsrf(null);
       showGate('साइन आउट हो गया।');
       if (el('authBarUser')) el('authBarUser').textContent = '';
+      notify();
     },
     username: function () { var node = el('authBarUser'); return node ? node.textContent : ''; },
     csrfToken: function () { return csrfToken; }
@@ -2267,6 +2353,9 @@ try {
     } catch (error) {
       text('setupStatus', '❌ ' + (error.message || 'Setup जाँच विफल।'), true);
     }
+    // The Setup card's YouTube line comes from the same function as the top
+    // card, so both panels always show the same truth.
+    if (typeof refreshConnectionStatus === 'function') await refreshConnectionStatus();
   }
 
   async function verifySetup() {
