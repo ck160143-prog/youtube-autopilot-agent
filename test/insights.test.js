@@ -63,6 +63,33 @@ test("fewer than 50 views is reported as too little data, not as a failure", () 
   assert.deepEqual(result.suggestions, [], "a handful of views must not trigger a confident plan");
 });
 
+test("a trend on a handful of views never becomes advice", () => {
+  // Regression: the trend branch used to run before the views gate, so 21 views
+  // spread over two "weeks" produced "build a series" — advice from noise.
+  const entries = [];
+  for (let i = 1; i <= 14; i += 1) {
+    entries.push({ day: "2026-11-" + String(i).padStart(2, "0"), views: i <= 7 ? 1 : 2 });
+  }
+  const result = insights.buildInsights({
+    entries,
+    totals: { views: 21, estimatedMinutesWatched: 5, averageViewDuration: 30 },
+  });
+  assert.equal(result.enoughData, false);
+  assert.deepEqual(result.suggestions, [], "thin data must not carry a trend recommendation");
+  // The observation itself is still honest and visible.
+  assert.ok(result.observations.some(o => /%/.test(o)), "the measured percentage may still be reported");
+});
+
+test("a real trend on enough views does produce advice", () => {
+  const entries = [];
+  for (let i = 1; i <= 14; i += 1) {
+    entries.push({ day: "2026-11-" + String(i).padStart(2, "0"), views: i <= 7 ? 500 : 100 });
+  }
+  const result = insights.buildInsights({ entries, totals: { views: 4200, averageViewDuration: 45 } });
+  assert.equal(result.enoughData, true);
+  assert.ok(result.suggestions.length >= 1);
+});
+
 test("weekly trend is computed from real day rows", () => {
   const entries = [];
   for (let i = 1; i <= 14; i += 1) {

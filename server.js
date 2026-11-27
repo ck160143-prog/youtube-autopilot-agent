@@ -330,9 +330,12 @@ function networkErrorDetail(error) {
 function isNetworkError(error) {
   const status = getStatus(error);
   if (status >= 400) return false;
+  // A deadline we set is a reachability failure, not a server bug: the honest
+  // answer is "Google did not answer in time", not a generic 502.
+  if (error?.name === "TimeoutError" || error?.code === "ABORT_ERR") return true;
   const code = String((error && error.cause && error.cause.code) || error?.code || "");
-  if (/^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|CERT_|UNABLE_TO_)/i.test(code)) return true;
-  return /fetch failed|network|getaddrinfo|socket hang up/i.test(String(error?.message || ""));
+  if (/^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|CERT_|UNABLE_TO_|ABORT_ERR)/i.test(code)) return true;
+  return /fetch failed|network|getaddrinfo|socket hang up|operation was aborted|timed? ?out/i.test(String(error?.message || ""));
 }
 
 function sendAPIError(res, error, fallbackMessage, kind) {
@@ -871,6 +874,27 @@ ${script.slice(0, 18000)}
 
 
 /* ---- Real YouTube OAuth + resumable upload (single-user browser session) ---- */
+
+// Every call to Google must be able to fail. Without a deadline a slow or hung
+// Google endpoint holds this request (and its socket+memory on a 512 MB free
+// instance) open forever. 20 s is well above a normal token/analytics reply and
+// well below any proxy idle timeout, so a real answer is never cut short.
+const GOOGLE_TIMEOUT_MS = Math.max(5000, Number(process.env.GOOGLE_TIMEOUT_MS) || 20000);
+
+function googleFetch(url, options = {}) {
+  return fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(GOOGLE_TIMEOUT_MS) });
+}
+
+// Upload is the one call that legitimately takes minutes: a 90 MB file on a
+// slow link, or 2 GB on the default quota. A 20 s deadline here would abort a
+// real upload, so it gets its own, much larger budget. The deadline still
+// exists: a stalled socket must not hang the request forever.
+const UPLOAD_TIMEOUT_MS = Math.max(60000, Number(process.env.UPLOAD_TIMEOUT_MS) || 15 * 60 * 1000);
+
+function uploadFetch(url, options = {}) {
+  return fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
+}
+
 function youtubeConfigReady() {
   return Boolean(process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET &&
     process.env.YOUTUBE_REDIRECT_URI && process.env.APP_SESSION_SECRET &&
@@ -927,7 +951,7 @@ async function getYoutubeAccessToken(req, res) {
     refresh_token: session.refresh_token,
     grant_type: "refresh_token"
   });
-  const refreshed = await fetch("https://oauth2.googleapis.com/token", {
+  const refreshed = await googleFetch("https://oauth2.googleapis.com/token", {
     method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form
   });
   const tokenData = await refreshed.json().catch(() => ({}));
@@ -947,7 +971,7 @@ app.get("/api/youtube/status", async (req, res) => {
   if (!session.access_token && !session.refresh_token) return res.json({ configured: true, connected: false });
   const token = await getYoutubeAccessToken(req, res);
   if (!token) return;
-  const response = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+  const response = await googleFetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
     headers: { Authorization: "Bearer " + token }
   });
   const data = await response.json().catch(() => ({}));
@@ -986,7 +1010,7 @@ app.get("/api/youtube/callback", async (req, res) => {
       redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
       grant_type: "authorization_code"
     });
-    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+    const tokenResponse = await googleFetch("https://oauth2.googleapis.com/token", {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form
     });
     const tokens = await tokenResponse.json().catch(() => ({}));
@@ -995,7 +1019,7 @@ app.get("/api/youtube/callback", async (req, res) => {
       return res.status(502).send("Google OAuth token exchange failed. Check OAuth setup and redirect URI.");
     }
     // Verify the real authenticated YouTube channel before marking OAuth as connected.
-    const channelResponse = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+    const channelResponse = await googleFetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
       headers: { Authorization: "Bearer " + tokens.access_token }
     });
     const channelData = await channelResponse.json().catch(() => ({}));
@@ -1046,7 +1070,7 @@ app.get("/api/youtube/insights", async (req, res) => {
       dimensions: "day",
       sort: "day",
     }).toString();
-    const response = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    const response = await googleFetch(url, { headers: { Authorization: "Bearer " + token } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       safeLog("YouTube insights query failed", { status: response.status });
@@ -1109,7 +1133,7 @@ app.get("/api/youtube/analytics", async (req, res) => {
       dimensions: "day",
       sort: "day",
     }).toString();
-    const response = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    const response = await googleFetch(url, { headers: { Authorization: "Bearer " + token } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       safeLog("YouTube analytics query failed", { status: response.status });
@@ -1289,7 +1313,7 @@ app.post("/api/youtube/upload/preflight", async (req, res) => {
   if (token && token.access_token && body.verifyToken === true) {
     try {
       const fresh = await getYoutubeAccessToken(req, res);
-      const probe = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+      const probe = await googleFetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
         headers: { Authorization: "Bearer " + fresh },
       });
       const data = await probe.json().catch(() => ({}));
@@ -1419,7 +1443,8 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
     const token = await getYoutubeAccessToken(req, res);
     if (!token) return;
     const initUrl = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status";
-    const init = await fetch(initUrl, {
+    // Session creation is a normal API call, not a transfer: the 20 s budget.
+    const init = await googleFetch(initUrl, {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=UTF-8",
         "X-Upload-Content-Type": mime, "X-Upload-Content-Length": String(req.body.length) },
@@ -1440,7 +1465,8 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
     }
     const uploadUrl = init.headers.get("location");
     if (!uploadUrl) return res.status(502).json({ error: "Google ने resumable upload URL नहीं दिया।" });
-    const uploaded = await fetch(uploadUrl, {
+    // The actual bytes: the transfer budget, never the 20 s API budget.
+    const uploaded = await uploadFetch(uploadUrl, {
       method: "PUT", headers: { "Content-Type": mime, "Content-Length": String(req.body.length),
         "Content-Range": "bytes 0-" + (req.body.length - 1) + "/" + req.body.length },
       body: req.body
@@ -2676,4 +2702,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, googleFetch, uploadFetch, GOOGLE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };

@@ -37,6 +37,21 @@ function fetchFailure(code) {
   return error;
 }
 
+test("a call that runs past its deadline is reported as unreachable, not as a 502", () => {
+  // Regression: AbortSignal.timeout() throws name=TimeoutError / code=ABORT_ERR,
+  // which used to fall through to the generic 502 branch.
+  const timeout = new Error("The operation was aborted due to timeout");
+  timeout.name = "TimeoutError";
+  timeout.code = "ABORT_ERR";
+  assert.equal(isNetworkError(timeout), true);
+  assert.match(networkErrorDetail(timeout), /ABORT_ERR/);
+
+  const aborted = new Error("This operation was aborted");
+  aborted.name = "AbortError";
+  aborted.code = "ABORT_ERR";
+  assert.equal(isNetworkError(aborted), true);
+});
+
 test("isNetworkError recognises DNS/TLS failures and rejects HTTP errors", () => {
   assert.equal(isNetworkError(fetchFailure("ENOTFOUND")), true);
   assert.equal(isNetworkError(fetchFailure("EAI_AGAIN")), true);
@@ -103,4 +118,30 @@ test("an offline Gemini call answers 503 NETWORK_UNREACHABLE, not a key error", 
   assert.equal(body.reason.includes("EAI_AGAIN"), true, "cause code stays actionable: " + body.reason);
   assert.doesNotMatch(JSON.stringify(body), /AIza/, "no key material in the error body");
   assert.doesNotMatch(JSON.stringify(body), /DUMMYNETWORKTEST/);
+});
+
+test("every Google call has a deadline, and the upload gets its own larger one", () => {
+  // Regression: the resumable PUT was the one call left without a deadline.
+  // Worse, a single shared budget must never be applied to it: a 90 MB-2 GB
+  // transfer legitimately takes minutes, so a 20 s deadline would abort a real
+  // upload halfway. The two budgets are therefore checked separately.
+  const { googleFetch, uploadFetch, GOOGLE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } = require("../server");
+  assert.equal(typeof googleFetch, "function");
+  assert.equal(typeof uploadFetch, "function");
+  assert.ok(GOOGLE_TIMEOUT_MS >= 5000 && GOOGLE_TIMEOUT_MS <= 60000,
+    "an API deadline outside 5-60 s would cut a real reply or fail to bound it");
+  assert.ok(UPLOAD_TIMEOUT_MS >= 60000 && UPLOAD_TIMEOUT_MS > GOOGLE_TIMEOUT_MS,
+    "the transfer budget must be much larger than the API budget");
+});
+
+test("a deadline actually cancels the request in flight", async () => {
+  const { googleFetch } = require("../server");
+  const started = Date.now();
+  // AbortSignal must reach fetch: an explicit 25 ms signal has to win over the
+  // 20 s default, and the call must reject instead of hanging.
+  await assert.rejects(
+    () => googleFetch("http://10.255.255.1:81/blackhole", { signal: AbortSignal.timeout(25) }),
+    error => error.name === "TimeoutError" || error.name === "AbortError" || Boolean(error.cause),
+  );
+  assert.ok(Date.now() - started < 5000, "the signal must not wait for the default budget");
 });
