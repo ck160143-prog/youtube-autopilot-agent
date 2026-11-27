@@ -885,6 +885,16 @@ function googleFetch(url, options = {}) {
   return fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(GOOGLE_TIMEOUT_MS) });
 }
 
+// Upload is the one call that legitimately takes minutes: a 90 MB file on a
+// slow link, or 2 GB on the default quota. A 20 s deadline here would abort a
+// real upload, so it gets its own, much larger budget. The deadline still
+// exists: a stalled socket must not hang the request forever.
+const UPLOAD_TIMEOUT_MS = Math.max(60000, Number(process.env.UPLOAD_TIMEOUT_MS) || 15 * 60 * 1000);
+
+function uploadFetch(url, options = {}) {
+  return fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
+}
+
 function youtubeConfigReady() {
   return Boolean(process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET &&
     process.env.YOUTUBE_REDIRECT_URI && process.env.APP_SESSION_SECRET &&
@@ -1433,7 +1443,8 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
     const token = await getYoutubeAccessToken(req, res);
     if (!token) return;
     const initUrl = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status";
-    const init = await fetch(initUrl, {
+    // Session creation is a normal API call, not a transfer: the 20 s budget.
+    const init = await googleFetch(initUrl, {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=UTF-8",
         "X-Upload-Content-Type": mime, "X-Upload-Content-Length": String(req.body.length) },
@@ -1454,7 +1465,8 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
     }
     const uploadUrl = init.headers.get("location");
     if (!uploadUrl) return res.status(502).json({ error: "Google ने resumable upload URL नहीं दिया।" });
-    const uploaded = await fetch(uploadUrl, {
+    // The actual bytes: the transfer budget, never the 20 s API budget.
+    const uploaded = await uploadFetch(uploadUrl, {
       method: "PUT", headers: { "Content-Type": mime, "Content-Length": String(req.body.length),
         "Content-Range": "bytes 0-" + (req.body.length - 1) + "/" + req.body.length },
       body: req.body
@@ -2690,4 +2702,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, googleFetch, uploadFetch, GOOGLE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
