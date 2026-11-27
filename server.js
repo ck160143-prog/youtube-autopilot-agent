@@ -26,6 +26,8 @@ const {
   cookieHeader, clearCookieHeader, readCookie, SESSION_COOKIE,
 } = require("./lib/auth");
 const { createRateLimiter } = require("./lib/ratelimit");
+const researchLib = require("./lib/research");
+const insightsLib = require("./lib/insights");
 const { redactSecrets, readSecret, keyShape } = require("./lib/setup");
 
 app.set("trust proxy", 1);
@@ -314,9 +316,35 @@ function geminiKeyBlocked(featureLabel) {
   };
 }
 
+// A DNS/TLS/socket failure says nothing about the key: reporting it as
+// "key rejected" sends the user to rotate a perfectly good credential. The
+// underlying cause string is kept because it is actionable (ENOTFOUND,
+// certificate expired, proxy refused) and contains no secret.
+function networkErrorDetail(error) {
+  const cause = error && error.cause ? error.cause : null;
+  const code = String((cause && cause.code) || error?.code || "").slice(0, 40);
+  const text = String((cause && cause.message) || error?.message || "").slice(0, 120);
+  return [code, text].filter(Boolean).join(" — ").replace(/\s+/g, " ").trim();
+}
+
+function isNetworkError(error) {
+  const status = getStatus(error);
+  if (status >= 400) return false;
+  const code = String((error && error.cause && error.cause.code) || error?.code || "");
+  if (/^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|CERT_|UNABLE_TO_)/i.test(code)) return true;
+  return /fetch failed|network|getaddrinfo|socket hang up/i.test(String(error?.message || ""));
+}
+
 function sendAPIError(res, error, fallbackMessage, kind) {
   safeLog(fallbackMessage, error);
 
+  if (isNetworkError(error)) {
+    return res.status(503).json({
+      error: "Gemini सर्वर तक पहुँच नहीं बनी (network/DNS/TLS)। यह API key की गलती नहीं है — key बदलने की ज़रूरत नहीं। होस्टिंग का outbound network, proxy या firewall जाँचें, फिर दोबारा कोशिश करें।",
+      code: "NETWORK_UNREACHABLE",
+      reason: networkErrorDetail(error),
+    });
+  }
   if (error.code === "NO_API_KEY") {
     return res.status(503).json(geminiKeyBlocked());
   }
@@ -345,6 +373,8 @@ function sendAPIError(res, error, fallbackMessage, kind) {
   if (status === 400) {
     return res.status(502).json({ error: "Gemini ने request अस्वीकार की (HTTP 400)। मॉडल/feature compatibility या request format जाँचें।" });
   }
+  // Never echo the provider's raw message to the client: it can carry request
+  // fragments. The status code is enough to act on; details stay in safeLog.
   return res.status(500).json({ error: redactSecrets(fallbackMessage) + " (server status " + (status || "unknown") + ") Render Logs जाँचें।" });
 }
 
@@ -934,7 +964,7 @@ app.get("/api/youtube/connect", (req, res) => {
     client_id: process.env.YOUTUBE_CLIENT_ID,
     redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
     response_type: "code",
-    scope: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+    scope: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly " + ANALYTICS_SCOPE,
     access_type: "offline",
     prompt: "consent",
     state
@@ -975,7 +1005,7 @@ app.get("/api/youtube/callback", async (req, res) => {
       clearYoutubeSession(res);
       return res.status(502).send("Google login सफल हुआ, लेकिन YouTube चैनल सत्यापित नहीं हो सका। YouTube Data API v3 और खाते की अनुमति जाँचें, फिर Connect दोबारा करें।");
     }
-    setYoutubeSession(res, { access_token: tokens.access_token,
+    setYoutubeSession(res, { scope: String(tokens.scope || ""), access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || oldSession.refresh_token,
       expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
       channel: { id: channel.id, title: channel.snippet?.title || "" } });
@@ -985,10 +1015,257 @@ app.get("/api/youtube/callback", async (req, res) => {
     return res.status(502).send("YouTube OAuth callback failed.");
   }
 });
+// Read-only channel analytics. Never writes anything to YouTube and never
+// stores the report; the numbers are returned to the owner's browser only.
+// Analytics -> advice. Separate endpoint so the raw numbers stay untouched and
+// the advice always comes from the same rows the analytics endpoint returned.
+app.get("/api/youtube/insights", async (req, res) => {
+  const linked = decryptSession(req);
+  if (!linked || !linked.access_token) {
+    return res.status(409).json({ error: "पहले YouTube चैनल Connect करें।", code: "CHANNEL_NOT_CONNECTED" });
+  }
+  const scopeText = String(linked.scope || "");
+  if (scopeText && !scopeText.includes("yt-analytics.readonly")) {
+    return res.status(409).json({
+      error: "इस connection में Analytics की अनुमति नहीं है। चैनल फिर Connect करें।",
+      code: "ANALYTICS_SCOPE_MISSING",
+    });
+  }
+  const range = validateAnalyticsRange(req.query.startDate, req.query.endDate);
+  if (!range.ok) {
+    return res.status(400).json({ error: range.message, code: "INVALID_RANGE", reason: range.reason });
+  }
+  try {
+    const token = await getYoutubeAccessToken(req, res);
+    if (!token) return;
+    const url = "https://youtubeanalytics.googleapis.com/v2/reports?" + new URLSearchParams({
+      ids: "channel==MINE",
+      startDate: range.startDate,
+      endDate: range.endDate,
+      metrics: ANALYTICS_METRICS.join(","),
+      dimensions: "day",
+      sort: "day",
+    }).toString();
+    const response = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      safeLog("YouTube insights query failed", { status: response.status });
+      if (response.status === 403) {
+        return res.status(409).json({ error: "Analytics की अनुमति नहीं मिली। चैनल फिर Connect करें।", code: "ANALYTICS_SCOPE_MISSING" });
+      }
+      return res.status(502).json({ error: "Analytics डेटा नहीं मिला (HTTP " + response.status + ")।" });
+    }
+    const shaped = shapeAnalyticsReport(payload);
+    const insights = insightsLib.buildInsights({ ...shaped, startDate: range.startDate, endDate: range.endDate });
+    return res.json({
+      startDate: range.startDate,
+      endDate: range.endDate,
+      days: range.days,
+      totals: shaped.totals,
+      ...insights,
+      // Stated explicitly so nobody mistakes an absent metric for a zero one.
+      metricsAvailable: ANALYTICS_METRICS.slice(),
+      fetchedAt: new Date().toISOString(),
+      note: "सुझाव सिर्फ इस अवधि के असली YouTube Analytics आंकड़ों से हैं। CTR और retention curve इस API में उपलब्ध नहीं — वे नहीं दिखाए गए।",
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      return res.status(503).json({ error: "YouTube Analytics तक पहुँच नहीं बनी (network/DNS/TLS)।", code: "NETWORK_UNREACHABLE", reason: networkErrorDetail(error) });
+    }
+    safeLog("YouTube insights failed", error);
+    return res.status(502).json({ error: "Insights नहीं बन सके।" });
+  }
+});
+
+app.get("/api/youtube/analytics", async (req, res) => {
+  const linked = decryptSession(req);
+  if (!linked || !linked.access_token) {
+    return res.status(409).json({
+      error: "पहले YouTube चैनल Connect करें।",
+      code: "CHANNEL_NOT_CONNECTED",
+    });
+  }
+  // A connection made before the analytics scope existed has no consent for it.
+  // Google answers 403; say that plainly rather than blaming the server.
+  const scopeText = String(linked.scope || "");
+  if (scopeText && !scopeText.includes("yt-analytics.readonly")) {
+    return res.status(409).json({
+      error: "इस connection में Analytics की अनुमति नहीं है। 'Chैनल फिर Connect करें' दबाएँ (नई अनुमति माँगी जाएगी)। Upload पहले की तरह काम करता रहेगा।",
+      code: "ANALYTICS_SCOPE_MISSING",
+    });
+  }
+  const range = validateAnalyticsRange(req.query.startDate, req.query.endDate);
+  if (!range.ok) {
+    return res.status(400).json({ error: range.message, code: "INVALID_RANGE", reason: range.reason });
+  }
+  try {
+    const token = await getYoutubeAccessToken(req, res);
+    if (!token) return;
+    const url = "https://youtubeanalytics.googleapis.com/v2/reports?" + new URLSearchParams({
+      ids: "channel==MINE",
+      startDate: range.startDate,
+      endDate: range.endDate,
+      metrics: ANALYTICS_METRICS.join(","),
+      dimensions: "day",
+      sort: "day",
+    }).toString();
+    const response = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      safeLog("YouTube analytics query failed", { status: response.status });
+      const detail = payload && payload.error && payload.error.message ? String(payload.error.message).slice(0, 160) : "";
+      if (response.status === 403) {
+        return res.status(409).json({
+          error: "Analytics की अनुमति नहीं मिली। चैनल फिर Connect करें।",
+          code: "ANALYTICS_SCOPE_MISSING",
+        });
+      }
+      return res.status(502).json({ error: redactSecrets("Analytics query विफल (HTTP " + response.status + ")। " + detail).trim() });
+    }
+    const shaped = shapeAnalyticsReport(payload);
+    return res.json({
+      channel: linked.channel || null,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      days: range.days,
+      ...shaped,
+      // Honest labelling: YouTube's analytics data lags 24-72 hours.
+      note: "YouTube Analytics में 24–72 घंटे की देरी होती है; हाल के दिन अधूरे हो सकते हैं।",
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      return res.status(503).json({
+        error: "YouTube Analytics तक पहुँच नहीं बनी (network/DNS/TLS)।",
+        code: "NETWORK_UNREACHABLE",
+        reason: networkErrorDetail(error),
+      });
+    }
+    safeLog("YouTube analytics failed", error);
+    return res.status(502).json({ error: "Analytics नहीं पढ़ा जा सका।" });
+  }
+});
+
 app.post("/api/youtube/disconnect", (req, res) => {
   clearYoutubeSession(res);
   return res.json({ success: true });
 });
+// YouTube counts tags as one comma-separated string capped at 500 characters,
+// and a tag longer than 60 characters is rejected outright. Normalising here
+// keeps the preflight honest: it checks the same rules the insert will enforce.
+function normalizeYoutubeTags(tags) {
+  const cleaned = (tags || [])
+    .map(tag => String(tag == null ? "" : tag).replace(/[<>]/g, "").trim())
+    .filter(Boolean)
+    .filter(tag => tag.length <= 60)
+    .slice(0, 30);
+  const length = cleaned.join(",").length;
+  return { tags: cleaned, length, ok: length <= 500 };
+}
+
+// Scheduling: YouTube has no scheduler endpoint. `status.publishAt` (RFC 3339,
+// UTC) is the only mechanism, and Google accepts it ONLY while
+// status.privacyStatus is "private" — public/unlisted + publishAt returns
+// invalidPublishAt (400), and a video that has been public once can never be
+// scheduled again. A past timestamp publishes immediately instead of erroring,
+// so it is rejected here rather than silently going live.
+const SCHEDULE_MIN_LEAD_MS = 5 * 60 * 1000;
+
+function validateScheduleAt(value, now = Date.now()) {
+  if (value === undefined || value === null || value === "") {
+    return { ok: true, publishAt: null, reason: null };
+  }
+  const text = String(value).trim();
+  const parsed = new Date(text);
+  if (!text || Number.isNaN(parsed.getTime())) {
+    return { ok: false, publishAt: null, reason: "invalid",
+      message: "publishAt की तारीख़ समझ नहीं आई। ISO 8601 (जैसे 2026-12-01T09:00:00Z) भेजें।" };
+  }
+  // 5 minutes of slack: a schedule a few seconds out would publish immediately.
+  if (parsed.getTime() < now + SCHEDULE_MIN_LEAD_MS) {
+    return { ok: false, publishAt: null, reason: "past",
+      message: "publishAt आज से कम से कम " + (SCHEDULE_MIN_LEAD_MS / 60000) + " मिनट आगे होना चाहिए। बीता समय YouTube तुरंत publish कर देता है।" };
+  }
+  return { ok: true, publishAt: parsed.toISOString(), reason: null };
+}
+
+// Builds the `status` block for videos.insert. Scheduling forces private until
+// the scheduled moment, which is exactly what Google requires; the caller never
+// gets to send public + publishAt.
+function buildVideoStatus({ privacy, publishAt }) {
+  const base = { selfDeclaredMadeForKids: false };
+  if (!publishAt) return { ...base, privacyStatus: privacy };
+  return { ...base, privacyStatus: "private", publishAt };
+}
+
+// ---- YouTube Analytics (read-only) --------------------------------------
+// reports.query needs BOTH scopes: youtube.readonly (already requested for the
+// channel check) and yt-analytics.readonly. A connection made before this scope
+// existed keeps working for uploads; analytics simply reports that it needs a
+// fresh consent, instead of looking like a server fault.
+
+const ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly";
+const ANALYTICS_METRICS = ["views", "estimatedMinutesWatched", "averageViewDuration", "subscribersGained", "likes"];
+
+function isoDay(date) {
+  return new Date(date).toISOString().slice(0, 10);
+}
+
+// startDate/endDate are inclusive; YouTube refuses a range that starts today
+// because the current day is still being processed (data lags 24-72 hours).
+function validateAnalyticsRange(startDate, endDate, now = Date.now()) {
+  const fallbackEnd = isoDay(now - 24 * 3600 * 1000);
+  const fallbackStart = isoDay(now - 29 * 24 * 3600 * 1000);
+  const start = startDate ? String(startDate).trim() : fallbackStart;
+  const end = endDate ? String(endDate).trim() : fallbackEnd;
+  const pattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (!pattern.test(start) || !pattern.test(end)) {
+    return { ok: false, reason: "format", message: "तारीख़ YYYY-MM-DD रूप में भेजें।" };
+  }
+  const startMs = Date.parse(start + "T00:00:00Z");
+  const endMs = Date.parse(end + "T00:00:00Z");
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+    return { ok: false, reason: "format", message: "तारीख़ मान्य नहीं है।" };
+  }
+  if (endMs < startMs) {
+    return { ok: false, reason: "order", message: "endDate, startDate से पहले नहीं हो सकती।" };
+  }
+  if (endMs > now - 24 * 3600 * 1000) {
+    return { ok: false, reason: "future", message: "Analytics में 24–72 घंटे की देरी होती है; endDate कल या उससे पहले रखें।" };
+  }
+  const days = Math.round((endMs - startMs) / (24 * 3600 * 1000)) + 1;
+  if (days > 366) {
+    return { ok: false, reason: "range", message: "एक बार में अधिकतम 366 दिन।" };
+  }
+  return { ok: true, startDate: start, endDate: end, days };
+}
+
+// Turns reports.query's column/row shape into named rows. Returns [] for a
+// channel with no views in range, which is a valid answer, not an error.
+function shapeAnalyticsReport(report) {
+  const headers = (report && report.columnHeaders) || [];
+  const rows = (report && report.rows) || [];
+  const columns = headers.map(h => h && h.name);
+  const entries = rows.map(row => {
+    const entry = {};
+    columns.forEach((name, index) => { entry[name] = row[index]; });
+    return entry;
+  });
+  const totals = {};
+  for (const metric of ANALYTICS_METRICS) {
+    const at = columns.indexOf(metric);
+    if (at === -1) continue;
+    // Average metrics must not be summed across days.
+    if (metric === "averageViewDuration") {
+      const values = entries.map(e => Number(e[metric])).filter(Number.isFinite);
+      totals[metric] = values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0;
+    } else {
+      totals[metric] = entries.reduce((sum, e) => sum + (Number(e[metric]) || 0), 0);
+    }
+  }
+  return { columns, entries, totals };
+}
+
 // Upload preflight: everything the real upload would check, minus the upload.
 // It never calls Google's upload endpoints; the only optional network call is a
 // read-only channels.list when `verifyToken` is requested.
@@ -1048,6 +1325,25 @@ app.post("/api/youtube/upload/preflight", async (req, res) => {
   const title = String(body.title || "").trim();
   const description = String(body.description || "");
   const privacy = String(body.privacy || "private");
+  const tags = Array.isArray(body.tags) ? body.tags.map(t => String(t).trim()).filter(Boolean) : [];
+  const normalizedTags = normalizeYoutubeTags(tags);
+  push("TAGS", normalizedTags.ok,
+    tags.length
+      ? normalizedTags.ok
+        ? normalizedTags.tags.length + " tags, " + normalizedTags.length + "/500 अक्षर"
+        : "tags बहुत लंबे: " + normalizedTags.length + "/500 अक्षर (YouTube सीमा)"
+      : "कोई tag नहीं — video खोज में कम दिखेगा");
+  // YouTube requires snippet.categoryId on insert; a missing value is a failed
+  // upload, so it is validated here where nothing is published.
+  const categoryId = String(body.categoryId || process.env.DEFAULT_YOUTUBE_CATEGORY_ID || "22");
+  push("CATEGORY", /^[0-9]{1,3}$/.test(categoryId), "categoryId: " + categoryId);
+  const schedule = validateScheduleAt(body.publishAt);
+  push("SCHEDULE", schedule.ok,
+    schedule.ok
+      ? (schedule.publishAt
+        ? "निर्धारित: " + schedule.publishAt + " (private रहेगा, तब public होगा)"
+        : "कोई schedule नहीं — अभी upload होगा")
+      : schedule.message);
   push("TITLE", title.length > 0 && title.length <= 100, title ? title.length + "/100 अक्षर" : "title जरूरी है");
   push("DESCRIPTION", description.length <= 5000, description.length + "/5000 अक्षर");
   push("PRIVACY", ["private", "unlisted", "public"].includes(privacy), "privacy: " + privacy);
@@ -1078,6 +1374,12 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   let title = String(req.headers["x-video-title"] || "").trim().slice(0, 100);
   let description = String(req.headers["x-video-description"] || "").slice(0, 5000);
   let privacy = String(req.headers["x-video-privacy"] || "private");
+  // YouTube requires snippet.categoryId on insert. "22" is People & Blogs, the
+  // right shelf for a Hindi kids' cartoon channel, and is a valid default.
+  let categoryId = String(req.headers["x-video-category"] || process.env.DEFAULT_YOUTUBE_CATEGORY_ID || "22");
+  let tags = String(req.headers["x-video-tags"] || "").split(",").map(t => t.trim()).filter(Boolean);
+  // ISO timestamps are ASCII, so a header is fine; the meta blob can also carry it.
+  let publishAtInput = req.headers["x-video-publish-at"];
   // Non-Latin-1 text (Hindi titles/descriptions) cannot travel in an HTTP
   // header: browsers reject header values above 0xFF before the request is
   // sent. Metadata therefore also accepts a base64 JSON blob.
@@ -1088,6 +1390,9 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       if (typeof meta.title === "string") title = meta.title.trim().slice(0, 100);
       if (typeof meta.description === "string") description = meta.description.slice(0, 5000);
       if (typeof meta.privacy === "string") privacy = meta.privacy;
+      if (Array.isArray(meta.tags)) tags = meta.tags.map(t => String(t).slice(0, 60)).slice(0, 30);
+      if (meta.categoryId !== undefined) categoryId = String(meta.categoryId).trim().slice(0, 3);
+      if (meta.publishAt !== undefined) publishAtInput = meta.publishAt;
     } catch (_) {
       return res.status(400).json({ error: "Video metadata decode नहीं हुई।" });
     }
@@ -1096,6 +1401,20 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   if (!title) return res.status(400).json({ error: "YouTube वीडियो का title भरें।" });
   if (!["private", "unlisted", "public"].includes(privacy)) return res.status(400).json({ error: "Privacy private/unlisted/public में से चुनें।" });
   if (!["video/mp4", "video/quicktime", "video/webm"].includes(mime)) return res.status(415).json({ error: "समर्थित फ़ाइल: MP4, MOV या WebM।" });
+  // The preflight validated these; the real upload must too, or an invalid
+  // categoryId or an over-long tag string reaches Google and the publisher gets
+  // an opaque 400 after the bytes were already sent. Fail here, before upload.
+  if (!/^[0-9]{1,3}$/.test(categoryId)) {
+    return res.status(400).json({ error: "YouTube categoryId 1–3 अंकों का होना चाहिए।" });
+  }
+  const prepared = normalizeYoutubeTags(tags);
+  if (!prepared.ok) {
+    return res.status(400).json({ error: "Tags YouTube सीमा से बड़े हैं (कुल 500 अक्षर तक)। कुछ tags हटाएँ।" });
+  }
+  tags = prepared.tags;
+  const schedule = validateScheduleAt(publishAtInput);
+  if (!schedule.ok) return res.status(400).json({ error: schedule.message, code: "INVALID_PUBLISH_AT" });
+  const statusBlock = buildVideoStatus({ privacy, publishAt: schedule.publishAt });
   try {
     const token = await getYoutubeAccessToken(req, res);
     if (!token) return;
@@ -1104,7 +1423,15 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=UTF-8",
         "X-Upload-Content-Type": mime, "X-Upload-Content-Length": String(req.body.length) },
-      body: JSON.stringify({ snippet: { title, description }, status: { privacyStatus: privacy, selfDeclaredMadeForKids: false } })
+      body: JSON.stringify({
+        snippet: {
+          title,
+          description,
+          categoryId,
+          ...(tags.length ? { tags } : {}),
+        },
+        status: statusBlock,
+      })
     });
     if (!init.ok) {
       const details = await init.json().catch(() => ({}));
@@ -1123,7 +1450,14 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       safeLog("YouTube video transfer failed", { status: uploaded.status });
       return res.status(502).json({ error: result.error?.message || "YouTube वीडियो upload पूरा नहीं हुआ।" });
     }
-    return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy });
+    return res.json({
+      success: true,
+      videoId: result.id,
+      url: "https://youtu.be/" + result.id,
+      // When a schedule is set, Google keeps the video private until publishAt.
+      privacy: statusBlock.privacyStatus,
+      publishAt: statusBlock.publishAt || null,
+    });
   } catch (error) {
     safeLog("YouTube upload failed", error);
     return res.status(502).json({ error: "YouTube upload विफल हुआ। Render logs में सुरक्षित status जाँचें।" });
@@ -1542,7 +1876,16 @@ app.post("/api/setup/verify", async (req, res) => {
       modelIds = await listModelIds(listed);
       push("GEMINI_API_KEY", "ok", "key accepted by Gemini API" + (modelIds.size ? " (" + modelIds.size + " models visible)" : ""));
     } catch (error) {
-      push("GEMINI_API_KEY", "blocked", redactSecrets(error.message || "Gemini ने key reject की"), { reason: "rejected" });
+      // Distinguish "Google rejected this key" from "Google was unreachable".
+      // The old code labelled both "rejected", which sends the user to rotate a
+      // valid key when the real fault was DNS, TLS or the host's firewall.
+      if (isNetworkError(error)) {
+        push("GEMINI_API_KEY", "blocked",
+          "Gemini API तक पहुँच नहीं बनी (key की जाँच नहीं हो सकी): " + networkErrorDetail(error),
+          { reason: "network", retryable: true });
+      } else {
+        push("GEMINI_API_KEY", "blocked", redactSecrets(error.message || "Gemini ने key reject की"), { reason: "rejected" });
+      }
     }
   }
 
@@ -1991,6 +2334,46 @@ async function runProjectStage(projectId, stage) {
   return project;
 }
 
+// ---- Research: facts + sources before the script is written ----------------
+// One text generation call, no scraping and no extra network. The brief is
+// stored on the project so the story writer can be held to it.
+app.post("/api/projects/:id/research", async (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!readSecret("GEMINI_API_KEY")) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Research BLOCKED है।"));
+  }
+  try {
+    const body = req.body || {};
+    const audience = typeof body.audience === "string" ? body.audience.slice(0, 120) : "";
+    const prompt = researchLib.buildResearchPrompt({
+      topic: project.topic,
+      language: project.language,
+      audience,
+    });
+    const text = await geminiProviders().text.generate(prompt);
+    let parsed;
+    try {
+      parsed = require("./lib/story").extractJson(text);
+    } catch (_) {
+      return res.status(502).json({ error: "AI से research का JSON सही नहीं मिला। दोबारा प्रयास करें।" });
+    }
+    const brief = researchLib.normalizeBrief(parsed, { topic: project.topic, language: project.language });
+    project.research = brief;
+    projectStore.save(project);
+    return res.status(201).json({ research: brief });
+  } catch (error) {
+    return sendAPIError(res, error, "Research तैयार नहीं हुआ।");
+  }
+});
+
+app.get("/api/projects/:id/research", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.research) return res.status(404).json({ error: "अभी research तैयार नहीं है।" });
+  return res.json({ research: project.research });
+});
+
 app.post("/api/projects/:id/story", async (req, res) => {
   const id = req.params.id;
   // Ownership first: a missing key must not reveal whether a project exists.
@@ -2205,7 +2588,11 @@ app.get("/api/projects/:id/thumbnail", (req, res) => {
 app.post("/api/projects/:id/thumbnail", async (req, res) => {
   const project = ownedProject(req, res);
   if (!project) return;
-  const asset = project.assets.scenes[1];
+  // Scene assets are stored 0-based (pipeline writes assets.scenes[scene.index]),
+  // so scene "1" in the UI is index 0. Reading [1] used to 409 here even though
+  // the first scene's image existed, and skipped scene 1 entirely.
+  const scenes = (project.assets && project.assets.scenes) || [];
+  const asset = scenes[0] || scenes[1];
   if (!asset || !asset.image || !fs.existsSync(asset.image.path)) {
     return res.status(409).json({ error: "thumbnail के लिए पहले दृश्य 1 की image चाहिए।" });
   }
@@ -2289,4 +2676,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };

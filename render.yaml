@@ -41,6 +41,11 @@ services:
         sync: false
       - key: APP_SESSION_SECRET
         sync: false
+      # YouTube category for uploads. 22 = People & Blogs, which is where a Hindi
+      # kids' cartoon channel belongs. The code defaults to "22" when unset, so
+      # this only needs changing if the channel moves category.
+      - key: DEFAULT_YOUTUBE_CATEGORY_ID
+        value: 22
       # Required to create an account after the first one. sync:false keeps the
       # value in Render's dashboard only - it is never written into the repo.
       - key: APP_REGISTRATION_KEY

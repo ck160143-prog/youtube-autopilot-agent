@@ -20,3 +20,6 @@ Thumbs.db
 
 # Runtime data (projects, characters, generated assets)
 data/
+
+# Local render artifacts (sample MP4s, generated frames)
+render-test/

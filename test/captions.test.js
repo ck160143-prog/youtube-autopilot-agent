@@ -52,3 +52,21 @@ test("segments come from the timeline, not from guesswork", () => {
   assert.equal(segments[0].text, "यह असली narration है।");
   assert.equal(segments[0].end, 3);
 });
+
+test("caption font is big enough to read on a phone at 720p and 1080p", () => {
+  // Regression: 4.5% of height gave 32px at 720p. A 1280px-wide frame shown on a
+  // ~400px phone screen scales that to ~10px, which viewers cannot read.
+  for (const height of [720, 1080, 1920]) {
+    const ass = captions.buildAss([{ start: 0, end: 2, text: "परीक्षण पंक्ति" }], { width: Math.round(height * 16 / 9), height });
+    const style = ass.split("\n").find(line => line.startsWith("Style: Caption,"));
+    const fontSize = Number(style.split(",")[2]);
+    assert.ok(fontSize >= height * 0.06,
+      "font " + fontSize + "px at " + height + "p is below 6% of height");
+    assert.ok(fontSize <= height * 0.09, "font must not overwhelm the frame at " + height + "p");
+  }
+});
+
+test("an explicit fontSize still wins over the default", () => {
+  const ass = captions.buildAss([{ start: 0, end: 2, text: "x" }], { width: 1280, height: 720, fontSize: 20 });
+  assert.match(ass, /Style: Caption,[^,]+,20,/);
+});

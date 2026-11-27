@@ -23,8 +23,10 @@ const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../se
 const { authedHeaders } = require("./helpers");
 const ffmpegTools = require("../lib/ffmpeg");
 
-const PNG_1X1 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+// A flat 1x1 pixel is a valid PNG but a blank scene, which the asset step now
+// rejects on purpose. The fake provider returns a real two-tone image instead.
+const PNG_SAMPLE =
+  "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAiElEQVR4nO3asQ3CQBAAQZBoxlQCpeCCaIVOXA8NYBEgMf7XTnjRrS698/K4nUZ20Qv8qgCtAK0AbTdge77+ucdX1/X+cT7vBUZRgFaAVoBWgFaAVoBWgFaAVoBWgFaAVoBWgFaAVoBWgFaAVoBWgFaAVoBWgDZvwN5/ztHMe4FRFKAVoA0f8AY8MAW1ha2XTAAAAABJRU5ErkJggg==";
 
 function pcmBase64(seconds) {
   const bytes = Buffer.alloc(Math.round(24000 * 2 * seconds));
@@ -51,7 +53,7 @@ function fakeGemini() {
         if (!args.config) return { text: storyJson() };
         const modalities = args.config.responseModalities || [];
         if (modalities.includes("IMAGE")) {
-          return { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: PNG_1X1 } }] } }] };
+          return { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: PNG_SAMPLE } }] } }] };
         }
         return { candidates: [{ content: { parts: [{ inlineData: { mimeType: "audio/L16;rate=24000", data: pcmBase64(2) } }] } }] };
       },

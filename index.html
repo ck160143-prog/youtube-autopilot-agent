@@ -139,6 +139,7 @@ input,select,textarea{font-size:16px}
 <h2>🛠️ Setup जाँच</h2>
 <p class="small">क्या configure है और क्या गायब है — असली जाँच, कोई दिखावा नहीं। Secret values कभी नहीं दिखतीं।</p>
 <div id="setupChecks"></div>
+<p id="setupYouTubeStatus" class="small" role="status">YouTube OAuth — जाँच बाकी है।</p>
 <div id="setupGuide"></div>
 <div class="grid">
 <button id="setupVerifyBtn" class="secondary">🔍 Verify setup (असली जाँच)</button>
@@ -152,33 +153,50 @@ input,select,textarea{font-size:16px}
 <p id="channelStatus" class="status">अभी चैनल कनेक्ट नहीं है।</p>
 <button onclick="connectYouTube()">🔗 YouTube चैनल Connect करें</button><button class="secondary" onclick="refreshYouTubeStatus()">🔄 कनेक्शन स्थिति जाँचें</button>
 <p class="small">वास्तविक चैनल कनेक्शन के लिए Google OAuth और YouTube API सेटअप जरूरी है।</p>
+<button class="secondary" id="analyticsBtn" onclick="loadAnalytics()">📈 Analytics देखें (पिछले 29 दिन)</button>
+<p id="analyticsStatus" class="status" role="status"></p>
+<div id="analyticsPanel"></div>
+<button class="secondary" id="insightsBtn" onclick="loadInsights()">🧠 सुधार के सुझाव बनाएँ</button>
+<p class="small">सुझाव सिर्फ ऊपर वाले असली आंकड़ों से बनते हैं। CTR और retention तभी दिखेंगे जब YouTube वे मेट्रिक्स दे — नहीं दें तो साफ़ लिखा जाएगा, कोई अनुमान नहीं लगाया जाएगा।</p>
+<p id="insightsStatus" class="status" role="status"></p>
+<div id="insightsPanel"></div>
+</div>
+
+<div class="card">
+<h2>📚 बनाने से पहले Research</h2>
+<p class="small">विषय पर भरोसेमंद स्रोतों (विश्वकोश, सरकारी/शैक्षिक साइट, समाचार) से तथ्य इकट्ठे करके स्क्रिप्ट में इस्तेमाल किए जाएँगे। हर तथ्य के साथ उसका स्रोत लिंक सेव होगा। बिना स्रोत वाला तथ्य दिखाया नहीं जाएगा।</p>
+<button class="secondary" id="researchBtn" onclick="runResearch()">🔍 इस विषय पर research करें</button>
+<p id="researchStatus" class="status" role="status"></p>
+<div id="researchPanel"></div>
 </div>
 
 <div class="card">
 <h2>🔎 वीडियो का विषय</h2>
 <label>अपना विषय लिखें</label>
-<input id="topic" placeholder="जैसे: ताजमहल के रहस्य">
+<input id="topic" placeholder="जैसे: ताजमहल के रहस्य" oninput="checkTopicStyleMatch()">
 <label>वीडियो की भाषा</label>
 <select id="language">
 <option>हिंदी</option>
 <option>English</option>
 </select>
 <label>वीडियो का विज़ुअल स्टाइल</label>
-<select id="visualStyle">
+<select id="visualStyle" onchange="checkTopicStyleMatch()">
 <option value="3d-cartoon" selected>🎭 3D कार्टून कॉमेडी (Recommended)</option>
 <option value="cinematic">🎬 सिनेमैटिक</option>
 <option value="realistic">📷 वास्तविक तस्वीरें</option>
 </select>
 <p class="small">3D मोड में AI एक जैसे कार्टून किरदारों और भारतीय लोकेशन वाली तस्वीरें बनाने की कोशिश करेगा। MP4 अभी दृश्यों + हिंदी आवाज़ का वीडियो है; वास्तविक 3D character animation/lip-sync अलग सुविधा है। AI इमेज API की quota/बिलिंग लागू हो सकती है।</p>
+<p id="topicStyleHint" class="status" role="status" style="display:none"></p>
 <label>वीडियो की अवधि</label>
-<select id="duration">
+<select id="duration" onchange="checkDurationLimit()">
 <option value="1" selected>1 मिनट</option>
 <option value="2">2 मिनट</option>
 <option value="3">3 मिनट</option>
 <option value="4">4 मिनट</option>
 <option value="5">5 मिनट</option>
 </select>
-<p class="small">चुनी गई अवधि के अनुसार स्क्रिप्ट और narration तैयार होंगे। MP4 में अधिकतम 3 स्थिर दृश्य + हिंदी आवाज़ (slideshow शैली) जुड़ेंगे। Free hosting पर 4–5 मिनट का render समय/मेमोरी के कारण असफल हो सकता है; असफल होने पर स्क्रिप्ट और assets सुरक्षित रहेंगे।</p>
+<p id="durationHint" class="small"></p>
+<p class="small">चुनी गई अवधि के अनुसार स्क्रिप्ट और narration तैयार होंगे। 1 मिनट में 10 दृश्य बनते हैं; MP4 इन दृश्यों + हिंदी आवाज़ का असली वीडियो है (camera motion के साथ)। Free hosting पर 2 मिनट से लंबा render समय/मेमोरी के कारण असफल हो सकता है; असफल होने पर स्क्रिप्ट और assets सुरक्षित रहेंगे।</p>
 <button onclick="makeOutline()">📝 वीडियो की रूपरेखा बनाएँ</button>
 <button class="green" onclick="generateFullScript()" id="btnGenerateScript">🤖 पूरी AI स्क्रिप्ट बनाएँ</button>
 <button class="green" id="btnRunFullAutomation" onclick="runFullAutomation()">🚀 पूरा ऑटोमैटिक काम शुरू करें</button>
@@ -344,21 +362,348 @@ function setBadge(text, isAI) {
 }
 
 function connectYouTube() { window.location.href = '/api/youtube/connect'; }
-async function refreshYouTubeStatus() {
-  var status = document.getElementById('channelStatus');
-  try {
-    var response = await fetch('/api/youtube/status'); var data = await readApiJson(response);
-    status.textContent = !data.configured ? 'OAuth credentials Render में सेट नहीं हैं। README के setup steps करें।' :
-      data.connected ? '✅ Connected: ' + (data.channel?.title || 'YouTube चैनल') + ' (' + (data.channel?.id || '') + ')' :
-      'अभी चैनल Connect नहीं है। Connect बटन दबाएँ।';
-  } catch (_) { status.textContent = 'कनेक्शन स्थिति नहीं मिल सकी।'; }
+
+// One message, derived once, used by every panel. The top card and the Setup
+// card can never disagree because they render the same string.
+function youtubeStatusMessage(data) {
+  if (!data || !data.configured) return '⛔ OAuth credentials Render में सेट नहीं हैं। Setup जाँच देखें।';
+  if (data.connected) return '✅ Connected: ' + (data.channel?.title || 'YouTube चैनल') + ' (' + (data.channel?.id || '') + ')';
+  return '🟡 credentials सेट हैं, पर चैनल Connect नहीं है। Connect बटन दबाएँ।';
 }
+
+async function refreshConnectionStatus() {
+  var top = document.getElementById('channelStatus');
+  var setup = document.getElementById('setupYouTubeStatus');
+  var stamp = 'आखिरी जाँच: ' + new Date().toLocaleTimeString();
+  var message;
+  try {
+    var response = await fetch('/api/youtube/status', { cache: 'no-store' });
+    var data = await readApiJson(response);
+    message = youtubeStatusMessage(data);
+  } catch (_) {
+    message = 'कनेक्शन स्थिति नहीं मिल सकी।';
+  }
+  if (top) top.textContent = message + ' · ' + stamp;
+  if (setup) setup.textContent = 'YouTube OAuth — ' + message + ' · ' + stamp;
+}
+
+async function loadAnalytics() {
+  var status = document.getElementById('analyticsStatus');
+  var panel = document.getElementById('analyticsPanel');
+  var button = document.getElementById('analyticsBtn');
+  if (button) button.disabled = true;
+  status.textContent = 'YouTube Analytics पढ़ा जा रहा है…';
+  panel.replaceChildren();
+  try {
+    var response = await fetch('/api/youtube/analytics');
+    var data = await readApiJson(response);
+    if (!response.ok) {
+      status.textContent = '❌ ' + (data.error || 'Analytics नहीं पढ़ा जा सका।');
+      return;
+    }
+    var totals = data.totals || {};
+    var rows = [
+      ['व्यूज़', totals.views || 0],
+      ['देखने का समय (मिनट)', Math.round(totals.estimatedMinutesWatched || 0)],
+      ['औसत व्यू अवधि (सेकंड)', Math.round(totals.averageViewDuration || 0)],
+      ['नए subscribers', totals.subscribersGained || 0],
+      ['लाइक्स', totals.likes || 0],
+    ];
+    var table = document.createElement('table');
+    table.className = 'analytics-table';
+    var caption = document.createElement('caption');
+    caption.textContent = data.startDate + ' से ' + data.endDate + ' तक';
+    table.appendChild(caption);
+    rows.forEach(function (pair) {
+      var tr = document.createElement('tr');
+      var th = document.createElement('th');
+      th.textContent = pair[0];
+      var td = document.createElement('td');
+      td.textContent = String(pair[1]);
+      tr.append(th, td);
+      table.appendChild(tr);
+    });
+    panel.appendChild(table);
+    var note = document.createElement('p');
+    note.className = 'small';
+    note.textContent = data.note || '';
+    panel.appendChild(note);
+    // No data is a real answer, not an error: say so instead of showing zeros.
+    status.textContent = (data.entries && data.entries.length)
+      ? '✅ Analytics मिल गया (' + data.entries.length + ' दिन का डेटा)।'
+      : 'इस अवधि में कोई डेटा नहीं मिला (नया चैनल/कोई व्यू नहीं)। नीचे 0 दिख रहे हैं — यह त्रुटि नहीं है।';
+  } catch (error) {
+    status.textContent = '❌ ' + (error.message || 'Analytics failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// ---- Research panel -------------------------------------------------------
+// Reads a stored brief and renders only what is actually in it. A claim with
+// no source is labelled "बिना स्रोत" rather than shown as if it were verified.
+function p2CurrentProjectId() {
+  return (window.p2 && typeof window.p2.currentProjectId === 'function') ? window.p2.currentProjectId() : null;
+}
+
+function renderResearchBrief(brief) {
+  var panel = document.getElementById('researchPanel');
+  if (!panel) return;
+  panel.replaceChildren();
+  if (!brief) return;
+  var head = document.createElement('p');
+  head.className = 'small';
+  head.textContent = 'विषय: ' + (brief.topic || '—') + ' · स्रोत: ' + (brief.sources || []).length +
+    ' · स्रोत वाले तथ्य: ' + (brief.sourcedClaims || 0) + '/' + (brief.claims || []).length;
+  panel.appendChild(head);
+  if (brief.summary) {
+    var summary = document.createElement('p');
+    summary.textContent = brief.summary;
+    panel.appendChild(summary);
+  }
+  if ((brief.claims || []).length) {
+    var list = document.createElement('ul');
+    list.className = 'research-claims';
+    brief.claims.forEach(function (claim) {
+      var li = document.createElement('li');
+      li.textContent = claim.fact + ' ';
+      var linked = claim.sourceUrls || [];
+      if (linked.length) {
+        var a = document.createElement('a');
+        a.href = linked[0];
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = 'स्रोत';
+        li.appendChild(a);
+        if (linked.length > 1) {
+          var more = document.createElement('span');
+          more.className = 'small';
+          more.textContent = ' (+' + (linked.length - 1) + ')';
+          li.appendChild(more);
+        }
+      } else {
+        var none = document.createElement('span');
+        none.className = 'small';
+        none.textContent = ' ⚠️ बिना स्रोत';
+        li.appendChild(none);
+      }
+      list.appendChild(li);
+    });
+    panel.appendChild(list);
+  }
+  var note = document.createElement('p');
+  note.className = 'small';
+  note.textContent = brief.notice || '';
+  panel.appendChild(note);
+}
+
+async function loadResearch(projectId) {
+  var status = document.getElementById('researchStatus');
+  if (!projectId) return;
+  try {
+    var response = await fetch('/api/projects/' + encodeURIComponent(projectId) + '/research');
+    var data = await readApiJson(response);
+    if (response.status === 404) {
+      if (status) status.textContent = 'इस प्रोजेक्ट का research अभी नहीं हुआ।';
+      return;
+    }
+    if (!response.ok) {
+      if (status) status.textContent = '❌ ' + (data.error || 'Research नहीं पढ़ा जा सका।');
+      return;
+    }
+    renderResearchBrief(data.research);
+    if (status) status.textContent = '✅ सेव किया हुआ research दिख रहा है।';
+  } catch (error) {
+    if (status) status.textContent = '❌ ' + (error.message || 'Research नहीं पढ़ा जा सका।');
+  }
+}
+
+async function runResearch() {
+  var status = document.getElementById('researchStatus');
+  var panel = document.getElementById('researchPanel');
+  var button = document.getElementById('researchBtn');
+  var projectId = p2CurrentProjectId();
+  if (!projectId) {
+    if (status) status.textContent = '⛔ पहले \"प्रोजेक्ट बनाएँ/खोलें\" से कोई प्रोजेक्ट चुनें — research प्रोजेक्ट के साथ सेव होता है।';
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'भरोसेमंद स्रोतों से तथ्य जुटाए जा रहे हैं…';
+  if (panel) panel.replaceChildren();
+  try {
+    var response = await fetch('/api/projects/' + encodeURIComponent(projectId) + '/research', { method: 'POST' });
+    var data = await readApiJson(response);
+    if (!response.ok) {
+      if (status) status.textContent = (data.blocked ? '⛔ BLOCKED: ' : '❌ ') + (data.error || 'Research नहीं बना।');
+      return;
+    }
+    renderResearchBrief(data.research);
+    if (status) {
+      var sourced = (data.research && data.research.sourcedClaims) || 0;
+      status.textContent = sourced > 0
+        ? '✅ Research तैयार — ' + sourced + ' तथ्य स्रोत से जुड़े हैं। अब स्क्रिप्ट इन्हीं तथ्यों पर बनेगी।'
+        : '⚠️ Research तैयार, लेकिन कोई भरोसेमंद स्रोत लिंक नहीं मिला — तथ्यों को सत्यापित न मानें।';
+    }
+  } catch (error) {
+    if (status) status.textContent = '❌ ' + (error.message || 'Research नहीं बना।');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// ---- Insights panel -------------------------------------------------------
+// Every line comes from the API response. Nothing is computed or guessed here.
+function renderInsights(data) {
+  var panel = document.getElementById('insightsPanel');
+  if (!panel) return;
+  panel.replaceChildren();
+
+  var verdict = document.createElement('p');
+  verdict.textContent = data.verdict || '';
+  panel.appendChild(verdict);
+
+  var totals = data.totals || {};
+  var table = document.createElement('table');
+  table.className = 'insights-table';
+  [
+    ['व्यूज़ (इस अवधि)', totals.views || 0],
+    ['watch time (मिनट)', Math.round(totals.minutes || 0)],
+    ['औसत व्यू अवधि (सेकंड)', Math.round(totals.avgDuration || 0)],
+    ['नए subscribers', totals.subs || 0],
+    ['लाइक्स', totals.likes || 0],
+  ].forEach(function (pair) {
+    var tr = document.createElement('tr');
+    var th = document.createElement('th');
+    th.textContent = pair[0];
+    var td = document.createElement('td');
+    td.textContent = String(pair[1]);
+    tr.append(th, td);
+    table.appendChild(tr);
+  });
+  panel.appendChild(table);
+
+  if ((data.observations || []).length) {
+    var obsTitle = document.createElement('h3');
+    obsTitle.textContent = 'क्या दिख रहा है';
+    panel.appendChild(obsTitle);
+    var obsList = document.createElement('ul');
+    data.observations.forEach(function (line) {
+      var li = document.createElement('li');
+      li.textContent = line;
+      obsList.appendChild(li);
+    });
+    panel.appendChild(obsList);
+  }
+
+  if ((data.suggestions || []).length) {
+    var sugTitle = document.createElement('h3');
+    sugTitle.textContent = 'आगे क्या सुधारें';
+    panel.appendChild(sugTitle);
+    var sugList = document.createElement('ul');
+    data.suggestions.forEach(function (line) {
+      var li = document.createElement('li');
+      li.textContent = line;
+      sugList.appendChild(li);
+    });
+    panel.appendChild(sugList);
+  }
+
+  // Missing metrics are shown as missing, on purpose. No placeholder numbers.
+  if ((data.notAvailable || []).length) {
+    var naTitle = document.createElement('h3');
+    naTitle.textContent = 'ये आंकड़े उपलब्ध नहीं';
+    panel.appendChild(naTitle);
+    var naList = document.createElement('ul');
+    naList.className = 'insights-missing';
+    data.notAvailable.forEach(function (item) {
+      var li = document.createElement('li');
+      li.textContent = item.metric + ' — ' + item.why;
+      naList.appendChild(li);
+    });
+    panel.appendChild(naList);
+  }
+}
+
+async function loadInsights() {
+  var status = document.getElementById('insightsStatus');
+  var panel = document.getElementById('insightsPanel');
+  var button = document.getElementById('insightsBtn');
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'असली आंकड़ों से सुझाव बन रहे हैं…';
+  if (panel) panel.replaceChildren();
+  try {
+    var response = await fetch('/api/youtube/insights');
+    var data = await readApiJson(response);
+    if (!response.ok) {
+      if (status) status.textContent = '❌ ' + (data.error || 'सुझाव नहीं बने।');
+      return;
+    }
+    renderInsights(data);
+    if (status) {
+      status.textContent = data.enoughData
+        ? '✅ ' + (data.suggestions || []).length + ' सुझाव असली डेटा से बने।'
+        : 'ℹ️ डेटा कम है — इसलिए कोई सुझाव नहीं दिया गया (कोई अनुमान नहीं लगाया)।';
+    }
+  } catch (error) {
+    if (status) status.textContent = '❌ ' + (error.message || 'सुझाव नहीं बने।');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function refreshYouTubeStatus() { return refreshConnectionStatus(); }
+
+// Topic/style mismatch: a gentle suggestion, never a block. A keyword
+// heuristic on purpose — no model call, so it stays free and instant.
+function checkTopicStyleMatch() {
+  var hint = document.getElementById('topicStyleHint');
+  var topicEl = document.getElementById('topic');
+  var styleEl = document.getElementById('visualStyle');
+  if (!hint || !topicEl || !styleEl) return;
+  var topic = (topicEl.value || '').trim();
+  var style = styleEl.value || '';
+  if (!topic) { hint.style.display = 'none'; hint.textContent = ''; return; }
+  var serious = /रहस्य|इतिहास|तथ्य|विज्ञान|जीवनी|युद्ध|स्मारक|ताजमहल|महल|किला|धरोहर|खोज|रहस्यमय|राजनीति|अर्थव्यवस्था|taj\s*mahal|rahasya|itihaas|history|mystery|science|facts|biography|monument|fort|palace|heritage|discovery/i.test(topic);
+  if (serious && style === '3d-cartoon') {
+    hint.style.display = 'block';
+    hint.style.color = '#ffd18a';
+    hint.textContent = '⚠️ सुझाव: यह विषय गंभीर/जानकारी वाला लगता है। "3D कार्टून कॉमेडी" की जगह "🎬 सिनेमैटिक" बेहतर रहेगा। रोका नहीं जा रहा — आप चाहें तो ऐसे ही बना सकते हैं।';
+    return;
+  }
+  if (style === '3d-cartoon') {
+    hint.style.display = 'block';
+    hint.style.color = '#8ef0c0';
+    hint.textContent = '✅ विषय और स्टाइल मेल खाते हैं।';
+    return;
+  }
+  hint.style.display = 'none';
+  hint.textContent = '';
+}
+
+// Free hosting: 1 minute is the safe default, anything longer is a real risk.
+function checkDurationLimit() {
+  var hint = document.getElementById('durationHint');
+  var selector = document.getElementById('duration');
+  if (!hint || !selector) return;
+  var minutes = Number(selector.value) || 1;
+  if (minutes <= 1) {
+    hint.style.color = '#8ef0c0';
+    hint.textContent = '✅ 1 मिनट (default): 10 दृश्य — Free hosting के लिए सबसे सुरक्षित।';
+    return;
+  }
+  hint.style.color = '#ffd18a';
+  hint.textContent = '⚠️ ' + minutes + ' मिनट का वीडियो Free hosting पर render समय/मेमोरी की वजह से असफल हो सकता है (अनुशंसित: 1–2 मिनट)। असफल होने पर स्क्रिप्ट और assets सुरक्षित रहेंगे।';
+}
+
+checkDurationLimit();
 function showUploadForm() {
   var status = document.getElementById('featureStatus'), info = document.getElementById('featureInfo');
   info.innerHTML = '<p class="small">तैयार MP4 चुनें। Upload आपके OAuth-connected चैनल पर होगा। Hosted सीमा 90 MB है।</p>' +
     '<label>YouTube Title</label><input id="ytTitle" maxlength="100" placeholder="वीडियो का शीर्षक">' +
     '<label>Description</label><textarea id="ytDescription" maxlength="5000" placeholder="वीडियो विवरण"></textarea>' +
     '<label>Privacy</label><select id="ytPrivacy"><option value="private">Private (पहले यही चुनें)</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select>' +
+    '<label>Schedule (वैकल्पिक) — कब public हो</label><input id="ytPublishAt" type="datetime-local">' +
+    '<p class="small">खाली छोड़ें = अभी upload। तारीख़ भरने पर वीडियो private upload होगा और YouTube उसे उस समय public करेगा (YouTube नियम: scheduled वीडियो तब तक private रहता है)। बीता समय स्वीकार नहीं होगा।</p>' +
     '<label>वीडियो फ़ाइल (MP4/MOV/WebM, 90 MB तक)</label><input id="ytVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm">' +
     '<button id="ytUploadButton" class="green" onclick="uploadVideoToYouTube()">⬆️ अभी YouTube पर अपलोड करें</button>' +
     '<p id="ytUploadResult" class="status" role="status">फ़ाइल चुनकर Upload दबाएँ।</p>';
@@ -377,7 +722,16 @@ function b64utf8(text) {
   return btoa(unescape(encodeURIComponent(String(text == null ? "" : text))));
 }
 function videoMetaHeader(title, description, privacy) {
-  return b64utf8(JSON.stringify({ title: title, description: description, privacy: privacy }));
+  var meta = { title: title, description: description, privacy: privacy };
+  // Schedule: YouTube has no scheduler endpoint. status.publishAt (UTC) is the
+  // only mechanism and it only works while the video is private, so the server
+  // forces private until that moment and rejects a past time.
+  var when = document.getElementById('ytPublishAt');
+  if (when && when.value) {
+    var parsed = new Date(when.value);
+    if (!isNaN(parsed.getTime())) meta.publishAt = parsed.toISOString();
+  }
+  return b64utf8(JSON.stringify(meta));
 }
 
 async function uploadRenderedVideo() {
@@ -397,7 +751,8 @@ async function uploadRenderedVideo() {
       'Content-Type':'video/mp4','X-Confirm-Upload':'yes','X-Video-Meta-B64':videoMetaHeader(title,document.getElementById('ytDescription').value,privacy)
     },body:lastRenderedVideoBlob});
     var data=await readApiJson(response);if(!response.ok)throw new Error(data.error||'Upload विफल।');
-    result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy;
+    result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy+
+      (data.publishAt?' | '+new Date(data.publishAt).toLocaleString('hi-IN')+' पर public होगा':'');
   }catch(error){result.textContent='❌ '+(error.message||'Upload failed');}
   finally{if(button)button.disabled=false;}
 }
@@ -419,7 +774,8 @@ async function uploadVideoToYouTube() {
       'X-Video-Meta-B64':videoMetaHeader(title,document.getElementById('ytDescription').value,document.getElementById('ytPrivacy').value)
     }, body:file });
     var data = await readApiJson(response); if (!response.ok) throw new Error(data.error || 'Upload नहीं हो सका।');
-    result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy;
+    result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy +
+      (data.publishAt ? ' | ' + new Date(data.publishAt).toLocaleString('hi-IN') + ' पर public होगा' : '');
   } catch(error) { result.textContent = '❌ ' + (error.message || 'Upload failed'); }
   finally { button.disabled = false; }
 }
@@ -1399,7 +1755,7 @@ try {
   function render(data){
     var node=el('workflowCheckpointStages'); if(!node)return;
     var done=Array.isArray(data.completed)?data.completed:[];
-    node.textContent='चरण स्थिति: '+stages.map(function(s){return (done.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
+    node.textContent='इस प्रोजेक्ट की प्रगति (इस ब्राउज़र में): '+stages.map(function(s){return (done.indexOf(s)>=0?'✅ ':'⬜ ')+s;}).join(' · ')+(data.updatedAt?' | आखिरी सेव: '+new Date(data.updatedAt).toLocaleString():'');
   }
   function snapshot(){
     var old=previous(),topic=el('topic')?.value||'';
@@ -1500,6 +1856,10 @@ try {
     bar.style.width = Math.max(0, Math.min(100, Number(percent) || 0)) + '%';
   }
 
+  // Read-only handle on the open project id, so the research panel can work on
+  // whichever project the user actually opened (there is one id, not two copies).
+  P2.currentProjectId = function () { return currentId; };
+
   P2.api = async function (url, options) {
     var response = await fetch(url, options);
     var raw = await response.text();
@@ -1532,12 +1892,12 @@ try {
         'captions ' + badge(f.captions),
         'music ' + badge(f.music)
       ];
-      node.textContent = 'वास्तविक स्थिति — ' + parts.join(' · ') +
+      node.textContent = 'सिस्टम क्षमता (इस deployment में क्या चल सकता है) — ' + parts.join(' · ') +
         ' · FFmpeg ' + (caps.ffmpeg && caps.ffmpeg.available ? caps.ffmpeg.version : 'नहीं मिला');
       var blockedNote = document.createElement('p');
       blockedNote.className = 'small';
-      blockedNote.style.color = '#ffb4a2';
-      blockedNote.textContent = 'Character animation और lip-sync: ⛔ BLOCKED (कोई motion-video provider जुड़ा नहीं है)। यह वीडियो generated scene images पर camera motion वाला असली MP4 है, 3D character animation नहीं।';
+      blockedNote.style.color = '#ffd18a';
+      blockedNote.textContent = 'Character animation और lip-sync: ⛔ BLOCKED — यह बग नहीं है। Free mode में वीडियो generated scene images पर camera motion वाला असली MP4 है, 3D character animation नहीं। Lip-sync के लिए mouth sprites + motion provider चाहिए (optional, बिना भी वीडियो बनता है)।';
       node.appendChild(blockedNote);
       (caps.blockedReasons || []).forEach(function (reason) {
         var line = document.createElement('p');
@@ -1693,6 +2053,7 @@ try {
       open.addEventListener('click', function () {
         currentId = project.id;
         P2.refreshProject();
+        if (typeof loadResearch === 'function') loadResearch(currentId);
       });
       row.appendChild(open);
       node.appendChild(row);
@@ -1720,6 +2081,7 @@ try {
         })
       });
       currentId = created.project.id;
+      if (typeof loadResearch === 'function') loadResearch(currentId);
       await P2.api('/api/projects/' + currentId + '/automate', { method: 'POST' });
       setStatus('ऑटोमेशन शुरू: कहानी → images → आवाज़ → MP4।');
       P2.refreshProject();
@@ -2034,7 +2396,21 @@ try {
     if (window.babaAuth && window.babaAuth.onReady) window.babaAuth.onReady(function () { P2.init(); });
     else P2.init();
   });
+  // One reload path for every list. Deduplicated so two auth events in a row
+  // cannot start a parallel fetch storm.
+  P2.reloadAll = function () {
+    if (P2._reloadPromise) return P2._reloadPromise;
+    P2._reloadPromise = (async function () {
+      await P2.loadCapabilities();
+      await P2.loadCharacters();
+      await P2.loadProjects();
+    })().then(function () { P2._reloadPromise = null; }, function () { P2._reloadPromise = null; });
+    return P2._reloadPromise;
+  };
+
   P2.init = async function () {
+    if (P2._booted) { await P2.reloadAll(); return; }
+    P2._booted = true;
     try {
       var savedKey = window.localStorage.getItem('babaAccessKey');
       if (savedKey && el('p2AccessKey')) el('p2AccessKey').value = savedKey;
@@ -2044,10 +2420,11 @@ try {
         });
       }
     } catch (_) {}
-    await P2.loadCapabilities();
-    await P2.loadCharacters();
-    await P2.loadProjects();
+    await P2.reloadAll();
   };
+
+  // Sign-in/sign-out both raise this event: refetch everything the account owns.
+  document.addEventListener('baba:authchange', function () { P2.reloadAll(); });
 })();
 </script>
 <script>
@@ -2101,6 +2478,12 @@ try {
     listeners.forEach(function (fn) { try { fn(); } catch (_) {} });
     listeners = [];
     ready();
+    // Tell every module that the signed-in account changed. Without this the
+    // Character Library keeps the previous session's rows after sign-out and
+    // never refetches after a fresh sign-in (notify() had emptied listeners).
+    try {
+      document.dispatchEvent(new CustomEvent('baba:authchange'));
+    } catch (_) {}
   }
 
   async function refreshStatus() {
@@ -2165,6 +2548,7 @@ try {
       setCsrf(null);
       showGate('साइन आउट हो गया।');
       if (el('authBarUser')) el('authBarUser').textContent = '';
+      notify();
     },
     username: function () { var node = el('authBarUser'); return node ? node.textContent : ''; },
     csrfToken: function () { return csrfToken; }
@@ -2267,6 +2651,9 @@ try {
     } catch (error) {
       text('setupStatus', '❌ ' + (error.message || 'Setup जाँच विफल।'), true);
     }
+    // The Setup card's YouTube line comes from the same function as the top
+    // card, so both panels always show the same truth.
+    if (typeof refreshConnectionStatus === 'function') await refreshConnectionStatus();
   }
 
   async function verifySetup() {
