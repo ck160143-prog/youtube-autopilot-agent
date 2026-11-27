@@ -156,6 +156,18 @@ input,select,textarea{font-size:16px}
 <button class="secondary" id="analyticsBtn" onclick="loadAnalytics()">📈 Analytics देखें (पिछले 29 दिन)</button>
 <p id="analyticsStatus" class="status" role="status"></p>
 <div id="analyticsPanel"></div>
+<button class="secondary" id="insightsBtn" onclick="loadInsights()">🧠 सुधार के सुझाव बनाएँ</button>
+<p class="small">सुझाव सिर्फ ऊपर वाले असली आंकड़ों से बनते हैं। CTR और retention तभी दिखेंगे जब YouTube वे मेट्रिक्स दे — नहीं दें तो साफ़ लिखा जाएगा, कोई अनुमान नहीं लगाया जाएगा।</p>
+<p id="insightsStatus" class="status" role="status"></p>
+<div id="insightsPanel"></div>
+</div>
+
+<div class="card">
+<h2>📚 बनाने से पहले Research</h2>
+<p class="small">विषय पर भरोसेमंद स्रोतों (विश्वकोश, सरकारी/शैक्षिक साइट, समाचार) से तथ्य इकट्ठे करके स्क्रिप्ट में इस्तेमाल किए जाएँगे। हर तथ्य के साथ उसका स्रोत लिंक सेव होगा। बिना स्रोत वाला तथ्य दिखाया नहीं जाएगा।</p>
+<button class="secondary" id="researchBtn" onclick="runResearch()">🔍 इस विषय पर research करें</button>
+<p id="researchStatus" class="status" role="status"></p>
+<div id="researchPanel"></div>
 </div>
 
 <div class="card">
@@ -422,6 +434,218 @@ async function loadAnalytics() {
       : 'इस अवधि में कोई डेटा नहीं मिला (नया चैनल/कोई व्यू नहीं)। नीचे 0 दिख रहे हैं — यह त्रुटि नहीं है।';
   } catch (error) {
     status.textContent = '❌ ' + (error.message || 'Analytics failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// ---- Research panel -------------------------------------------------------
+// Reads a stored brief and renders only what is actually in it. A claim with
+// no source is labelled "बिना स्रोत" rather than shown as if it were verified.
+function p2CurrentProjectId() {
+  return (window.p2 && typeof window.p2.currentProjectId === 'function') ? window.p2.currentProjectId() : null;
+}
+
+function renderResearchBrief(brief) {
+  var panel = document.getElementById('researchPanel');
+  if (!panel) return;
+  panel.replaceChildren();
+  if (!brief) return;
+  var head = document.createElement('p');
+  head.className = 'small';
+  head.textContent = 'विषय: ' + (brief.topic || '—') + ' · स्रोत: ' + (brief.sources || []).length +
+    ' · स्रोत वाले तथ्य: ' + (brief.sourcedClaims || 0) + '/' + (brief.claims || []).length;
+  panel.appendChild(head);
+  if (brief.summary) {
+    var summary = document.createElement('p');
+    summary.textContent = brief.summary;
+    panel.appendChild(summary);
+  }
+  if ((brief.claims || []).length) {
+    var list = document.createElement('ul');
+    list.className = 'research-claims';
+    brief.claims.forEach(function (claim) {
+      var li = document.createElement('li');
+      li.textContent = claim.fact + ' ';
+      var linked = claim.sourceUrls || [];
+      if (linked.length) {
+        var a = document.createElement('a');
+        a.href = linked[0];
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = 'स्रोत';
+        li.appendChild(a);
+        if (linked.length > 1) {
+          var more = document.createElement('span');
+          more.className = 'small';
+          more.textContent = ' (+' + (linked.length - 1) + ')';
+          li.appendChild(more);
+        }
+      } else {
+        var none = document.createElement('span');
+        none.className = 'small';
+        none.textContent = ' ⚠️ बिना स्रोत';
+        li.appendChild(none);
+      }
+      list.appendChild(li);
+    });
+    panel.appendChild(list);
+  }
+  var note = document.createElement('p');
+  note.className = 'small';
+  note.textContent = brief.notice || '';
+  panel.appendChild(note);
+}
+
+async function loadResearch(projectId) {
+  var status = document.getElementById('researchStatus');
+  if (!projectId) return;
+  try {
+    var response = await fetch('/api/projects/' + encodeURIComponent(projectId) + '/research');
+    var data = await readApiJson(response);
+    if (response.status === 404) {
+      if (status) status.textContent = 'इस प्रोजेक्ट का research अभी नहीं हुआ।';
+      return;
+    }
+    if (!response.ok) {
+      if (status) status.textContent = '❌ ' + (data.error || 'Research नहीं पढ़ा जा सका।');
+      return;
+    }
+    renderResearchBrief(data.research);
+    if (status) status.textContent = '✅ सेव किया हुआ research दिख रहा है।';
+  } catch (error) {
+    if (status) status.textContent = '❌ ' + (error.message || 'Research नहीं पढ़ा जा सका।');
+  }
+}
+
+async function runResearch() {
+  var status = document.getElementById('researchStatus');
+  var panel = document.getElementById('researchPanel');
+  var button = document.getElementById('researchBtn');
+  var projectId = p2CurrentProjectId();
+  if (!projectId) {
+    if (status) status.textContent = '⛔ पहले \"प्रोजेक्ट बनाएँ/खोलें\" से कोई प्रोजेक्ट चुनें — research प्रोजेक्ट के साथ सेव होता है।';
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'भरोसेमंद स्रोतों से तथ्य जुटाए जा रहे हैं…';
+  if (panel) panel.replaceChildren();
+  try {
+    var response = await fetch('/api/projects/' + encodeURIComponent(projectId) + '/research', { method: 'POST' });
+    var data = await readApiJson(response);
+    if (!response.ok) {
+      if (status) status.textContent = (data.blocked ? '⛔ BLOCKED: ' : '❌ ') + (data.error || 'Research नहीं बना।');
+      return;
+    }
+    renderResearchBrief(data.research);
+    if (status) {
+      var sourced = (data.research && data.research.sourcedClaims) || 0;
+      status.textContent = sourced > 0
+        ? '✅ Research तैयार — ' + sourced + ' तथ्य स्रोत से जुड़े हैं। अब स्क्रिप्ट इन्हीं तथ्यों पर बनेगी।'
+        : '⚠️ Research तैयार, लेकिन कोई भरोसेमंद स्रोत लिंक नहीं मिला — तथ्यों को सत्यापित न मानें।';
+    }
+  } catch (error) {
+    if (status) status.textContent = '❌ ' + (error.message || 'Research नहीं बना।');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// ---- Insights panel -------------------------------------------------------
+// Every line comes from the API response. Nothing is computed or guessed here.
+function renderInsights(data) {
+  var panel = document.getElementById('insightsPanel');
+  if (!panel) return;
+  panel.replaceChildren();
+
+  var verdict = document.createElement('p');
+  verdict.textContent = data.verdict || '';
+  panel.appendChild(verdict);
+
+  var totals = data.totals || {};
+  var table = document.createElement('table');
+  table.className = 'insights-table';
+  [
+    ['व्यूज़ (इस अवधि)', totals.views || 0],
+    ['watch time (मिनट)', Math.round(totals.minutes || 0)],
+    ['औसत व्यू अवधि (सेकंड)', Math.round(totals.avgDuration || 0)],
+    ['नए subscribers', totals.subs || 0],
+    ['लाइक्स', totals.likes || 0],
+  ].forEach(function (pair) {
+    var tr = document.createElement('tr');
+    var th = document.createElement('th');
+    th.textContent = pair[0];
+    var td = document.createElement('td');
+    td.textContent = String(pair[1]);
+    tr.append(th, td);
+    table.appendChild(tr);
+  });
+  panel.appendChild(table);
+
+  if ((data.observations || []).length) {
+    var obsTitle = document.createElement('h3');
+    obsTitle.textContent = 'क्या दिख रहा है';
+    panel.appendChild(obsTitle);
+    var obsList = document.createElement('ul');
+    data.observations.forEach(function (line) {
+      var li = document.createElement('li');
+      li.textContent = line;
+      obsList.appendChild(li);
+    });
+    panel.appendChild(obsList);
+  }
+
+  if ((data.suggestions || []).length) {
+    var sugTitle = document.createElement('h3');
+    sugTitle.textContent = 'आगे क्या सुधारें';
+    panel.appendChild(sugTitle);
+    var sugList = document.createElement('ul');
+    data.suggestions.forEach(function (line) {
+      var li = document.createElement('li');
+      li.textContent = line;
+      sugList.appendChild(li);
+    });
+    panel.appendChild(sugList);
+  }
+
+  // Missing metrics are shown as missing, on purpose. No placeholder numbers.
+  if ((data.notAvailable || []).length) {
+    var naTitle = document.createElement('h3');
+    naTitle.textContent = 'ये आंकड़े उपलब्ध नहीं';
+    panel.appendChild(naTitle);
+    var naList = document.createElement('ul');
+    naList.className = 'insights-missing';
+    data.notAvailable.forEach(function (item) {
+      var li = document.createElement('li');
+      li.textContent = item.metric + ' — ' + item.why;
+      naList.appendChild(li);
+    });
+    panel.appendChild(naList);
+  }
+}
+
+async function loadInsights() {
+  var status = document.getElementById('insightsStatus');
+  var panel = document.getElementById('insightsPanel');
+  var button = document.getElementById('insightsBtn');
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'असली आंकड़ों से सुझाव बन रहे हैं…';
+  if (panel) panel.replaceChildren();
+  try {
+    var response = await fetch('/api/youtube/insights');
+    var data = await readApiJson(response);
+    if (!response.ok) {
+      if (status) status.textContent = '❌ ' + (data.error || 'सुझाव नहीं बने।');
+      return;
+    }
+    renderInsights(data);
+    if (status) {
+      status.textContent = data.enoughData
+        ? '✅ ' + (data.suggestions || []).length + ' सुझाव असली डेटा से बने।'
+        : 'ℹ️ डेटा कम है — इसलिए कोई सुझाव नहीं दिया गया (कोई अनुमान नहीं लगाया)।';
+    }
+  } catch (error) {
+    if (status) status.textContent = '❌ ' + (error.message || 'सुझाव नहीं बने।');
   } finally {
     if (button) button.disabled = false;
   }
@@ -1632,6 +1856,10 @@ try {
     bar.style.width = Math.max(0, Math.min(100, Number(percent) || 0)) + '%';
   }
 
+  // Read-only handle on the open project id, so the research panel can work on
+  // whichever project the user actually opened (there is one id, not two copies).
+  P2.currentProjectId = function () { return currentId; };
+
   P2.api = async function (url, options) {
     var response = await fetch(url, options);
     var raw = await response.text();
@@ -1825,6 +2053,7 @@ try {
       open.addEventListener('click', function () {
         currentId = project.id;
         P2.refreshProject();
+        if (typeof loadResearch === 'function') loadResearch(currentId);
       });
       row.appendChild(open);
       node.appendChild(row);
@@ -1852,6 +2081,7 @@ try {
         })
       });
       currentId = created.project.id;
+      if (typeof loadResearch === 'function') loadResearch(currentId);
       await P2.api('/api/projects/' + currentId + '/automate', { method: 'POST' });
       setStatus('ऑटोमेशन शुरू: कहानी → images → आवाज़ → MP4।');
       P2.refreshProject();

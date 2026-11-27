@@ -26,6 +26,8 @@ const {
   cookieHeader, clearCookieHeader, readCookie, SESSION_COOKIE,
 } = require("./lib/auth");
 const { createRateLimiter } = require("./lib/ratelimit");
+const researchLib = require("./lib/research");
+const insightsLib = require("./lib/insights");
 const { redactSecrets, readSecret, keyShape } = require("./lib/setup");
 
 app.set("trust proxy", 1);
@@ -1015,6 +1017,66 @@ app.get("/api/youtube/callback", async (req, res) => {
 });
 // Read-only channel analytics. Never writes anything to YouTube and never
 // stores the report; the numbers are returned to the owner's browser only.
+// Analytics -> advice. Separate endpoint so the raw numbers stay untouched and
+// the advice always comes from the same rows the analytics endpoint returned.
+app.get("/api/youtube/insights", async (req, res) => {
+  const linked = decryptSession(req);
+  if (!linked || !linked.access_token) {
+    return res.status(409).json({ error: "पहले YouTube चैनल Connect करें।", code: "CHANNEL_NOT_CONNECTED" });
+  }
+  const scopeText = String(linked.scope || "");
+  if (scopeText && !scopeText.includes("yt-analytics.readonly")) {
+    return res.status(409).json({
+      error: "इस connection में Analytics की अनुमति नहीं है। चैनल फिर Connect करें।",
+      code: "ANALYTICS_SCOPE_MISSING",
+    });
+  }
+  const range = validateAnalyticsRange(req.query.startDate, req.query.endDate);
+  if (!range.ok) {
+    return res.status(400).json({ error: range.message, code: "INVALID_RANGE", reason: range.reason });
+  }
+  try {
+    const token = await getYoutubeAccessToken(req, res);
+    if (!token) return;
+    const url = "https://youtubeanalytics.googleapis.com/v2/reports?" + new URLSearchParams({
+      ids: "channel==MINE",
+      startDate: range.startDate,
+      endDate: range.endDate,
+      metrics: ANALYTICS_METRICS.join(","),
+      dimensions: "day",
+      sort: "day",
+    }).toString();
+    const response = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      safeLog("YouTube insights query failed", { status: response.status });
+      if (response.status === 403) {
+        return res.status(409).json({ error: "Analytics की अनुमति नहीं मिली। चैनल फिर Connect करें।", code: "ANALYTICS_SCOPE_MISSING" });
+      }
+      return res.status(502).json({ error: "Analytics डेटा नहीं मिला (HTTP " + response.status + ")।" });
+    }
+    const shaped = shapeAnalyticsReport(payload);
+    const insights = insightsLib.buildInsights({ ...shaped, startDate: range.startDate, endDate: range.endDate });
+    return res.json({
+      startDate: range.startDate,
+      endDate: range.endDate,
+      days: range.days,
+      totals: shaped.totals,
+      ...insights,
+      // Stated explicitly so nobody mistakes an absent metric for a zero one.
+      metricsAvailable: ANALYTICS_METRICS.slice(),
+      fetchedAt: new Date().toISOString(),
+      note: "सुझाव सिर्फ इस अवधि के असली YouTube Analytics आंकड़ों से हैं। CTR और retention curve इस API में उपलब्ध नहीं — वे नहीं दिखाए गए।",
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      return res.status(503).json({ error: "YouTube Analytics तक पहुँच नहीं बनी (network/DNS/TLS)।", code: "NETWORK_UNREACHABLE", reason: networkErrorDetail(error) });
+    }
+    safeLog("YouTube insights failed", error);
+    return res.status(502).json({ error: "Insights नहीं बन सके।" });
+  }
+});
+
 app.get("/api/youtube/analytics", async (req, res) => {
   const linked = decryptSession(req);
   if (!linked || !linked.access_token) {
@@ -2271,6 +2333,46 @@ async function runProjectStage(projectId, stage) {
   projectStore.save(project);
   return project;
 }
+
+// ---- Research: facts + sources before the script is written ----------------
+// One text generation call, no scraping and no extra network. The brief is
+// stored on the project so the story writer can be held to it.
+app.post("/api/projects/:id/research", async (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!readSecret("GEMINI_API_KEY")) {
+    return res.status(503).json(blocked("GEMINI_API_KEY सेट नहीं है। Research BLOCKED है।"));
+  }
+  try {
+    const body = req.body || {};
+    const audience = typeof body.audience === "string" ? body.audience.slice(0, 120) : "";
+    const prompt = researchLib.buildResearchPrompt({
+      topic: project.topic,
+      language: project.language,
+      audience,
+    });
+    const text = await geminiProviders().text.generate(prompt);
+    let parsed;
+    try {
+      parsed = require("./lib/story").extractJson(text);
+    } catch (_) {
+      return res.status(502).json({ error: "AI से research का JSON सही नहीं मिला। दोबारा प्रयास करें।" });
+    }
+    const brief = researchLib.normalizeBrief(parsed, { topic: project.topic, language: project.language });
+    project.research = brief;
+    projectStore.save(project);
+    return res.status(201).json({ research: brief });
+  } catch (error) {
+    return sendAPIError(res, error, "Research तैयार नहीं हुआ।");
+  }
+});
+
+app.get("/api/projects/:id/research", (req, res) => {
+  const project = ownedProject(req, res);
+  if (!project) return;
+  if (!project.research) return res.status(404).json({ error: "अभी research तैयार नहीं है।" });
+  return res.json({ research: project.research });
+});
 
 app.post("/api/projects/:id/story", async (req, res) => {
   const id = req.params.id;
