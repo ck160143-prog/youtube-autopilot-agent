@@ -1155,6 +1155,17 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   if (!title) return res.status(400).json({ error: "YouTube वीडियो का title भरें।" });
   if (!["private", "unlisted", "public"].includes(privacy)) return res.status(400).json({ error: "Privacy private/unlisted/public में से चुनें।" });
   if (!["video/mp4", "video/quicktime", "video/webm"].includes(mime)) return res.status(415).json({ error: "समर्थित फ़ाइल: MP4, MOV या WebM।" });
+  // The preflight validated these; the real upload must too, or an invalid
+  // categoryId or an over-long tag string reaches Google and the publisher gets
+  // an opaque 400 after the bytes were already sent. Fail here, before upload.
+  if (!/^[0-9]{1,3}$/.test(categoryId)) {
+    return res.status(400).json({ error: "YouTube categoryId 1–3 अंकों का होना चाहिए।" });
+  }
+  const prepared = normalizeYoutubeTags(tags);
+  if (!prepared.ok) {
+    return res.status(400).json({ error: "Tags YouTube सीमा से बड़े हैं (कुल 500 अक्षर तक)। कुछ tags हटाएँ।" });
+  }
+  tags = prepared.tags;
   try {
     const token = await getYoutubeAccessToken(req, res);
     if (!token) return;

@@ -146,3 +146,49 @@ test("upload sends tags and categoryId in the insert body", () => {
   assert.match(body, /categoryId,/, "insert body must include categoryId");
   assert.match(body, /tags/, "insert body must include tags when present");
 });
+
+test("upload refuses an invalid categoryId or oversized tags before sending bytes", async () => {
+  // The preflight validated these, but the upload path did not: "abc" as a
+  // categoryId, or 1800 characters of tags, went straight into the insert body
+  // and Google answered with an opaque 400 after the file was already sent.
+  // Config must look ready so the route reaches metadata validation at all.
+  const saved = {
+    YOUTUBE_CLIENT_ID: process.env.YOUTUBE_CLIENT_ID,
+    YOUTUBE_CLIENT_SECRET: process.env.YOUTUBE_CLIENT_SECRET,
+    YOUTUBE_REDIRECT_URI: process.env.YOUTUBE_REDIRECT_URI,
+    APP_SESSION_SECRET: process.env.APP_SESSION_SECRET,
+  };
+  process.env.YOUTUBE_CLIENT_ID = "test-client-id";
+  process.env.YOUTUBE_CLIENT_SECRET = "test-client-secret";
+  process.env.YOUTUBE_REDIRECT_URI = "http://127.0.0.1/api/youtube/callback";
+  process.env.APP_SESSION_SECRET = "test-session-secret-0123456789abcdefghij";
+  try {
+    const payload = Buffer.from("not-a-real-video");
+    const send = headers => call("/api/youtube/upload", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "video/mp4", "x-confirm-upload": "yes" }, headers),
+      body: payload,
+    });
+
+    const badCategory = await send({ "x-video-title": "t", "x-video-category": "abc" });
+    assert.equal(badCategory.status, 400, "invalid categoryId must be refused");
+    assert.match((await badCategory.json()).error, /categoryId/);
+
+    const longTags = Array.from({ length: 30 }, () => "x".repeat(60)).join(",");
+    const tooManyTags = await send({ "x-video-title": "t", "x-video-tags": longTags });
+    assert.equal(tooManyTags.status, 400, "tags over 500 characters must be refused");
+    assert.match((await tooManyTags.json()).error, /Tags/);
+
+    // Valid metadata passes validation and stops at "no channel connected",
+    // which proves the guard does not block legitimate uploads.
+    const valid = await send({ "x-video-title": "t", "x-video-category": "22", "x-video-tags": "a,b" });
+    assert.equal(valid.status, 401, "valid metadata must get past validation");
+
+    assert.deepEqual(networkCalls, [], "none of these uploads may reach Google");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
