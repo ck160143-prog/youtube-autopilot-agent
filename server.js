@@ -1030,6 +1030,41 @@ function normalizeYoutubeTags(tags) {
   return { tags: cleaned, length, ok: length <= 500 };
 }
 
+// Scheduling: YouTube has no scheduler endpoint. `status.publishAt` (RFC 3339,
+// UTC) is the only mechanism, and Google accepts it ONLY while
+// status.privacyStatus is "private" — public/unlisted + publishAt returns
+// invalidPublishAt (400), and a video that has been public once can never be
+// scheduled again. A past timestamp publishes immediately instead of erroring,
+// so it is rejected here rather than silently going live.
+const SCHEDULE_MIN_LEAD_MS = 5 * 60 * 1000;
+
+function validateScheduleAt(value, now = Date.now()) {
+  if (value === undefined || value === null || value === "") {
+    return { ok: true, publishAt: null, reason: null };
+  }
+  const text = String(value).trim();
+  const parsed = new Date(text);
+  if (!text || Number.isNaN(parsed.getTime())) {
+    return { ok: false, publishAt: null, reason: "invalid",
+      message: "publishAt की तारीख़ समझ नहीं आई। ISO 8601 (जैसे 2026-12-01T09:00:00Z) भेजें।" };
+  }
+  // 5 minutes of slack: a schedule a few seconds out would publish immediately.
+  if (parsed.getTime() < now + SCHEDULE_MIN_LEAD_MS) {
+    return { ok: false, publishAt: null, reason: "past",
+      message: "publishAt आज से कम से कम " + (SCHEDULE_MIN_LEAD_MS / 60000) + " मिनट आगे होना चाहिए। बीता समय YouTube तुरंत publish कर देता है।" };
+  }
+  return { ok: true, publishAt: parsed.toISOString(), reason: null };
+}
+
+// Builds the `status` block for videos.insert. Scheduling forces private until
+// the scheduled moment, which is exactly what Google requires; the caller never
+// gets to send public + publishAt.
+function buildVideoStatus({ privacy, publishAt }) {
+  const base = { selfDeclaredMadeForKids: false };
+  if (!publishAt) return { ...base, privacyStatus: privacy };
+  return { ...base, privacyStatus: "private", publishAt };
+}
+
 // Upload preflight: everything the real upload would check, minus the upload.
 // It never calls Google's upload endpoints; the only optional network call is a
 // read-only channels.list when `verifyToken` is requested.
@@ -1101,6 +1136,13 @@ app.post("/api/youtube/upload/preflight", async (req, res) => {
   // upload, so it is validated here where nothing is published.
   const categoryId = String(body.categoryId || process.env.DEFAULT_YOUTUBE_CATEGORY_ID || "22");
   push("CATEGORY", /^[0-9]{1,3}$/.test(categoryId), "categoryId: " + categoryId);
+  const schedule = validateScheduleAt(body.publishAt);
+  push("SCHEDULE", schedule.ok,
+    schedule.ok
+      ? (schedule.publishAt
+        ? "निर्धारित: " + schedule.publishAt + " (private रहेगा, तब public होगा)"
+        : "कोई schedule नहीं — अभी upload होगा")
+      : schedule.message);
   push("TITLE", title.length > 0 && title.length <= 100, title ? title.length + "/100 अक्षर" : "title जरूरी है");
   push("DESCRIPTION", description.length <= 5000, description.length + "/5000 अक्षर");
   push("PRIVACY", ["private", "unlisted", "public"].includes(privacy), "privacy: " + privacy);
@@ -1135,6 +1177,8 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
   // right shelf for a Hindi kids' cartoon channel, and is a valid default.
   let categoryId = String(req.headers["x-video-category"] || process.env.DEFAULT_YOUTUBE_CATEGORY_ID || "22");
   let tags = String(req.headers["x-video-tags"] || "").split(",").map(t => t.trim()).filter(Boolean);
+  // ISO timestamps are ASCII, so a header is fine; the meta blob can also carry it.
+  let publishAtInput = req.headers["x-video-publish-at"];
   // Non-Latin-1 text (Hindi titles/descriptions) cannot travel in an HTTP
   // header: browsers reject header values above 0xFF before the request is
   // sent. Metadata therefore also accepts a base64 JSON blob.
@@ -1147,6 +1191,7 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       if (typeof meta.privacy === "string") privacy = meta.privacy;
       if (Array.isArray(meta.tags)) tags = meta.tags.map(t => String(t).slice(0, 60)).slice(0, 30);
       if (meta.categoryId !== undefined) categoryId = String(meta.categoryId).trim().slice(0, 3);
+      if (meta.publishAt !== undefined) publishAtInput = meta.publishAt;
     } catch (_) {
       return res.status(400).json({ error: "Video metadata decode नहीं हुई।" });
     }
@@ -1166,6 +1211,9 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
     return res.status(400).json({ error: "Tags YouTube सीमा से बड़े हैं (कुल 500 अक्षर तक)। कुछ tags हटाएँ।" });
   }
   tags = prepared.tags;
+  const schedule = validateScheduleAt(publishAtInput);
+  if (!schedule.ok) return res.status(400).json({ error: schedule.message, code: "INVALID_PUBLISH_AT" });
+  const statusBlock = buildVideoStatus({ privacy, publishAt: schedule.publishAt });
   try {
     const token = await getYoutubeAccessToken(req, res);
     if (!token) return;
@@ -1181,7 +1229,7 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
           categoryId,
           ...(tags.length ? { tags } : {}),
         },
-        status: { privacyStatus: privacy, selfDeclaredMadeForKids: false },
+        status: statusBlock,
       })
     });
     if (!init.ok) {
@@ -1201,7 +1249,14 @@ app.post("/api/youtube/upload", express.raw({ type: "video/*", limit: "90mb" }),
       safeLog("YouTube video transfer failed", { status: uploaded.status });
       return res.status(502).json({ error: result.error?.message || "YouTube वीडियो upload पूरा नहीं हुआ।" });
     }
-    return res.json({ success: true, videoId: result.id, url: "https://youtu.be/" + result.id, privacy });
+    return res.json({
+      success: true,
+      videoId: result.id,
+      url: "https://youtu.be/" + result.id,
+      // When a schedule is set, Google keeps the video private until publishAt.
+      privacy: statusBlock.privacyStatus,
+      publishAt: statusBlock.publishAt || null,
+    });
   } catch (error) {
     safeLog("YouTube upload failed", error);
     return res.status(502).json({ error: "YouTube upload विफल हुआ। Render logs में सुरक्षित status जाँचें।" });
@@ -2380,4 +2435,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, normalizeYoutubeTags, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };

@@ -423,6 +423,8 @@ function showUploadForm() {
     '<label>YouTube Title</label><input id="ytTitle" maxlength="100" placeholder="वीडियो का शीर्षक">' +
     '<label>Description</label><textarea id="ytDescription" maxlength="5000" placeholder="वीडियो विवरण"></textarea>' +
     '<label>Privacy</label><select id="ytPrivacy"><option value="private">Private (पहले यही चुनें)</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select>' +
+    '<label>Schedule (वैकल्पिक) — कब public हो</label><input id="ytPublishAt" type="datetime-local">' +
+    '<p class="small">खाली छोड़ें = अभी upload। तारीख़ भरने पर वीडियो private upload होगा और YouTube उसे उस समय public करेगा (YouTube नियम: scheduled वीडियो तब तक private रहता है)। बीता समय स्वीकार नहीं होगा।</p>' +
     '<label>वीडियो फ़ाइल (MP4/MOV/WebM, 90 MB तक)</label><input id="ytVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm">' +
     '<button id="ytUploadButton" class="green" onclick="uploadVideoToYouTube()">⬆️ अभी YouTube पर अपलोड करें</button>' +
     '<p id="ytUploadResult" class="status" role="status">फ़ाइल चुनकर Upload दबाएँ।</p>';
@@ -441,7 +443,16 @@ function b64utf8(text) {
   return btoa(unescape(encodeURIComponent(String(text == null ? "" : text))));
 }
 function videoMetaHeader(title, description, privacy) {
-  return b64utf8(JSON.stringify({ title: title, description: description, privacy: privacy }));
+  var meta = { title: title, description: description, privacy: privacy };
+  // Schedule: YouTube has no scheduler endpoint. status.publishAt (UTC) is the
+  // only mechanism and it only works while the video is private, so the server
+  // forces private until that moment and rejects a past time.
+  var when = document.getElementById('ytPublishAt');
+  if (when && when.value) {
+    var parsed = new Date(when.value);
+    if (!isNaN(parsed.getTime())) meta.publishAt = parsed.toISOString();
+  }
+  return b64utf8(JSON.stringify(meta));
 }
 
 async function uploadRenderedVideo() {
@@ -461,7 +472,8 @@ async function uploadRenderedVideo() {
       'Content-Type':'video/mp4','X-Confirm-Upload':'yes','X-Video-Meta-B64':videoMetaHeader(title,document.getElementById('ytDescription').value,privacy)
     },body:lastRenderedVideoBlob});
     var data=await readApiJson(response);if(!response.ok)throw new Error(data.error||'Upload विफल।');
-    result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy;
+    result.textContent='✅ Upload सफल: '+data.url+' | Privacy: '+data.privacy+
+      (data.publishAt?' | '+new Date(data.publishAt).toLocaleString('hi-IN')+' पर public होगा':'');
   }catch(error){result.textContent='❌ '+(error.message||'Upload failed');}
   finally{if(button)button.disabled=false;}
 }
@@ -483,7 +495,8 @@ async function uploadVideoToYouTube() {
       'X-Video-Meta-B64':videoMetaHeader(title,document.getElementById('ytDescription').value,document.getElementById('ytPrivacy').value)
     }, body:file });
     var data = await readApiJson(response); if (!response.ok) throw new Error(data.error || 'Upload नहीं हो सका।');
-    result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy;
+    result.textContent = '✅ Upload सफल: ' + data.url + ' | Privacy: ' + data.privacy +
+      (data.publishAt ? ' | ' + new Date(data.publishAt).toLocaleString('hi-IN') + ' पर public होगा' : '');
   } catch(error) { result.textContent = '❌ ' + (error.message || 'Upload failed'); }
   finally { button.disabled = false; }
 }
