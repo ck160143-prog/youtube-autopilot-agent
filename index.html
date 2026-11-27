@@ -153,6 +153,9 @@ input,select,textarea{font-size:16px}
 <p id="channelStatus" class="status">अभी चैनल कनेक्ट नहीं है।</p>
 <button onclick="connectYouTube()">🔗 YouTube चैनल Connect करें</button><button class="secondary" onclick="refreshYouTubeStatus()">🔄 कनेक्शन स्थिति जाँचें</button>
 <p class="small">वास्तविक चैनल कनेक्शन के लिए Google OAuth और YouTube API सेटअप जरूरी है।</p>
+<button class="secondary" id="analyticsBtn" onclick="loadAnalytics()">📈 Analytics देखें (पिछले 29 दिन)</button>
+<p id="analyticsStatus" class="status" role="status"></p>
+<div id="analyticsPanel"></div>
 </div>
 
 <div class="card">
@@ -370,6 +373,58 @@ async function refreshConnectionStatus() {
   }
   if (top) top.textContent = message + ' · ' + stamp;
   if (setup) setup.textContent = 'YouTube OAuth — ' + message + ' · ' + stamp;
+}
+
+async function loadAnalytics() {
+  var status = document.getElementById('analyticsStatus');
+  var panel = document.getElementById('analyticsPanel');
+  var button = document.getElementById('analyticsBtn');
+  if (button) button.disabled = true;
+  status.textContent = 'YouTube Analytics पढ़ा जा रहा है…';
+  panel.replaceChildren();
+  try {
+    var response = await fetch('/api/youtube/analytics');
+    var data = await readApiJson(response);
+    if (!response.ok) {
+      status.textContent = '❌ ' + (data.error || 'Analytics नहीं पढ़ा जा सका।');
+      return;
+    }
+    var totals = data.totals || {};
+    var rows = [
+      ['व्यूज़', totals.views || 0],
+      ['देखने का समय (मिनट)', Math.round(totals.estimatedMinutesWatched || 0)],
+      ['औसत व्यू अवधि (सेकंड)', Math.round(totals.averageViewDuration || 0)],
+      ['नए subscribers', totals.subscribersGained || 0],
+      ['लाइक्स', totals.likes || 0],
+    ];
+    var table = document.createElement('table');
+    table.className = 'analytics-table';
+    var caption = document.createElement('caption');
+    caption.textContent = data.startDate + ' से ' + data.endDate + ' तक';
+    table.appendChild(caption);
+    rows.forEach(function (pair) {
+      var tr = document.createElement('tr');
+      var th = document.createElement('th');
+      th.textContent = pair[0];
+      var td = document.createElement('td');
+      td.textContent = String(pair[1]);
+      tr.append(th, td);
+      table.appendChild(tr);
+    });
+    panel.appendChild(table);
+    var note = document.createElement('p');
+    note.className = 'small';
+    note.textContent = data.note || '';
+    panel.appendChild(note);
+    // No data is a real answer, not an error: say so instead of showing zeros.
+    status.textContent = (data.entries && data.entries.length)
+      ? '✅ Analytics मिल गया (' + data.entries.length + ' दिन का डेटा)।'
+      : 'इस अवधि में कोई डेटा नहीं मिला (नया चैनल/कोई व्यू नहीं)। नीचे 0 दिख रहे हैं — यह त्रुटि नहीं है।';
+  } catch (error) {
+    status.textContent = '❌ ' + (error.message || 'Analytics failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function refreshYouTubeStatus() { return refreshConnectionStatus(); }

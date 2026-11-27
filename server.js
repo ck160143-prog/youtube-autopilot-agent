@@ -962,7 +962,7 @@ app.get("/api/youtube/connect", (req, res) => {
     client_id: process.env.YOUTUBE_CLIENT_ID,
     redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
     response_type: "code",
-    scope: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+    scope: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly " + ANALYTICS_SCOPE,
     access_type: "offline",
     prompt: "consent",
     state
@@ -1003,7 +1003,7 @@ app.get("/api/youtube/callback", async (req, res) => {
       clearYoutubeSession(res);
       return res.status(502).send("Google login सफल हुआ, लेकिन YouTube चैनल सत्यापित नहीं हो सका। YouTube Data API v3 और खाते की अनुमति जाँचें, फिर Connect दोबारा करें।");
     }
-    setYoutubeSession(res, { access_token: tokens.access_token,
+    setYoutubeSession(res, { scope: String(tokens.scope || ""), access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || oldSession.refresh_token,
       expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
       channel: { id: channel.id, title: channel.snippet?.title || "" } });
@@ -1013,6 +1013,77 @@ app.get("/api/youtube/callback", async (req, res) => {
     return res.status(502).send("YouTube OAuth callback failed.");
   }
 });
+// Read-only channel analytics. Never writes anything to YouTube and never
+// stores the report; the numbers are returned to the owner's browser only.
+app.get("/api/youtube/analytics", async (req, res) => {
+  const linked = decryptSession(req);
+  if (!linked || !linked.access_token) {
+    return res.status(409).json({
+      error: "पहले YouTube चैनल Connect करें।",
+      code: "CHANNEL_NOT_CONNECTED",
+    });
+  }
+  // A connection made before the analytics scope existed has no consent for it.
+  // Google answers 403; say that plainly rather than blaming the server.
+  const scopeText = String(linked.scope || "");
+  if (scopeText && !scopeText.includes("yt-analytics.readonly")) {
+    return res.status(409).json({
+      error: "इस connection में Analytics की अनुमति नहीं है। 'Chैनल फिर Connect करें' दबाएँ (नई अनुमति माँगी जाएगी)। Upload पहले की तरह काम करता रहेगा।",
+      code: "ANALYTICS_SCOPE_MISSING",
+    });
+  }
+  const range = validateAnalyticsRange(req.query.startDate, req.query.endDate);
+  if (!range.ok) {
+    return res.status(400).json({ error: range.message, code: "INVALID_RANGE", reason: range.reason });
+  }
+  try {
+    const token = await getYoutubeAccessToken(req, res);
+    if (!token) return;
+    const url = "https://youtubeanalytics.googleapis.com/v2/reports?" + new URLSearchParams({
+      ids: "channel==MINE",
+      startDate: range.startDate,
+      endDate: range.endDate,
+      metrics: ANALYTICS_METRICS.join(","),
+      dimensions: "day",
+      sort: "day",
+    }).toString();
+    const response = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      safeLog("YouTube analytics query failed", { status: response.status });
+      const detail = payload && payload.error && payload.error.message ? String(payload.error.message).slice(0, 160) : "";
+      if (response.status === 403) {
+        return res.status(409).json({
+          error: "Analytics की अनुमति नहीं मिली। चैनल फिर Connect करें।",
+          code: "ANALYTICS_SCOPE_MISSING",
+        });
+      }
+      return res.status(502).json({ error: redactSecrets("Analytics query विफल (HTTP " + response.status + ")। " + detail).trim() });
+    }
+    const shaped = shapeAnalyticsReport(payload);
+    return res.json({
+      channel: linked.channel || null,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      days: range.days,
+      ...shaped,
+      // Honest labelling: YouTube's analytics data lags 24-72 hours.
+      note: "YouTube Analytics में 24–72 घंटे की देरी होती है; हाल के दिन अधूरे हो सकते हैं।",
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      return res.status(503).json({
+        error: "YouTube Analytics तक पहुँच नहीं बनी (network/DNS/TLS)।",
+        code: "NETWORK_UNREACHABLE",
+        reason: networkErrorDetail(error),
+      });
+    }
+    safeLog("YouTube analytics failed", error);
+    return res.status(502).json({ error: "Analytics नहीं पढ़ा जा सका।" });
+  }
+});
+
 app.post("/api/youtube/disconnect", (req, res) => {
   clearYoutubeSession(res);
   return res.json({ success: true });
@@ -1063,6 +1134,74 @@ function buildVideoStatus({ privacy, publishAt }) {
   const base = { selfDeclaredMadeForKids: false };
   if (!publishAt) return { ...base, privacyStatus: privacy };
   return { ...base, privacyStatus: "private", publishAt };
+}
+
+// ---- YouTube Analytics (read-only) --------------------------------------
+// reports.query needs BOTH scopes: youtube.readonly (already requested for the
+// channel check) and yt-analytics.readonly. A connection made before this scope
+// existed keeps working for uploads; analytics simply reports that it needs a
+// fresh consent, instead of looking like a server fault.
+
+const ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly";
+const ANALYTICS_METRICS = ["views", "estimatedMinutesWatched", "averageViewDuration", "subscribersGained", "likes"];
+
+function isoDay(date) {
+  return new Date(date).toISOString().slice(0, 10);
+}
+
+// startDate/endDate are inclusive; YouTube refuses a range that starts today
+// because the current day is still being processed (data lags 24-72 hours).
+function validateAnalyticsRange(startDate, endDate, now = Date.now()) {
+  const fallbackEnd = isoDay(now - 24 * 3600 * 1000);
+  const fallbackStart = isoDay(now - 29 * 24 * 3600 * 1000);
+  const start = startDate ? String(startDate).trim() : fallbackStart;
+  const end = endDate ? String(endDate).trim() : fallbackEnd;
+  const pattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (!pattern.test(start) || !pattern.test(end)) {
+    return { ok: false, reason: "format", message: "तारीख़ YYYY-MM-DD रूप में भेजें।" };
+  }
+  const startMs = Date.parse(start + "T00:00:00Z");
+  const endMs = Date.parse(end + "T00:00:00Z");
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+    return { ok: false, reason: "format", message: "तारीख़ मान्य नहीं है।" };
+  }
+  if (endMs < startMs) {
+    return { ok: false, reason: "order", message: "endDate, startDate से पहले नहीं हो सकती।" };
+  }
+  if (endMs > now - 24 * 3600 * 1000) {
+    return { ok: false, reason: "future", message: "Analytics में 24–72 घंटे की देरी होती है; endDate कल या उससे पहले रखें।" };
+  }
+  const days = Math.round((endMs - startMs) / (24 * 3600 * 1000)) + 1;
+  if (days > 366) {
+    return { ok: false, reason: "range", message: "एक बार में अधिकतम 366 दिन।" };
+  }
+  return { ok: true, startDate: start, endDate: end, days };
+}
+
+// Turns reports.query's column/row shape into named rows. Returns [] for a
+// channel with no views in range, which is a valid answer, not an error.
+function shapeAnalyticsReport(report) {
+  const headers = (report && report.columnHeaders) || [];
+  const rows = (report && report.rows) || [];
+  const columns = headers.map(h => h && h.name);
+  const entries = rows.map(row => {
+    const entry = {};
+    columns.forEach((name, index) => { entry[name] = row[index]; });
+    return entry;
+  });
+  const totals = {};
+  for (const metric of ANALYTICS_METRICS) {
+    const at = columns.indexOf(metric);
+    if (at === -1) continue;
+    // Average metrics must not be summed across days.
+    if (metric === "averageViewDuration") {
+      const values = entries.map(e => Number(e[metric])).filter(Number.isFinite);
+      totals[metric] = values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0;
+    } else {
+      totals[metric] = entries.reduce((sum, e) => sum + (Number(e[metric]) || 0), 0);
+    }
+  }
+  return { columns, entries, totals };
 }
 
 // Upload preflight: everything the real upload would check, minus the upload.
@@ -2435,4 +2574,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
