@@ -2230,6 +2230,8 @@ try {
       (project.sceneCount || '?') + ' दृश्य · ' + (project.aspect || '16:9') + ' · ' + (project.quality || '720p');
     node.appendChild(meta);
 
+    node.appendChild(renderStageControls(project));
+
     if (project.error) {
       var errorBox = document.createElement('p');
       errorBox.className = 'status error-status';
@@ -2415,6 +2417,51 @@ try {
       box.textContent = (error.blocked ? 'BLOCKED: ' : '') + (error.message || 'Thumbnail नहीं बनी।');
     }
   };
+
+  // Re-run a single pipeline stage for the open project. These call the same
+  // routes the one-click flow uses, so there is one implementation of each step.
+  // They exist because a failed assets or render step otherwise leaves the user
+  // with nothing to do but start the whole paid generation again.
+  P2.runStage = async function (stage, label) {
+    if (!currentId) return;
+    if (stage === 'story') {
+      var ok = typeof window.confirm === 'function'
+        ? window.confirm('कहानी दोबारा लिखने पर पुराने दृश्यों की images और आवाज़ हट जाएँगी (अगली बार फिर बनेंगी)। आगे बढ़ें?')
+        : true;
+      if (!ok) return;
+    }
+    setStatus((label || stage) + ' चल रहा है…');
+    try {
+      await P2.api('/api/projects/' + encodeURIComponent(currentId) + '/' + stage, { method: 'POST' });
+      setStatus('✅ ' + (label || stage) + ' शुरू हो गया — प्रगति नीचे दिखेगी।');
+      await P2.refreshProject();
+    } catch (error) {
+      setStatus((error.blocked ? 'BLOCKED: ' : '') + (error.message || 'शुरू नहीं हो सका।'), true);
+    }
+  };
+
+  function renderStageControls(project) {
+    var row = document.createElement('div');
+    row.id = 'p2StageControls';
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin:10px 0';
+    var running = Boolean(RUNNING[project.status]);
+    var stages = [
+      { id: 'story', label: '✍️ सिर्फ़ कहानी फिर लिखें', needs: true },
+      { id: 'assets', label: '🖼️ सिर्फ़ images + आवाज़ बनाएँ', needs: Boolean(project.story) },
+      { id: 'render', label: '🎬 सिर्फ़ MP4 फिर बनाएँ', needs: Boolean(project.story) },
+    ];
+    stages.forEach(function (stage) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = stage.label;
+      button.disabled = running || !stage.needs;
+      if (!stage.needs) button.title = 'पहले कहानी बनाएँ';
+      button.addEventListener('click', function () { P2.runStage(stage.id, stage.label); });
+      row.appendChild(button);
+    });
+    return row;
+  }
 
   P2.retryScene = async function (index) {
     if (!currentId) return;
