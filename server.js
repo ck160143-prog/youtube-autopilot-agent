@@ -22,7 +22,7 @@ if (!fs.existsSync(path.join(distDir, "index.html"))) {
 
 /* ---- Phase 3: sessions, CSRF, rate limiting ---- */
 const {
-  AuthStore, sessionMiddleware, requireAuth, csrfMiddleware,
+  AuthStore, sessionMiddleware, requireAuth, requireOwner, csrfMiddleware,
   cookieHeader, clearCookieHeader, readCookie, SESSION_COOKIE,
 } = require("./lib/auth");
 const { createRateLimiter } = require("./lib/ratelimit");
@@ -40,23 +40,41 @@ app.use("/api", sessionMiddleware(authStore));
 app.use("/api", rateLimit);
 app.use("/api", csrfMiddleware());
 
-// Public endpoints: liveness, auth status, login/register and the OAuth
-// redirect targets (which carry their own state validation).
+// Public endpoints: liveness, auth status and the OAuth redirect target, which
+// carries its own state validation. Login is public by necessity; registration
+// is handled inside the route because it must be closed by default.
 const PUBLIC_API_PATHS = new Set([
   "/health", "/auth/status", "/auth/login", "/auth/register", "/youtube/callback",
 ]);
+// About your own session, not about private data: a signed-in non-owner must be
+// able to find out that they are signed in and to sign out, otherwise they are
+// trapped in a login loop with no explanation.
+const SESSION_ONLY_PATHS = new Set(["/auth/me", "/auth/logout"]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API_PATHS.has(req.path)) return next();
   if (req.path === "/youtube/connect" && !req.user) {
     return res.redirect("/?login=1");
   }
-  return requireAuth(req, res, next);
+  if (SESSION_ONLY_PATHS.has(req.path)) return requireAuth(req, res, next);
+  // Owner-only private access: being signed in is not enough, the account must
+  // be the owner. Every private route sits behind this one gate, so a second
+  // account (or a compromised member account) reaches nothing, not even the
+  // setup or capabilities endpoints.
+  return requireOwner(req, res, next);
 });
 
 app.get("/api/auth/status", (req, res) => {
+  const signup = authStore.signupState();
   return res.json({
     authenticated: Boolean(req.user),
-    registrationOpen: authStore.userCount() === 0 || Boolean(process.env.APP_REGISTRATION_KEY),
+    // Registration is open only for the bootstrap owner or when an operator
+    // explicitly opened signup; a configured key no longer implies signup.
+    registrationOpen: signup.registrationOpen,
+    bootstrap: signup.bootstrap,
+    // Whether this instance is actually private yet: it is not, until an owner
+    // exists. The dashboard shows this so a fresh deployment is not mistaken
+    // for a locked one.
+    privateAccess: authStore.hasOwner(),
     user: req.user || null,
   });
 });
@@ -66,15 +84,20 @@ app.post("/api/auth/register", (req, res) => {
     const { username, password, registrationKey } = req.body || {};
     const user = authStore.register({ username, password, registrationKey });
     if (user.role === "owner") {
-      // First account adopts everything created before authentication existed.
-      projectStore.adoptOwner(user.id);
-      characterLibrary.adoptOwner(user.id);
+      // The first account adopts everything created before authentication
+      // existed. Same helper as startup so the two paths cannot diverge.
+      adoptLegacyRecords();
     }
     const session = authStore.createSession(user.id);
     res.setHeader("Set-Cookie", cookieHeader(session.id));
     return res.status(201).json({ user, csrfToken: session.csrfToken });
   } catch (error) {
-    return res.status(error.statusCode || 400).json({ error: error.message || "Account नहीं बना।" });
+    // The code travels with the message so the dashboard can distinguish "signup
+    // is closed" from "that username is taken" without parsing Hindi text.
+    return res.status(error.statusCode || 400).json({
+      error: error.message || "Account नहीं बना।",
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 });
 
@@ -98,7 +121,17 @@ app.post("/api/auth/logout", requireAuth, (req, res) => {
 });
 
 app.get("/api/auth/me", requireAuth, (req, res) => {
-  return res.json({ user: req.user, csrfToken: req.session ? req.session.csrfToken : null });
+  // access is reported so the dashboard can explain a signed-in non-owner
+  // instead of leaving them guessing why every request is refused.
+  const access = req.user.role === "owner" ? "owner" : "owner-only-denied";
+  return res.json({
+    user: req.user,
+    csrfToken: req.session ? req.session.csrfToken : null,
+    access,
+    message: access === "owner"
+      ? null
+      : "यह instance owner-only है। आपका account साइन-इन है, पर private data तक पहुँच नहीं है।",
+  });
 });
 
 // Optional access gate for a personal deployment. Off unless APP_ACCESS_KEY is
@@ -1602,7 +1635,9 @@ app.post("/api/render", async (req, res) => {
 app.get("/api/render/status/:jobId", (req, res) => {
   const job = jobQueue.get(req.params.jobId);
   // Another user's job id must be indistinguishable from an unknown one.
-  if (!job || (job.ownerId && job.ownerId !== req.user.id)) {
+  // A job with no recorded owner belongs to the instance owner, never to whoever
+  // happens to ask first.
+  if (!job || !ownsRecord(req, job)) {
     return res.status(404).json({ error: "Render job नहीं मिला।" });
   }
   return res.json({ jobId: job.id, status: job.status, error: job.error, size: job.result && job.result.size,
@@ -1612,7 +1647,9 @@ app.get("/api/render/status/:jobId", (req, res) => {
 
 app.get("/api/render/download/:jobId", (req, res) => {
   const job = jobQueue.get(req.params.jobId);
-  if (!job || (job.ownerId && job.ownerId !== req.user.id)) {
+  // A job with no recorded owner belongs to the instance owner, never to whoever
+  // happens to ask first.
+  if (!job || !ownsRecord(req, job)) {
     return res.status(404).json({ error: "Render job नहीं मिला।" });
   }
   if (job.status !== "completed" || !job.result || !job.result.outputPath) {
@@ -1643,6 +1680,22 @@ const { ProjectStore, createProject } = require("./lib/projects");
 const projectStore = new ProjectStore({ root: path.join(dataRoot, "projects") });
 const recoveredProjects = projectStore.recoverInterrupted();
 if (recoveredProjects) console.log("Resumed " + recoveredProjects + " interrupted project(s) from disk");
+
+// Records written before authentication existed have no owner. They used to be
+// visible to every account; now that access is fail-closed they would be visible
+// to nobody and the owner would silently lose their own work. Stamp them with the
+// owner's id as soon as an owner exists — at startup for an existing instance,
+// and in the register route for the bootstrap account.
+function adoptLegacyRecords() {
+  const ownerId = authStore.ownerId();
+  if (!ownerId) return;
+  const projects = projectStore.adoptOwner(ownerId);
+  const characters = characterLibrary.adoptOwner(ownerId);
+  if (projects || characters) {
+    console.log("Adopted " + projects + " project(s) and " + characters + " character(s) into the owner account");
+  }
+}
+adoptLegacyRecords();
 
 const storyEngine = require("./lib/story");
 const timelineEngine = require("./lib/timeline");
@@ -1733,13 +1786,28 @@ function geminiProviders() {
 
 // Every project lookup goes through here so one user can never read, render or
 // delete another user's project.
+// Ownership is fail-closed. Before this, a record with no ownerId was readable
+// and deletable by ANY signed-in account ("ownerId && ownerId !== me"), which is
+// a straight IDOR for every project restored from an older backup or written
+// before authentication existed. Now a missing owner means the instance owner,
+// because that is who those records belong to.
+function ownsRecord(req, record) {
+  if (!record || !req.user) return false;
+  // Defence in depth: the owner gate already refuses non-owners, but this rule
+  // must not depend on that gate staying where it is. A member whose own id
+  // happens to be stamped on a record still owns nothing.
+  if (req.user.role !== "owner") return false;
+  const owner = record.ownerId || authStore.ownerId();
+  return Boolean(owner) && owner === req.user.id;
+}
+
 function ownedProjectById(req, res, id) {
   const project = projectStore.get(id);
   if (!project) {
     res.status(404).json({ error: "प्रोजेक्ट नहीं मिला।" });
     return null;
   }
-  if (project.ownerId && project.ownerId !== req.user.id) {
+  if (!ownsRecord(req, project)) {
     res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
     return null;
   }
@@ -1752,7 +1820,7 @@ function ownedProject(req, res) {
     res.status(404).json({ error: "प्रोजेक्ट नहीं मिला।" });
     return null;
   }
-  if (project.ownerId && project.ownerId !== req.user.id) {
+  if (!ownsRecord(req, project)) {
     res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
     return null;
   }
@@ -1986,7 +2054,7 @@ app.post("/api/characters", (req, res) => {
 
 app.delete("/api/characters/:id", (req, res) => {
   const character = characterLibrary.get(req.params.id);
-  if (!character || (character.ownerId && character.ownerId !== req.user.id)) {
+  if (!character || !ownsRecord(req, character)) {
     return res.status(404).json({ error: "किरदार नहीं मिला।" });
   }
   characterLibrary.remove(req.params.id);
@@ -2016,7 +2084,7 @@ function decodeSprite(value) {
 
 function ownedCharacter(req, res) {
   const character = characterLibrary.get(req.params.id);
-  if (!character || (character.ownerId && character.ownerId !== req.user.id)) {
+  if (!character || !ownsRecord(req, character)) {
     res.status(404).json({ error: "किरदार नहीं मिला।" });
     return null;
   }
@@ -2651,11 +2719,11 @@ app.post("/api/projects/:id/restore", async (req, res) => {
   try {
     // Read the manifest first: it is the only proof of who owns this backup.
     const manifest = await storageLib.readManifest(backupStorage, id);
-    if (manifest.ownerId && manifest.ownerId !== req.user.id) {
+    if (!ownsRecord(req, manifest)) {
       return res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
     }
     const existing = projectStore.get(id);
-    if (existing && existing.ownerId && existing.ownerId !== req.user.id) {
+    if (existing && !ownsRecord(req, existing)) {
       return res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
     }
     const result = await storageLib.restoreProject(backupStorage, id, { dataDir: dataRoot });
@@ -2854,4 +2922,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, googleFetch, uploadFetch, GOOGLE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, ownsRecordForTests: (req, record) => ownsRecord(req, record), googleFetch, uploadFetch, GOOGLE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };

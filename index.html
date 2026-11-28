@@ -116,12 +116,14 @@ input,select,textarea{font-size:16px}
     <p id="authGateMessage" class="status">अपना account चुनें।</p>
     <input id="authUsername" placeholder="username (3–32 अक्षर, a-z 0-9 _)" autocomplete="username">
     <input id="authPassword" type="password" placeholder="password (कम से कम 10 अक्षर)" autocomplete="current-password">
-    <input id="authRegKey" placeholder="registration key (सिर्फ नए account के लिए)" autocomplete="off">
+    <div id="authRegisterFields" hidden>
+      <input id="authRegKey" placeholder="registration key (सिर्फ नए account के लिए)" autocomplete="off">
+    </div>
     <div class="auth-actions">
       <button id="authLoginBtn">→ साइन इन</button>
-      <button id="authRegisterBtn" class="secondary">नया account बनाएँ</button>
+      <button id="authRegisterBtn" class="secondary" hidden>नया account बनाएँ</button>
     </div>
-    <p class="auth-note">पहला account मालिक (owner) बनता है और पहले से बने प्रोजेक्ट उसी को मिलते हैं। उसके बाद नया account सिर्फ <code>APP_REGISTRATION_KEY</code> से खुलता है।</p>
+    <p class="auth-note" id="authAccessNote">यह निजी (owner-only) instance है — सिर्फ मालिक का account अंदर आ सकता है।</p>
   </div>
 </div>
 <header>
@@ -2477,6 +2479,33 @@ try {
     return row;
   }
 
+  // Reflect the server's real signup state instead of always offering a signup
+  // form. Owner-only access means the button normally does not exist at all.
+  async function refreshAccessState() {
+    var note = el('authAccessNote');
+    var button = el('authRegisterBtn');
+    var fields = el('authRegisterFields');
+    try {
+      var response = await fetch('/api/auth/status');
+      var data = await response.json();
+      var open = Boolean(data && data.registrationOpen);
+      if (button) button.hidden = !open;
+      if (fields) fields.hidden = !open;
+      if (note) {
+        note.textContent = data && data.bootstrap
+          ? 'पहला account मालिक (owner) बनेगा। साइन इन करने के बाद यह instance निजी हो जाएगा।'
+          : (open
+            ? 'नया account सिर्फ मालिक द्वारा खोला जा सकता है (registration key जरूरी है)।'
+            : 'यह निजी (owner-only) instance है — सिर्फ मालिक का account अंदर आ सकता है। नया signup बंद है।');
+      }
+    } catch (_) {
+      // If the state cannot be read, keep signup hidden: closed is the safe side.
+      if (button) button.hidden = true;
+      if (fields) fields.hidden = true;
+    }
+  }
+  window.babaRefreshAccessState = refreshAccessState;
+
   P2.retryScene = async function (index) {
     if (!currentId) return;
     setStatus('दृश्य ' + index + ' दोबारा बनाया जा रहा है…');
@@ -2632,6 +2661,8 @@ try {
 
   function showGate(message) {
     if (gate()) gate().hidden = false;
+    // Ask the server whether signup is open at all before showing its button.
+    if (typeof window.babaRefreshAccessState === 'function') window.babaRefreshAccessState();
     if (bar()) bar().hidden = true;
     if (message && el('authGateMessage')) {
       el('authGateMessage').textContent = message;

@@ -21,9 +21,10 @@ test("a deleted project comes back through POST /restore", async t => {
   process.env.DATA_DIR = dataDir;
   process.env.STORAGE_LOCAL_DIR = backupDir;
   process.env.APP_SESSION_SECRET = process.env.APP_SESSION_SECRET || "restore-test-secret";
-  // A second account is needed by the ownership test; a fresh process can only
-  // register the first user without a key.
+  // The ownership test below needs a second account, which owner-only access
+  // closes by default; opening it is exactly what an operator would do.
   process.env.APP_REGISTRATION_KEY = "restore-team-key";
+  process.env.ALLOW_PUBLIC_SIGNUP = "1";
   delete require.cache[require.resolve("../server")];
   const { app } = require("../server");
 

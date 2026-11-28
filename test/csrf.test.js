@@ -79,8 +79,10 @@ test("public auth endpoints are reachable without a session or token", async () 
 });
 
 test("one user's CSRF token cannot be used with another user's cookie", async () => {
-  // Register a second account (first account already exists, so the key is needed).
+  // Register a second account (first account already exists, and public signup is
+  // closed by default, so both the operator switch and the key are needed).
   process.env.APP_REGISTRATION_KEY = "team-key";
+  process.env.ALLOW_PUBLIC_SIGNUP = "1";
   const register = await fetch(base + "/api/auth/register", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: "second_user", password: "second-pass-123", registrationKey: "team-key" }),
