@@ -76,9 +76,18 @@ test("static: capability and progress panels carry different, explicit labels", 
   assert.doesNotMatch(html, /वास्तविक स्थिति — /, "the ambiguous old capability label must be gone");
 });
 
-test("static: lip-sync BLOCKED is described as a free-mode limitation, not a bug", () => {
-  assert.match(html, /बग नहीं/, "lip-sync note must say it is not a bug");
-  assert.match(html, /Free mode में/, "lip-sync note must name the free alternative");
+test("static: the lip-sync note follows the installed engine instead of a fixed claim", () => {
+  // The old static note said lip-sync was always BLOCKED, which became false the
+  // moment the WASM engine was installed. The copy is now driven by
+  // /api/capabilities, and the behavioural coverage lives in
+  // test/ui-lipsync-status.test.js.
+  assert.match(html, /caps\.lipSync && caps\.lipSync\.available/,
+    "the note must read the real capability, not a constant");
+  assert.match(html, /P2\.lipSyncAvailable = Boolean/, "the capability must be remembered for the render panel");
+  assert.doesNotMatch(html, /Character animation और lip-sync: ⛔ BLOCKED — यह बग नहीं है/,
+    "the stale unconditional BLOCKED claim must be gone");
+  assert.match(html, /3D character animation अभी उपलब्ध नहीं है/,
+    "copy must still be honest about 3D, which really is unavailable");
 });
 
 test("static: duration copy matches the real scene plan and warns above 1 minute", () => {

@@ -1906,6 +1906,8 @@ try {
     var node = el('p2Capabilities');
     try {
       var caps = await P2.api('/api/capabilities');
+      // Remembered so the render panel can say why animation did or did not run.
+      P2.lipSyncAvailable = Boolean(caps.lipSync && caps.lipSync.available);
       var f = caps.features || {};
       var parts = [
         'कहानी ' + badge(f.story),
@@ -1920,7 +1922,11 @@ try {
       var blockedNote = document.createElement('p');
       blockedNote.className = 'small';
       blockedNote.style.color = '#ffd18a';
-      blockedNote.textContent = 'Character animation और lip-sync: ⛔ BLOCKED — यह बग नहीं है। Free mode में वीडियो generated scene images पर camera motion वाला असली MP4 है, 3D character animation नहीं। Lip-sync के लिए mouth sprites + motion provider चाहिए (optional, बिना भी वीडियो बनता है)।';
+      var lipState = caps.lipSync && caps.lipSync.available
+        ? '✅ उपलब्ध (' + caps.lipSync.source + ') — पर हर दृश्य के लिए उस बोलने वाले किरदार का rig (mouth sprites) भी चाहिए।'
+        : '⛔ BLOCKED — lip-sync engine installed नहीं है। `npm install rhubarb-lip-sync-wasm` या RHUBARB_PATH सेट करें।';
+      blockedNote.textContent = 'Lip-sync: ' + lipState +
+        ' 3D character animation अभी उपलब्ध नहीं है — वीडियो generated scene images पर camera motion वाला असली MP4 है।';
       node.appendChild(blockedNote);
       (caps.blockedReasons || []).forEach(function (reason) {
         var line = document.createElement('p');
@@ -2227,6 +2233,21 @@ try {
         ' · music: ' + (project.render.music ? project.render.music.source : 'none') + ' · ' +
         (project.render.layout ? project.render.layout.width + 'x' + project.render.layout.height : '');
       node.appendChild(info);
+
+      // Naachte honth: whether 2D lip-sync actually reached the MP4, and if not,
+      // the reason — otherwise a silent slideshow looks like a bug.
+      var lip = project.render.lipSync || { scenes: 0, cues: 0 };
+      var lipInfo = document.createElement('p');
+      lipInfo.id = 'p2LipSyncInfo';
+      lipInfo.className = 'small';
+      lipInfo.textContent = lip.scenes
+        ? '🎭 Lip-sync लगा: ' + lip.scenes + ' दृश्य, ' + lip.cues + ' मुँह cues' +
+          (lip.shapes && lip.shapes.length ? ' (' + lip.shapes.join(', ') + ')' : '')
+        : '🎭 Lip-sync नहीं लगा — वीडियो सामान्य narrated slideshow है। कारण: ' +
+          (P2.lipSyncAvailable === false
+            ? 'lip-sync engine इस deployment में installed नहीं है।'
+            : 'बोलने वाले किरदार का rig (mouth sprites) सेव नहीं है, या narration में बोलने वाला हिस्सा नहीं मिला।');
+      node.appendChild(lipInfo);
 
       var download = document.createElement('a');
       download.href = '/api/projects/' + encodeURIComponent(project.id) + '/download';
