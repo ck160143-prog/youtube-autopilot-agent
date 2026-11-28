@@ -115,3 +115,30 @@ run("a render with animation reports the real counts", async () => {
   assert.ok(/6 दृश्य/.test(line) && /12 मुँह cues/.test(line) && /B/.test(line), "got: " + line);
   dom.window.close();
 });
+
+test("a finished project offers a restore action that really calls the API", async () => {
+  const calls = [];
+  const project = {
+    id: "p3", status: "completed", topic: "t", sceneCount: 1,
+    render: { size: 1024, duration: 60, videoPath: "/tmp/x.mp4", lipSync: { scenes: 0, cues: 0 } },
+    story: { scenes: [] },
+  };
+  const dom = await boot(async (url, options) => {
+    calls.push(String(url) + " " + ((options && options.method) || "GET"));
+    if (String(url).includes("/restore")) {
+      return jsonResponse({ restored: 3, driver: "local", bytes: 2048 });
+    }
+    return jsonResponse({ projects: [project], project });
+  });
+  const w = dom.window;
+  w.p2.renderProjectList();
+  const buttons = Array.from(w.document.querySelectorAll("#p2ProjectList button"));
+  const restore = buttons.find(b => /वापस लाएँ/.test(b.textContent));
+  assert.ok(restore, "a restore control must exist for a completed project: " +
+    buttons.map(b => b.textContent).join(" | "));
+  restore.click();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.ok(calls.some(c => /\/api\/projects\/p3\/restore POST/.test(c)), "restore must hit the API: " + calls.join(" ; "));
+  assert.ok(/3 फ़ाइलें/.test(w.document.body.textContent), "the outcome must be reported");
+  dom.window.close();
+});

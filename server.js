@@ -2557,6 +2557,43 @@ app.get("/api/projects/:id/download", (req, res) => {
   return res.sendFile(path.resolve(project.render.videoPath));
 });
 
+// Bring a backed-up project back. This is the other half of backup: without it
+// a redeploy on an ephemeral filesystem still means the video is gone.
+app.post("/api/projects/:id/restore", async (req, res) => {
+  // Deliberately not ownedProject(): a restore is needed precisely when the
+  // project record is gone, so the record cannot be the authorisation check.
+  // The backup manifest carries the owner, and that is what is compared.
+  const id = String(req.params.id || "");
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) return res.status(400).json({ error: "अमान्य project id।" });
+  if (!backupStorage || (backupStorage.name === "local" && !process.env.STORAGE_LOCAL_DIR)) {
+    return res.status(503).json(blocked(
+      "Backup storage configure नहीं है, इसलिए restore BLOCKED है। STORAGE_LOCAL_DIR या STORAGE_S3_* सेट करें।"
+    ));
+  }
+  try {
+    // Read the manifest first: it is the only proof of who owns this backup.
+    const manifest = await storageLib.readManifest(backupStorage, id);
+    if (manifest.ownerId && manifest.ownerId !== req.user.id) {
+      return res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
+    }
+    const existing = projectStore.get(id);
+    if (existing && existing.ownerId && existing.ownerId !== req.user.id) {
+      return res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
+    }
+    const result = await storageLib.restoreProject(backupStorage, id, { dataDir: dataRoot });
+    return res.json({
+      restored: result.restored.length,
+      skipped: result.skipped,
+      driver: result.driver,
+      savedAt: result.savedAt,
+      bytes: result.restored.reduce((sum, file) => sum + file.bytes, 0),
+    });
+  } catch (error) {
+    safeLog("Project restore failed", error);
+    return res.status(error.statusCode || 500).json({ error: error.message || "Restore विफल।" });
+  }
+});
+
 app.get("/api/projects/:id/captions", (req, res) => {
   const project = ownedProject(req, res);
   if (!project) return;

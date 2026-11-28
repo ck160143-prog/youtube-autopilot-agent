@@ -54,9 +54,38 @@ services:
       # value in Render's dashboard only - it is never written into the repo.
       - key: APP_REGISTRATION_KEY
         sync: false
+      # ---- Backup storage -------------------------------------------------
+      # Without one of these two blocks every redeploy deletes every project and
+      # rendered MP4, and there is nothing to restore from. The app says
+      # STORAGE_NOT_CONFIGURED rather than pretending to have a backup.
+      #
+      # Option A - an S3-compatible bucket (Cloudflare R2, Backblaze B2, MinIO).
+      # All four values are required together; the driver stays off until then.
+      - key: STORAGE_S3_ENDPOINT
+        sync: false
+      - key: STORAGE_S3_BUCKET
+        sync: false
+      - key: STORAGE_S3_ACCESS_KEY
+        sync: false
+      - key: STORAGE_S3_SECRET_KEY
+        sync: false
+      - key: STORAGE_S3_REGION
+        sync: false
+      - key: STORAGE_S3_PREFIX
+        sync: false
+      # Option B - a directory on an attached Render Disk (paid). Point DATA_DIR
+      # at the same disk so projects live there too, not just the backups.
+      - key: STORAGE_LOCAL_DIR
+        sync: false
+      - key: STORAGE_TIMEOUT_MS
+        value: 30000
       # Optional knobs, unset by default:
       #   FFMPEG_PRESET=ultrafast  -> faster encodes on a 512 MB free instance
       #   FFMPEG_PATH=/path/ffmpeg -> use a specific binary instead of the bundled one
       #   DATA_DIR=/var/data       -> only when a Render Disk is attached; the
       #                               free filesystem is ephemeral, so projects
       #                               and renders are lost on every redeploy.
+      #   APP_SESSION_SECRET       -> already listed above; rotating it signs
+      #                               every user out, which is the point.
+      #   RHUBARB_PATH             -> optional native Rhubarb binary for lip-sync;
+      #                               the bundled WASM package needs nothing.

@@ -2085,8 +2085,34 @@ try {
         if (typeof loadResearch === 'function') loadResearch(currentId);
       });
       row.appendChild(open);
+
+      // Restore: only useful when the project's files are gone (a redeploy on an
+      // ephemeral disk). It is offered, not assumed, and the server decides
+      // whether a backup actually exists.
+      if (project.status === 'completed' || project.render) {
+        var restore = document.createElement('button');
+        restore.type = 'button';
+        restore.className = 'secondary';
+        restore.style.marginLeft = '8px';
+        restore.textContent = '♻️ Backup से वापस लाएँ';
+        restore.addEventListener('click', function () { P2.restoreProject(project.id); });
+        row.appendChild(restore);
+      }
       node.appendChild(row);
     });
+  };
+
+  P2.restoreProject = async function (projectId) {
+    try {
+      setStatus('Backup से restore हो रहा है…');
+      var body = await P2.api('/api/projects/' + encodeURIComponent(projectId) + '/restore', { method: 'POST' });
+      setStatus('✅ ' + body.restored + ' फ़ाइलें वापस आ गईं (' + (body.driver || '?') + ', ' +
+        Math.round((body.bytes || 0) / 1024) + ' KB)। अब प्रोजेक्ट खोलें।');
+      await P2.loadProjects();
+      if (currentId === projectId) P2.refreshProject();
+    } catch (error) {
+      setStatus(error.message || 'Restore विफल रहा।', true);
+    }
   };
 
   P2.start = async function () {
