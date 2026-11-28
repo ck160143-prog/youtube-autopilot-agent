@@ -2381,7 +2381,17 @@ async function backupFinishedProject(project) {
     return { skipped: true, reason: "STORAGE_NOT_CONFIGURED" };
   }
   try {
-    const result = await storageLib.backupProject(backupStorage, project, projectStore.dirFor(project.id));
+    const projectDir = projectStore.dirFor(project.id);
+    // The record on disk is what a restore reads, so it must describe the
+    // finished video before anything is copied. Saving after the backup left a
+    // stale record (and a stale videoPath) inside the backup.
+    if (project.render && project.render.videoPath) {
+      const onDisk = path.join(projectDir, "final.mp4");
+      if (fs.existsSync(project.render.videoPath) || fs.existsSync(onDisk)) {
+        projectStore.save(project);
+      }
+    }
+    const result = await storageLib.backupProject(backupStorage, project, projectDir);
     project.backup = {
       driver: result.driver, files: result.files.map(file => file.key),
       bytes: result.bytes, at: new Date().toISOString(),

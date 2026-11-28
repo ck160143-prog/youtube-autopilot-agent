@@ -149,3 +149,22 @@ test("a corrupt manifest is reported, not guessed at", async () => {
     }
   );
 });
+
+test("a restore corrects a stale videoPath instead of returning a dead link", async () => {
+  const { dataDir, dir, project } = makeProject();
+  const driver = storage.localDriver(path.join(dataDir, "backup"));
+  // The record still points at the pre-move location: this is what a resumed
+  // render or a copied data directory looks like.
+  const stale = Object.assign({}, project, {
+    render: Object.assign({}, project.render, { videoPath: path.join(dataDir, "old-place", "final.mp4") }),
+  });
+  await storage.backupProject(driver, stale, dir);
+  fs.rmSync(path.join(dataDir, "projects", project.id), { recursive: true, force: true });
+
+  const result = await storage.restoreProject(driver, project.id, { dataDir });
+  const restoredVideo = path.join(dataDir, "projects", project.id, "final.mp4");
+  assert.ok(fs.existsSync(restoredVideo), "the video must be restored despite the stale path");
+  assert.equal(result.project.render.videoPath, restoredVideo, "the record must point at the restored file");
+  // The download route refuses a project whose videoPath does not exist.
+  assert.ok(fs.existsSync(result.project.render.videoPath));
+});
