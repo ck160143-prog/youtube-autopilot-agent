@@ -2201,6 +2201,9 @@ app.post("/api/projects", (req, res) => {
       quality: body.quality,
       durationMinutes: body.durationMinutes,
       sceneCount: Math.min(150, Math.max(3, Number(body.sceneCount) || storyEngine.planSceneCount(body.durationMinutes))),
+      motion: body.motion,
+      music: body.music !== false,
+      soundEffects: body.soundEffects !== false,
     });
     projectStore.save(project);
     return res.status(201).json({ project });

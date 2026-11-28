@@ -311,12 +311,27 @@ input,select,textarea{font-size:16px}
 </select></div>
 <div><label>रेज़ोल्यूशन</label><select id="p2Quality"><option value="720p">720p</option><option value="1080p">1080p</option></select></div>
 </div>
+<div class="grid">
+<div><label>कैमरा मोशन</label><select id="p2Motion">
+<option value="kenburns-in">धीरे ज़ूम इन (डिफ़ॉल्ट)</option>
+<option value="kenburns-out">धीरे ज़ूम आउट</option>
+<option value="pan">धीरे बहाव (pan)</option>
+<option value="parallax">2.5D गहराई — parallax</option>
+<option value="parallax-reverse">2.5D गहराई — उल्टा</option>
+<option value="none">कोई मोशन नहीं</option>
+</select></div>
+<div><label>आवाज़ की परतें</label>
+<select id="p2Music"><option value="on">संगीत + sound effects (डिफ़ॉल्ट)</option><option value="off">सिर्फ़ हिंदी आवाज़</option></select>
+</div>
+</div>
+<p class="small">2.5D पर parallax सिर्फ़ स्थिर तस्वीर पर गहराई का भ्रम है — असली 3D मॉडल नहीं।</p>
 <label>किरदार (कम से कम एक चुनें)</label>
 <div id="p2Cast" class="small">कोई किरदार सेव नहीं है। पहले ऊपर किरदार बनाएँ।</div>
 <button class="green" id="p2StartBtn" onclick="p2.start()">🚀 बनाएँ और पूरा वीडियो तैयार करें</button>
 <p class="small">यह असली pipeline है: कहानी → हर scene की image → हर scene की हिंदी आवाज़ → FFmpeg से MP4। जो चरण API key के बिना नहीं चलता, वह ऊपर BLOCKED दिखता है।</p>
 <div id="p2ProgressWrap" style="display:none;margin-top:12px">
 <div style="background:#111725;border-radius:8px;overflow:hidden"><div id="p2ProgressBar" style="height:12px;width:0%;background:#18865d;transition:width .4s"></div></div>
+<button class="secondary" id="p2CancelBtn" onclick="p2.cancel()" style="margin-top:8px">⏹ चालू काम रोकें</button>
 </div>
 <div id="p2Status" class="status" aria-live="polite">तैयार।</div>
 <div id="p2ProjectView"></div>
@@ -1854,11 +1869,19 @@ try {
     if (!wrap || !bar) return;
     wrap.style.display = 'block';
     bar.style.width = Math.max(0, Math.min(100, Number(percent) || 0)) + '%';
+    // Stopping only makes sense while something is running.
+    var cancel = el('p2CancelBtn');
+    if (cancel) cancel.style.display = Number(percent) >= 100 ? 'none' : 'inline-block';
   }
 
   // Read-only handle on the open project id, so the research panel can work on
   // whichever project the user actually opened (there is one id, not two copies).
   P2.currentProjectId = function () { return currentId; };
+  // Setter needed by the research panel's "open project" flow and by tests:
+  // the open project must be switchable without duplicating the id.
+  P2.selectProject = function (id) { currentId = id ? String(id) : null; return currentId; };
+  // Exposed so the stop control's visibility can be verified directly.
+  P2.setProgress = setProgress;
 
   P2.api = async function (url, options) {
     var response = await fetch(url, options);
@@ -2077,7 +2100,10 @@ try {
           durationMinutes: Number(el('p2Duration').value) || 1,
           style: el('p2Style').value,
           aspect: el('p2Aspect').value,
-          quality: el('p2Quality').value
+          quality: el('p2Quality').value,
+          motion: el('p2Motion') ? el('p2Motion').value : 'kenburns-in',
+          music: el('p2Music') ? el('p2Music').value !== 'off' : true,
+          soundEffects: el('p2Music') ? el('p2Music').value !== 'off' : true
         })
       });
       currentId = created.project.id;
@@ -2089,6 +2115,23 @@ try {
       setStatus((error.blocked ? 'BLOCKED: ' : '') + (error.message || 'शुरू नहीं हुआ।'), true);
     } finally {
       button.disabled = false;
+    }
+  };
+
+  // The API has had /cancel all along; without this the button did not exist,
+  // so a 30-minute render could not be stopped from the dashboard.
+  P2.cancel = async function () {
+    if (!currentId) return;
+    var button = el('p2CancelBtn');
+    if (button) button.disabled = true;
+    try {
+      await P2.api('/api/projects/' + encodeURIComponent(currentId) + '/cancel', { method: 'POST' });
+      setStatus('रोकने का अनुरोध भेजा गया — चालू चरण पूरा होते ही काम रुकेगा।');
+      P2.refreshProject();
+    } catch (error) {
+      setStatus(error.message || 'काम नहीं रुका।', true);
+    } finally {
+      if (button) button.disabled = false;
     }
   };
 
