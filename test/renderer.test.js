@@ -161,3 +161,58 @@ test("scene clips use Ken Burns motion and are not static", { timeout: 120000 },
   assert.equal(info.hasVideo, true);
   assert.ok(info.duration > 1.5, "clip is at least the requested duration");
 });
+
+test("parallax camera motion really moves a still image, and differs from Ken Burns", { timeout: 180000 }, async () => {
+  if (!(await ffmpegTools.ffmpegAvailable())) {
+    return test.skip("FFmpeg binary not available (set FFMPEG_PATH)");
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-parallax-"));
+  const assets = await makeAssets(dir, 1);
+  const layout = timeline.layoutFor("16:9", "720p");
+
+  // Parallax needs structure to show: on a flat colour the two layers can only
+  // slide against themselves, so the frame is identical whatever the motion.
+  // A real generated scene always has detail, so the test uses detail too.
+  const textured = path.join(dir, "textured.png");
+  await ffmpegTools.runFfmpeg([
+    "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", "color=c=0x102030:s=1280x720:d=1",
+    "-vf", "drawgrid=w=80:h=720:t=40:c=0xe0a030@0.9", "-frames:v", "1", "-y", textured,
+  ]);
+
+  const render = async (motion, name) => {
+    const outPath = path.join(dir, name + ".mp4");
+    await renderer.renderSceneClip({
+      runFfmpeg: ffmpegTools.runFfmpeg,
+      imagePath: textured,
+      audioPath: assets.scenes[1].audio.path,
+      outPath, duration: 2.5, layout, motion, transition: "none",
+    });
+    return outPath;
+  };
+
+  const parallax = await render("parallax", "parallax");
+  const reverse = await render("parallax-reverse", "reverse");
+  const kenburns = await render("kenburns-in", "kenburns");
+
+  // A real clip: right size, right duration, has video.
+  const info = await ffmpegTools.probe(parallax);
+  assert.equal(info.hasVideo, true);
+  assert.ok(Math.abs(info.duration - 2.5) < 0.4);
+
+  // Grab one frame in the middle of each clip and compare raw pixels. A still
+  // image that never moves would produce identical bytes; a broken filter
+  // graph would not render at all.
+  const frame = (video, name) => {
+    const out = path.join(dir, name + ".png");
+    const { execFileSync } = require("node:child_process");
+    execFileSync(ffmpegTools.resolveFfmpegPath(), ["-hide_banner", "-loglevel", "error", "-ss", "1.2", "-i", video,
+      "-frames:v", "1", "-y", out], { stdio: "ignore" });
+    return fs.readFileSync(out);
+  };
+  const a = frame(parallax, "fa");
+  const b = frame(reverse, "fb");
+  const c = frame(kenburns, "fc");
+  assert.notDeepEqual(a, b, "forward and reverse parallax must not be the same picture");
+  assert.notDeepEqual(a, c, "parallax must not be identical to a plain Ken Burns frame");
+});
