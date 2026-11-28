@@ -2007,6 +2007,20 @@ try {
         look.textContent = character.look + (character.outfit ? ' · ' + character.outfit : '');
         row.appendChild(look);
       }
+      // Whether this character can actually be animated. The rig is what makes
+      // lip-sync fire at render time, so a character without one is silently a
+      // static picture — that must be visible here, not discovered afterwards.
+      var rig = character.rig || null;
+      var ready = Boolean(rig && rig.animationReady && rig.mouth);
+      var shapes = rig && Array.isArray(rig.shapes) ? rig.shapes : [];
+      var anim = document.createElement('p');
+      anim.className = 'small';
+      anim.setAttribute('data-anim-ready', ready ? 'yes' : 'no');
+      anim.textContent = ready
+        ? '🎭 Lip-sync तैयार — ' + shapes.length + ' mouth shapes (' + shapes.join(', ') + ')'
+        : '⬜ Lip-sync बंद — mouth sprites अपलोड नहीं हैं, यह किरदार स्थिर तस्वीर की तरह दिखेगा।';
+      row.appendChild(anim);
+
       var remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'secondary';

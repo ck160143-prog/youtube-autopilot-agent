@@ -2030,13 +2030,19 @@ app.get("/api/characters/:id", (req, res) => {
   return res.json({
     character,
     animation: {
-      ready: Boolean(rig && rig.animationReady),
-      shapes: rig ? rig.shapes : [],
+      // animationReady is stored when the sprites were uploaded. If the engine
+      // is not installed any more, animation cannot run whatever the rig says,
+      // so readiness must require a live engine rather than a stale flag.
+      ready: Boolean(rig && rig.animationReady && lipsync.resolveEngine()),
+      rigReady: Boolean(rig && rig.animationReady),
+      shapes: rig && Array.isArray(rig.shapes) ? rig.shapes : [],
       anchor: rig ? rig.anchor : null,
       lipSyncEngine: lipsync.engineLabel(),
-      message: rig && rig.animationReady
+      message: rig && rig.animationReady && !lipsync.resolveEngine()
+        ? "Rig सेव है, पर lip-sync engine installed नहीं — npm install rhubarb-lip-sync-wasm करें।"
+        : (rig && rig.animationReady
         ? "Animation rig तैयार है।"
-        : "Mouth sprites अपलोड करें तभी lip-sync चलेगा।",
+        : "Mouth sprites अपलोड करें तभी lip-sync चलेगा।"),
     },
   });
 });
@@ -2109,6 +2115,16 @@ app.post("/api/characters/:id/lipsync", async (req, res) => {
   if (!character) return;
   const audioBase64 = String((req.body || {}).audioBase64 || "");
   if (!audioBase64) return res.status(400).json({ error: "audioBase64 चाहिए।" });
+  // Check the size before decoding it. analyseAudio refuses an over-long clip
+  // too, but refusing here avoids writing a huge file to /tmp on a small
+  // instance first.
+  const estimatedBytes = Math.floor(audioBase64.length * 0.75);
+  if (estimatedBytes > lipsync.MAX_AUDIO_SECONDS * 16000 * 2) {
+    return res.status(413).json({
+      error: "Lip-sync के लिए audio " + lipsync.MAX_AUDIO_SECONDS + "s से लंबा है (लगभग " +
+        Math.round(estimatedBytes / 1024 / 1024) + " MB)। छोटा clip भेजें।",
+    });
+  }
   if (!lipsync.resolveEngine()) {
     return res.status(503).json(Object.assign(blocked(
       "Lip-sync engine installed नहीं है (npm install rhubarb-lip-sync-wasm या RHUBARB_PATH)।"
