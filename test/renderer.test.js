@@ -86,7 +86,11 @@ test("renderer produces a real playable MP4 with video and audio", { timeout: 24
   assert.equal(info.hasAudio, true);
 });
 
-test("a second render resumes from existing clips instead of re-rendering", { timeout: 240000 }, async () => {
+// Resume survives *within* a run: intermediates are now reclaimed once the
+// final MP4 is verified, so the contract this test proves is the one that still
+// exists — an interrupted render picks up its finished clips, and a completed
+// one deliberately leaves only the video behind.
+test("a render interrupted mid-way resumes from its finished clips", { timeout: 240000 }, async () => {
   if (!(await ffmpegTools.ffmpegAvailable())) {
     return test.skip("FFmpeg binary not available (set FFMPEG_PATH)");
   }
@@ -106,11 +110,30 @@ test("a second render resumes from existing clips instead of re-rendering", { ti
     music: false,
     burnSubtitles: false,
   };
-  const first = await renderer.renderProject(options);
   const clipDir = path.join(options.workDir, "clips");
+
+  // 1. A completed render reclaims its intermediates: only the MP4 survives.
+  const first = await renderer.renderProject(options);
+  assert.equal(first.hasVideo, true);
+  const leftovers = fs.existsSync(clipDir) ? fs.readdirSync(clipDir) : [];
+  assert.deepEqual(leftovers, [], "a finished render must not keep its scene clips");
+
+  // 2. Rebuild the clips as an interrupted render would have left them, then
+  // resume: the existing clips must be reused, not encoded again.
+  fs.mkdirSync(clipDir, { recursive: true });
+  for (const entry of entries) {
+    const clipPath = path.join(clipDir, "scene-" + String(entry.index).padStart(4, "0") + ".mp4");
+    await renderer.renderSceneClip({
+      runFfmpeg: ffmpegTools.runFfmpeg,
+      imagePath: assets.scenes[entry.index].image.path,
+      audioPath: assets.scenes[entry.index].audio.path,
+      outPath: clipPath, duration: entry.duration,
+      layout: options.layout, motion: "kenburns-in", transition: "fade",
+    });
+  }
   const before = fs.readdirSync(clipDir).map(name => name + ":" + fs.statSync(path.join(clipDir, name)).mtimeMs).sort();
   await new Promise(resolve => setTimeout(resolve, 1100));
-  const second = await renderer.renderProject({ ...options, resume: true });
+  const second = await renderer.renderProject({ ...options, resume: true, keepIntermediates: true });
   const after = fs.readdirSync(clipDir).map(name => name + ":" + fs.statSync(path.join(clipDir, name)).mtimeMs).sort();
   assert.deepEqual(before, after, "existing clips are reused, not re-encoded");
   assert.equal(second.hasVideo, true);

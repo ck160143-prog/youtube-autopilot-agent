@@ -1633,6 +1633,7 @@ app.get("/api/render/download/:jobId", (req, res) => {
 
 
 /* ---- Phase 2: characters, story engine, project pipeline, real renderer ---- */
+const storageLib = require("./lib/storage");
 const { CharacterLibrary } = require("./lib/characters");
 const characterLibrary = new CharacterLibrary({
   file: path.join(dataRoot, "characters.json"),
@@ -2313,6 +2314,8 @@ async function runProjectStage(projectId, stage) {
       message: "MP4 तैयार (" + (result.size / 1024 / 1024).toFixed(1) + " MB, " + Math.round(result.duration) + " सेकंड)",
       updatedAt: new Date().toISOString(),
     };
+    // Both render paths must back up: a resumed render is still a real video.
+    await backupFinishedProject(project);
     projectStore.save(project);
     return project;
   }
@@ -2356,8 +2359,39 @@ async function runProjectStage(projectId, stage) {
     message: "MP4 तैयार (" + (result.size / 1024 / 1024).toFixed(1) + " MB, " + Math.round(result.duration) + " सेकंड)",
     updatedAt: new Date().toISOString(),
   };
+  await backupFinishedProject(project);
   projectStore.save(project);
   return project;
+}
+
+// ---- Durable backup of a finished project --------------------------------
+// The working copy stays on local disk (fast, resumable). This is the safety
+// net for an ephemeral host: the video is the one artefact that cannot be
+// regenerated for free, so it is copied out as soon as the render is verified.
+// A backup failure never fails the render and never lies in the response: the
+// project records exactly what happened.
+const backupStorage = storageLib.storageFromEnv(process.env);
+
+async function backupFinishedProject(project) {
+  if (!backupStorage || backupStorage.name === "local" && !process.env.STORAGE_LOCAL_DIR) {
+    // Unconfigured: nothing is claimed, nothing is copied.
+    return { skipped: true, reason: "STORAGE_NOT_CONFIGURED" };
+  }
+  try {
+    const result = await storageLib.backupProject(backupStorage, project, projectStore.dirFor(project.id));
+    project.backup = {
+      driver: result.driver, files: result.files.map(file => file.key),
+      bytes: result.bytes, at: new Date().toISOString(),
+    };
+    return project.backup;
+  } catch (error) {
+    safeLog("Project backup failed", error);
+    project.backup = {
+      driver: backupStorage.name, error: String(error.message || error).slice(0, 160),
+      at: new Date().toISOString(),
+    };
+    return project.backup;
+  }
 }
 
 // ---- Research: facts + sources before the script is written ----------------
