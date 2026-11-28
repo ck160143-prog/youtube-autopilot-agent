@@ -461,3 +461,49 @@ test("the backup warning carries instructions the operator can act on", () => {
   assert.ok(/secret/i.test(guide.steps.join(" ")) || /Secret/.test(guide.steps.join(" ")),
     "the guide must warn about secret handling");
 });
+
+test("every non-blocking problem reaches warnings[], whichever spelling it uses", () => {
+  const { auditSetup, isWarning, WARNING_STATUS } = require("../lib/setup");
+  // Three separate checks are non-blocking: a malformed key, a missing font and
+  // an unset registration key. Before the fix only the backup check appeared,
+  // because warnings[] filtered the single literal "warning" and these said
+  // "warn" — so the operator was told everything was fine.
+  const report = auditSetup({
+    env: Object.assign({}, process.env, { GEMINI_API_KEY: "short" }),
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/definitely-not-a-font.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const warnIds = report.checks.filter(c => isWarning(c.status)).map(c => c.id);
+  assert.ok(warnIds.includes("GEMINI_API_KEY"), "a malformed key must be reported");
+  assert.ok(warnIds.includes("DEVANAGARI_FONT"), "a missing font must be reported");
+  assert.ok(warnIds.includes("REGISTRATION_KEY"), "a closed registration must be reported");
+  for (const id of warnIds) {
+    assert.ok(report.warnings.includes(id), id + " is a warning but missing from warnings[]");
+  }
+  assert.equal(WARNING_STATUS, "warning", "one canonical spelling must be exported");
+  assert.equal(isWarning("warn"), true, "the legacy spelling must still be understood");
+  assert.equal(isWarning("ok"), false);
+  assert.equal(isWarning("blocked"), false);
+});
+
+test("no warning is left without an explanation", () => {
+  const { auditSetup, isWarning } = require("../lib/setup");
+  const report = auditSetup({
+    env: Object.assign({}, process.env, { GEMINI_API_KEY: "short" }),
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/definitely-not-a-font.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const warnIds = report.checks.filter(c => isWarning(c.status)).map(c => c.id);
+  const guided = report.warningGuide.map(g => g.id);
+  for (const id of warnIds) {
+    assert.ok(guided.includes(id), id + " is a warning with no guide");
+    const guide = report.warningGuide.find(g => g.id === id);
+    assert.ok(guide.steps.length >= 2, id + " guide has no actionable steps");
+  }
+});
