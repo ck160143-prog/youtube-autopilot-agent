@@ -23,3 +23,13 @@ data/
 
 # Local render artifacts (sample MP4s, generated frames)
 render-test/
+
+# Test and experiment output. Tests must write to os.tmpdir(); anything that
+# lands in the repo root is a stray artifact and must never be committed.
+*.m4a
+*.wav
+*.aac
+*.opus
+/tmp-*.mp4
+/scratch/
+

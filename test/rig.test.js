@@ -12,7 +12,7 @@ const path = require("node:path");
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-rig-"));
 
 const { app } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 const { CharacterLibrary, validateRig } = require("../lib/characters");
 const ffmpegTools = require("../lib/ffmpeg");
 const { MOUTH_SHAPES } = require("../lib/characters");
@@ -33,7 +33,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "rig_user");
+  session = await registerOwner(base, "rig_user");
 
   const created = await fetch(base + "/api/characters", {
     method: "POST", headers: authHeaders(session),
@@ -112,16 +112,20 @@ test("invalid sprites are rejected and never written", async () => {
 
 test("another user cannot upload or delete the rig", { skip: SKIP_NO_FFMPEG }, async () => {
   process.env.APP_REGISTRATION_KEY = "team-key";
+  // Owner-only access refuses a non-owner before the rig route is reached, which
+  // is a stronger guarantee than "not found". Reaching it requires an account the
+  // operator opened on purpose.
+  process.env.ALLOW_PUBLIC_SIGNUP = "1";
   const other = await registerAndLogin(base, "rig_other", { registrationKey: "team-key" });
   const upload = await fetch(base + "/api/characters/" + encodeURIComponent(characterId) + "/rig", {
     method: "POST", headers: authHeaders(other),
     body: JSON.stringify({ mouth: { A: spriteBase64 } }),
   });
-  assert.equal(upload.status, 404);
+  assert.equal(upload.status, 403, "a non-owner must be refused, not told the character is missing");
   const remove = await fetch(base + "/api/characters/" + encodeURIComponent(characterId) + "/rig", {
     method: "DELETE", headers: authHeaders(other),
   });
-  assert.equal(remove.status, 404);
+  assert.equal(remove.status, 403);
 });
 
 test("validateRig ignores paths that do not exist on disk", () => {

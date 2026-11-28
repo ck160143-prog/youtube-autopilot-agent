@@ -12,9 +12,12 @@ const path = require("node:path");
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-own-"));
 process.env.APP_REGISTRATION_KEY = "team-key";
+// Isolation between two accounts is what this file proves, so it needs the
+// operator-opened signup door. Owner-only access keeps it closed by default.
+process.env.ALLOW_PUBLIC_SIGNUP = "1";
 
 const { app } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 let server;
 let base;
@@ -25,7 +28,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  owner = await registerAndLogin(base, "alpha_user");
+  owner = await registerOwner(base, "alpha_user");
   member = await registerAndLogin(base, "beta_user", { registrationKey: "team-key" });
 });
 
@@ -49,9 +52,12 @@ test("a project belongs to the account that created it", async () => {
   const project = (await created.json()).project;
   assert.equal(project.ownerId, owner.user.id);
 
+  // Owner-only access is stricter than "your list is empty": a non-owner is
+  // refused before the list is built, so nothing can leak through a page size,
+  // an offset or a future query parameter.
   const list = await call(member, "/api/projects");
-  const ids = (await list.json()).projects.map(item => item.id);
-  assert.equal(ids.includes(project.id), false, "the other user must not see this project");
+  assert.equal(list.status, 403, "a non-owner must not reach the project list at all");
+  assert.equal((await list.json()).code, "OWNER_ONLY");
 
   const direct = await call(member, "/api/projects/" + project.id);
   assert.equal(direct.status, 403);
@@ -95,11 +101,14 @@ test("characters are isolated per account", async () => {
   const character = (await created.json()).character;
   assert.equal(character.ownerId, owner.user.id);
 
+  // The whole library is owner-only now, so a non-owner is refused outright
+  // rather than receiving an empty list.
   const memberList = await call(member, "/api/characters");
-  assert.equal((await memberList.json()).characters.some(item => item.id === character.id), false);
+  assert.equal(memberList.status, 403);
+  assert.equal((await memberList.json()).code, "OWNER_ONLY");
 
   const denied = await call(member, "/api/characters/" + character.id, { method: "DELETE" });
-  assert.equal(denied.status, 404);
+  assert.equal(denied.status, 403);
 
   const ownerList = await call(owner, "/api/characters");
   assert.equal((await ownerList.json()).characters.some(item => item.id === character.id), true);

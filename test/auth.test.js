@@ -1,8 +1,9 @@
 "use strict";
 
-// Phase 3 authentication: first account becomes owner, later accounts need the
-// registration key, passwords are scrypt-hashed, sessions are server-side and
-// revocable, and every non-public API route refuses anonymous requests.
+// Phase 3 authentication: the first account becomes the owner, public signup is
+// closed after that (owner-only access), passwords are scrypt-hashed, sessions
+// are server-side and revocable, and no private route answers an anonymous
+// request. The owner-only rules themselves are covered in owner-only-access.test.js.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -11,9 +12,15 @@ const os = require("node:os");
 const path = require("node:path");
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-auth-"));
+// This file deliberately makes many registration attempts (each refused door is
+// an attempt too), so the auth bucket is raised for the suite. The throttle
+// itself is measured in session-security.test.js at the production limit.
+process.env.API_RATE_LIMIT_MULTIPLIER = "20";
 process.env.APP_REGISTRATION_KEY = "team-key";
 
 const { app } = require("../server");
+// Owner creation requires the explicit bootstrap token (see lib/auth.js).
+const { OWNER_BOOTSTRAP_TOKEN } = require("./helpers");
 const { hashPassword, verifyPassword } = require("../lib/auth");
 
 let server;
@@ -35,16 +42,27 @@ async function post(url, body, headers) {
   });
 }
 
-test("auth status is public and reports registration state", async () => {
+test("auth status is public and reports the bootstrap state, not an open door", async () => {
   const response = await fetch(base + "/api/auth/status");
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.authenticated, false);
-  assert.equal(body.registrationOpen, true);
+  assert.equal(body.privateAccess, false, "a fresh instance has no owner yet");
+  assert.equal(body.bootstrapTokenConfigured, true, "a token is configured in this process");
+  // "Registration open" is no longer a public signup switch: it is the owner
+  // bootstrap, which needs a secret nobody is given here.
+  assert.equal(body.bootstrap, true);
 });
 
-test("first registration becomes the owner and returns a CSRF token", async () => {
-  const response = await post("/api/auth/register", { username: "owner", password: "owner-pass-123" });
+test("the owner is created only with the bootstrap token, and returns a CSRF token", async () => {
+  // Without the token: refused. This is the takeover fix.
+  const refused = await post("/api/auth/register", { username: "owner", password: "owner-pass-123" });
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json()).code, "OWNER_BOOTSTRAP_REQUIRED");
+
+  const response = await post("/api/auth/register", {
+    username: "owner", password: "owner-pass-123", bootstrapToken: OWNER_BOOTSTRAP_TOKEN,
+  });
   const body = await response.json();
   assert.equal(response.status, 201);
   assert.equal(body.user.role, "owner");
@@ -53,6 +71,8 @@ test("first registration becomes the owner and returns a CSRF token", async () =
   assert.match(setCookie, /baba_session=/);
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Lax/);
+  // A fresh token is handed back so the environment can be rotated.
+  assert.match(String(body.user.nextBootstrapToken || ""), /^[A-Za-z0-9_-]{40,}$/);
 });
 
 test("passwords are stored as scrypt hashes, never plaintext", () => {
@@ -67,17 +87,35 @@ test("passwords are stored as scrypt hashes, never plaintext", () => {
   assert.equal(raw.includes("owner-pass-123"), false, "users.json must not contain the plaintext password");
 });
 
-test("second registration needs the key, and the key unlocks it", async () => {
+test("a second registration is refused, even with the registration key", async () => {
+  // Owner-only access: a configured key is an operator secret, not a signup
+  // switch, so it must not open a public account. The operator can open signup
+  // explicitly with ALLOW_PUBLIC_SIGNUP, which the next test covers.
   const denied = await post("/api/auth/register", { username: "member", password: "member-pass-123" });
   assert.equal(denied.status, 403);
-  assert.match((await denied.json()).error, /key/i);
+  assert.equal((await denied.json()).code, "SIGNUP_CLOSED");
 
-  const allowed = await post("/api/auth/register", {
+  const withKey = await post("/api/auth/register", {
     username: "member", password: "member-pass-123", registrationKey: "team-key",
   });
-  const body = await allowed.json();
-  assert.equal(allowed.status, 201);
-  assert.equal(body.user.role, "member");
+  assert.equal(withKey.status, 403, "the key alone must not open signup");
+  assert.equal((await withKey.json()).code, "SIGNUP_CLOSED");
+});
+
+test("an operator-opened signup creates a member, never an owner", async () => {
+  process.env.ALLOW_PUBLIC_SIGNUP = "1";
+  try {
+    const noKey = await post("/api/auth/register", { username: "member", password: "member-pass-123" });
+    assert.equal(noKey.status, 403, "with a key configured, the key is still required");
+    const allowed = await post("/api/auth/register", {
+      username: "member", password: "member-pass-123", registrationKey: "team-key",
+    });
+    const body = await allowed.json();
+    assert.equal(allowed.status, 201);
+    assert.equal(body.user.role, "member", "a public signup must never become the owner");
+  } finally {
+    delete process.env.ALLOW_PUBLIC_SIGNUP;
+  }
 });
 
 test("login and logout work and the session cookie is HttpOnly", async () => {
@@ -126,13 +164,20 @@ test("invalid or expired session ids are rejected", async () => {
   assert.equal(response.status, 401);
 });
 
-test("weak passwords and bad usernames are refused", async () => {
-  const weak = await post("/api/auth/register", {
-    username: "weak_user", password: "short", registrationKey: "team-key",
-  });
-  assert.equal(weak.status, 400);
-  const badName = await post("/api/auth/register", {
-    username: "Bad Name!", password: "long-enough-pass-1", registrationKey: "team-key",
-  });
-  assert.equal(badName.status, 400);
+test("weak passwords and bad usernames are refused once a door is open", async () => {
+  // The door is checked first (so a wrong bootstrap token cannot be told apart
+  // from a right one), which means these need an open signup to reach validation.
+  process.env.ALLOW_PUBLIC_SIGNUP = "1";
+  try {
+    const weak = await post("/api/auth/register", {
+      username: "weak_user", password: "short", registrationKey: "team-key",
+    });
+    assert.equal(weak.status, 400);
+    const badName = await post("/api/auth/register", {
+      username: "Bad Name!", password: "long-enough-pass-1", registrationKey: "team-key",
+    });
+    assert.equal(badName.status, 400);
+  } finally {
+    delete process.env.ALLOW_PUBLIC_SIGNUP;
+  }
 });

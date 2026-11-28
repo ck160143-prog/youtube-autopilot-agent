@@ -22,7 +22,7 @@ if (!fs.existsSync(path.join(distDir, "index.html"))) {
 
 /* ---- Phase 3: sessions, CSRF, rate limiting ---- */
 const {
-  AuthStore, sessionMiddleware, requireAuth, csrfMiddleware,
+  AuthStore, sessionMiddleware, requireAuth, requireOwner, csrfMiddleware,
   cookieHeader, clearCookieHeader, readCookie, SESSION_COOKIE,
 } = require("./lib/auth");
 const { createRateLimiter } = require("./lib/ratelimit");
@@ -40,41 +40,86 @@ app.use("/api", sessionMiddleware(authStore));
 app.use("/api", rateLimit);
 app.use("/api", csrfMiddleware());
 
-// Public endpoints: liveness, auth status, login/register and the OAuth
-// redirect targets (which carry their own state validation).
+// Public endpoints: liveness, auth status and the OAuth redirect target, which
+// carries its own state validation. Login is public by necessity; registration
+// is handled inside the route because it must be closed by default.
 const PUBLIC_API_PATHS = new Set([
   "/health", "/auth/status", "/auth/login", "/auth/register", "/youtube/callback",
 ]);
+// About your own session, not about private data: a signed-in non-owner must be
+// able to find out that they are signed in and to sign out, otherwise they are
+// trapped in a login loop with no explanation.
+const SESSION_ONLY_PATHS = new Set(["/auth/me", "/auth/logout"]);
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API_PATHS.has(req.path)) return next();
   if (req.path === "/youtube/connect" && !req.user) {
     return res.redirect("/?login=1");
   }
-  return requireAuth(req, res, next);
+  if (SESSION_ONLY_PATHS.has(req.path)) return requireAuth(req, res, next);
+  // Owner-only private access: being signed in is not enough, the account must
+  // be the owner. Every private route sits behind this one gate, so a second
+  // account (or a compromised member account) reaches nothing, not even the
+  // setup or capabilities endpoints.
+  //
+  // Before that, the instance itself must be in a state where an owner can mean
+  // something: an owner has to exist, and identity has to survive a restart.
+  // Otherwise the answer is a refusal — never "let the caller in and see".
+  const blocked = authStore.accessBlock();
+  if (blocked) {
+    return res.status(503).json({ error: blocked.message, code: blocked.code });
+  }
+  return requireOwner(req, res, next);
 });
 
 app.get("/api/auth/status", (req, res) => {
+  const signup = authStore.signupState();
+  const storage = authStore.storage();
+  const blocked = authStore.accessBlock();
   return res.json({
     authenticated: Boolean(req.user),
-    registrationOpen: authStore.userCount() === 0 || Boolean(process.env.APP_REGISTRATION_KEY),
+    // Signup is never open by accident: the owner needs the bootstrap token, and
+    // later accounts need an explicitly opened door.
+    registrationOpen: signup.registrationOpen,
+    // Bootstrap is possible only while there is no owner, a usable token is
+    // configured, and identity would actually persist.
+    bootstrap: authStore.canBootstrap(),
+    privateAccess: authStore.hasOwner(),
+    // What the operator needs to know, without leaking the token or any secret.
+    bootstrapTokenConfigured: authStore.bootstrapTokenUsable(),
+    storage: {
+      durable: storage.durable,
+      required: storage.required,
+      // The path itself is not exposed: it can name a host layout.
+      reason: storage.durable ? null : storage.reason,
+    },
+    access: blocked ? { blocked: true, code: blocked.code, message: blocked.message } : { blocked: false },
     user: req.user || null,
   });
 });
 
 app.post("/api/auth/register", (req, res) => {
   try {
-    const { username, password, registrationKey } = req.body || {};
-    const user = authStore.register({ username, password, registrationKey });
+    const { username, password, registrationKey, bootstrapToken } = req.body || {};
+    const user = authStore.register({ username, password, registrationKey, bootstrapToken });
     if (user.role === "owner") {
-      // First account adopts everything created before authentication existed.
-      projectStore.adoptOwner(user.id);
-      characterLibrary.adoptOwner(user.id);
+      // Legacy adoption happens only here: for an account just created by
+      // proving the bootstrap token. Never for a later account, and never
+      // automatically at startup — a stranger who finds a wiped instance must
+      // not inherit the previous owner's projects.
+      adoptLegacyRecords(user.id);
     }
     const session = authStore.createSession(user.id);
     res.setHeader("Set-Cookie", cookieHeader(session.id));
+    // nextBootstrapToken is meant to be written into the environment, replacing
+    // the one just used, so a wiped instance cannot be claimed with the old one.
     return res.status(201).json({ user, csrfToken: session.csrfToken });
   } catch (error) {
-    return res.status(error.statusCode || 400).json({ error: error.message || "Account नहीं बना।" });
+    // The code travels with the message so the dashboard can distinguish "signup
+    // is closed" from "that username is taken" without parsing Hindi text.
+    return res.status(error.statusCode || 400).json({
+      error: error.message || "Account नहीं बना।",
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 });
 
@@ -98,7 +143,17 @@ app.post("/api/auth/logout", requireAuth, (req, res) => {
 });
 
 app.get("/api/auth/me", requireAuth, (req, res) => {
-  return res.json({ user: req.user, csrfToken: req.session ? req.session.csrfToken : null });
+  // access is reported so the dashboard can explain a signed-in non-owner
+  // instead of leaving them guessing why every request is refused.
+  const access = req.user.role === "owner" ? "owner" : "owner-only-denied";
+  return res.json({
+    user: req.user,
+    csrfToken: req.session ? req.session.csrfToken : null,
+    access,
+    message: access === "owner"
+      ? null
+      : "यह instance owner-only है। आपका account साइन-इन है, पर private data तक पहुँच नहीं है।",
+  });
 });
 
 // Optional access gate for a personal deployment. Off unless APP_ACCESS_KEY is
@@ -923,8 +978,25 @@ function decryptSession(req) {
     return JSON.parse(Buffer.concat([decipher.update(packed.subarray(28)), decipher.final()]).toString("utf8"));
   } catch (_) { return {}; }
 }
-function setYoutubeSession(res, payload) {
-  res.setHeader("Set-Cookie", "baba_youtube_session=" + encryptSession(payload) + "; " + cookieOptions());
+// The YouTube token is tied to the account that connected it. Before this, the
+// cookie carried only Google tokens: it decrypted for anybody who held it, and it
+// was written even when APP_SESSION_SECRET was missing (an empty key on a public
+// callback route). Now the payload names its owner, and a cookie that does not
+// name the current account is not used.
+function setYoutubeSession(res, req, payload) {
+  const owner = payload.ownerId || (req && req.user && req.user.id) || null;
+  res.setHeader("Set-Cookie",
+    "baba_youtube_session=" + encryptSession({ ...payload, ownerId: owner }) + "; " + cookieOptions());
+}
+
+function youtubeSessionFor(req) {
+  const session = decryptSession(req);
+  if (!session || !Object.keys(session).length) return {};
+  const current = req && req.user ? req.user.id : null;
+  // An unbound legacy cookie is refused: it cannot be attributed to an account,
+  // so accepting it would be exactly the cross-account hole this closes.
+  if (!session.ownerId || session.ownerId !== current) return {};
+  return session;
 }
 function clearYoutubeSession(res) {
   res.setHeader("Set-Cookie", "baba_youtube_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" +
@@ -934,7 +1006,7 @@ function youtubeNotConfigured(res) {
   return res.status(503).json({ error: "YouTube OAuth configure नहीं है। Render Environment में YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI और कम-से-कम 32 अक्षरों का APP_SESSION_SECRET सेट करें।" });
 }
 async function getYoutubeAccessToken(req, res) {
-  const session = decryptSession(req);
+  const session = youtubeSessionFor(req);
   if (!session.refresh_token && !session.access_token) {
     res.status(401).json({ error: "पहले YouTube चैनल Connect करें।" });
     return null;
@@ -962,12 +1034,12 @@ async function getYoutubeAccessToken(req, res) {
   }
   const next = { ...session, access_token: tokenData.access_token,
     expires_at: Date.now() + (Number(tokenData.expires_in) || 3600) * 1000 };
-  setYoutubeSession(res, next);
+  setYoutubeSession(res, req, next);
   return next.access_token;
 }
 app.get("/api/youtube/status", async (req, res) => {
   if (!youtubeConfigReady()) return res.json({ configured: false, connected: false });
-  const session = decryptSession(req);
+  const session = youtubeSessionFor(req);
   if (!session.access_token && !session.refresh_token) return res.json({ configured: true, connected: false });
   const token = await getYoutubeAccessToken(req, res);
   if (!token) return;
@@ -983,7 +1055,7 @@ app.get("/api/youtube/status", async (req, res) => {
 app.get("/api/youtube/connect", (req, res) => {
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
   const state = crypto.randomBytes(24).toString("hex");
-  setYoutubeSession(res, { oauth_state: state });
+  setYoutubeSession(res, req, { oauth_state: state });
   const params = new URLSearchParams({
     client_id: process.env.YOUTUBE_CLIENT_ID,
     redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
@@ -997,6 +1069,12 @@ app.get("/api/youtube/connect", (req, res) => {
 });
 app.get("/api/youtube/callback", async (req, res) => {
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
+  // youtubeConfigReady() already requires a 32+ character APP_SESSION_SECRET; this
+  // is the explicit second check, because the callback is public and writes a
+  // credential cookie. Without a real key the cookie could be forged by anyone.
+  if (!process.env.APP_SESSION_SECRET || process.env.APP_SESSION_SECRET.length < 32) {
+    return youtubeNotConfigured(res);
+  }
   const oldSession = decryptSession(req);
   if (!req.query.code || !req.query.state || req.query.state !== oldSession.oauth_state) {
     clearYoutubeSession(res);
@@ -1029,7 +1107,7 @@ app.get("/api/youtube/callback", async (req, res) => {
       clearYoutubeSession(res);
       return res.status(502).send("Google login सफल हुआ, लेकिन YouTube चैनल सत्यापित नहीं हो सका। YouTube Data API v3 और खाते की अनुमति जाँचें, फिर Connect दोबारा करें।");
     }
-    setYoutubeSession(res, { scope: String(tokens.scope || ""), access_token: tokens.access_token,
+    setYoutubeSession(res, req, { scope: String(tokens.scope || ""), access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || oldSession.refresh_token,
       expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
       channel: { id: channel.id, title: channel.snippet?.title || "" } });
@@ -1044,7 +1122,7 @@ app.get("/api/youtube/callback", async (req, res) => {
 // Analytics -> advice. Separate endpoint so the raw numbers stay untouched and
 // the advice always comes from the same rows the analytics endpoint returned.
 app.get("/api/youtube/insights", async (req, res) => {
-  const linked = decryptSession(req);
+  const linked = youtubeSessionFor(req);
   if (!linked || !linked.access_token) {
     return res.status(409).json({ error: "पहले YouTube चैनल Connect करें।", code: "CHANNEL_NOT_CONNECTED" });
   }
@@ -1102,7 +1180,7 @@ app.get("/api/youtube/insights", async (req, res) => {
 });
 
 app.get("/api/youtube/analytics", async (req, res) => {
-  const linked = decryptSession(req);
+  const linked = youtubeSessionFor(req);
   if (!linked || !linked.access_token) {
     return res.status(409).json({
       error: "पहले YouTube चैनल Connect करें।",
@@ -1602,7 +1680,9 @@ app.post("/api/render", async (req, res) => {
 app.get("/api/render/status/:jobId", (req, res) => {
   const job = jobQueue.get(req.params.jobId);
   // Another user's job id must be indistinguishable from an unknown one.
-  if (!job || (job.ownerId && job.ownerId !== req.user.id)) {
+  // A job with no recorded owner belongs to the instance owner, never to whoever
+  // happens to ask first.
+  if (!job || !ownsRecord(req, job)) {
     return res.status(404).json({ error: "Render job नहीं मिला।" });
   }
   return res.json({ jobId: job.id, status: job.status, error: job.error, size: job.result && job.result.size,
@@ -1612,7 +1692,9 @@ app.get("/api/render/status/:jobId", (req, res) => {
 
 app.get("/api/render/download/:jobId", (req, res) => {
   const job = jobQueue.get(req.params.jobId);
-  if (!job || (job.ownerId && job.ownerId !== req.user.id)) {
+  // A job with no recorded owner belongs to the instance owner, never to whoever
+  // happens to ask first.
+  if (!job || !ownsRecord(req, job)) {
     return res.status(404).json({ error: "Render job नहीं मिला।" });
   }
   if (job.status !== "completed" || !job.result || !job.result.outputPath) {
@@ -1643,6 +1725,29 @@ const { ProjectStore, createProject } = require("./lib/projects");
 const projectStore = new ProjectStore({ root: path.join(dataRoot, "projects") });
 const recoveredProjects = projectStore.recoverInterrupted();
 if (recoveredProjects) console.log("Resumed " + recoveredProjects + " interrupted project(s) from disk");
+
+// Records written before authentication existed have no owner. Access is
+// fail-closed, so they would be visible to nobody and the real owner would lose
+// their own work — but handing them out automatically is worse: after a redeploy
+// that wipes users.json, "automatic adoption" would give the previous owner's
+// projects to whoever creates the next owner account.
+//
+// So adoption happens exactly once, for an account that has just proved it holds
+// the bootstrap token, and only for records that predate ownership. It never runs
+// at startup and never for an ordinary account.
+function adoptLegacyRecords(verifiedOwnerId) {
+  const ownerId = verifiedOwnerId || null;
+  if (!ownerId) return { projects: 0, characters: 0 };
+  // Belt and braces: the id must really belong to the owner account.
+  const owner = authStore.getUser(ownerId);
+  if (!owner || owner.role !== "owner") return { projects: 0, characters: 0 };
+  const projects = projectStore.adoptOwner(ownerId);
+  const characters = characterLibrary.adoptOwner(ownerId);
+  if (projects || characters) {
+    console.log("Adopted " + projects + " project(s) and " + characters + " character(s) into the bootstrapped owner account");
+  }
+  return { projects, characters };
+}
 
 const storyEngine = require("./lib/story");
 const timelineEngine = require("./lib/timeline");
@@ -1733,13 +1838,28 @@ function geminiProviders() {
 
 // Every project lookup goes through here so one user can never read, render or
 // delete another user's project.
+// Ownership is fail-closed. Before this, a record with no ownerId was readable
+// and deletable by ANY signed-in account ("ownerId && ownerId !== me"), which is
+// a straight IDOR for every project restored from an older backup or written
+// before authentication existed. Now a missing owner means the instance owner,
+// because that is who those records belong to.
+function ownsRecord(req, record) {
+  if (!record || !req.user) return false;
+  // Defence in depth: the owner gate already refuses non-owners, but this rule
+  // must not depend on that gate staying where it is. A member whose own id
+  // happens to be stamped on a record still owns nothing.
+  if (req.user.role !== "owner") return false;
+  const owner = record.ownerId || authStore.ownerId();
+  return Boolean(owner) && owner === req.user.id;
+}
+
 function ownedProjectById(req, res, id) {
   const project = projectStore.get(id);
   if (!project) {
     res.status(404).json({ error: "प्रोजेक्ट नहीं मिला।" });
     return null;
   }
-  if (project.ownerId && project.ownerId !== req.user.id) {
+  if (!ownsRecord(req, project)) {
     res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
     return null;
   }
@@ -1752,7 +1872,7 @@ function ownedProject(req, res) {
     res.status(404).json({ error: "प्रोजेक्ट नहीं मिला।" });
     return null;
   }
-  if (project.ownerId && project.ownerId !== req.user.id) {
+  if (!ownsRecord(req, project)) {
     res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
     return null;
   }
@@ -1986,7 +2106,7 @@ app.post("/api/characters", (req, res) => {
 
 app.delete("/api/characters/:id", (req, res) => {
   const character = characterLibrary.get(req.params.id);
-  if (!character || (character.ownerId && character.ownerId !== req.user.id)) {
+  if (!character || !ownsRecord(req, character)) {
     return res.status(404).json({ error: "किरदार नहीं मिला।" });
   }
   characterLibrary.remove(req.params.id);
@@ -2016,7 +2136,7 @@ function decodeSprite(value) {
 
 function ownedCharacter(req, res) {
   const character = characterLibrary.get(req.params.id);
-  if (!character || (character.ownerId && character.ownerId !== req.user.id)) {
+  if (!character || !ownsRecord(req, character)) {
     res.status(404).json({ error: "किरदार नहीं मिला।" });
     return null;
   }
@@ -2030,13 +2150,19 @@ app.get("/api/characters/:id", (req, res) => {
   return res.json({
     character,
     animation: {
-      ready: Boolean(rig && rig.animationReady),
-      shapes: rig ? rig.shapes : [],
+      // animationReady is stored when the sprites were uploaded. If the engine
+      // is not installed any more, animation cannot run whatever the rig says,
+      // so readiness must require a live engine rather than a stale flag.
+      ready: Boolean(rig && rig.animationReady && lipsync.resolveEngine()),
+      rigReady: Boolean(rig && rig.animationReady),
+      shapes: rig && Array.isArray(rig.shapes) ? rig.shapes : [],
       anchor: rig ? rig.anchor : null,
       lipSyncEngine: lipsync.engineLabel(),
-      message: rig && rig.animationReady
+      message: rig && rig.animationReady && !lipsync.resolveEngine()
+        ? "Rig सेव है, पर lip-sync engine installed नहीं — npm install rhubarb-lip-sync-wasm करें।"
+        : (rig && rig.animationReady
         ? "Animation rig तैयार है।"
-        : "Mouth sprites अपलोड करें तभी lip-sync चलेगा।",
+        : "Mouth sprites अपलोड करें तभी lip-sync चलेगा।"),
     },
   });
 });
@@ -2109,6 +2235,16 @@ app.post("/api/characters/:id/lipsync", async (req, res) => {
   if (!character) return;
   const audioBase64 = String((req.body || {}).audioBase64 || "");
   if (!audioBase64) return res.status(400).json({ error: "audioBase64 चाहिए।" });
+  // Check the size before decoding it. analyseAudio refuses an over-long clip
+  // too, but refusing here avoids writing a huge file to /tmp on a small
+  // instance first.
+  const estimatedBytes = Math.floor(audioBase64.length * 0.75);
+  if (estimatedBytes > lipsync.MAX_AUDIO_SECONDS * 16000 * 2) {
+    return res.status(413).json({
+      error: "Lip-sync के लिए audio " + lipsync.MAX_AUDIO_SECONDS + "s से लंबा है (लगभग " +
+        Math.round(estimatedBytes / 1024 / 1024) + " MB)। छोटा clip भेजें।",
+    });
+  }
   if (!lipsync.resolveEngine()) {
     return res.status(503).json(Object.assign(blocked(
       "Lip-sync engine installed नहीं है (npm install rhubarb-lip-sync-wasm या RHUBARB_PATH)।"
@@ -2201,6 +2337,9 @@ app.post("/api/projects", (req, res) => {
       quality: body.quality,
       durationMinutes: body.durationMinutes,
       sceneCount: Math.min(150, Math.max(3, Number(body.sceneCount) || storyEngine.planSceneCount(body.durationMinutes))),
+      motion: body.motion,
+      music: body.music !== false,
+      soundEffects: body.soundEffects !== false,
     });
     projectStore.save(project);
     return res.status(201).json({ project });
@@ -2274,6 +2413,31 @@ function progressSaver(current) {
 
 // A stage is a pure function of the project on disk: finished scenes are
 // skipped and missing ones rebuilt, so the same task can be replayed after a
+// Reads cancellation from disk, the only place that is authoritative: the cancel
+// route writes project.status = "cancelled" there, while the in-memory copy that
+// started the job still says "rendering".
+function cancelledOnDisk(projectId) {
+  return () => {
+    const fresh = projectStore.get(projectId);
+    return Boolean(fresh && fresh.status === "cancelled");
+  };
+}
+
+// A cancelled render is not a failure and not a success: it stops, keeps every
+// finished clip so a later render resumes, and leaves the record honest.
+function markCancelled(project, message) {
+  project.status = "cancelled";
+  project.error = null;
+  project.progress = {
+    ...(project.progress || {}),
+    stage: "cancelled",
+    message: message || "उपयोगकर्ता ने रोका — अधूरा काम सुरक्षित है, दोबारा चलाने पर वहीं से आगे बढ़ेगा।",
+    updatedAt: new Date().toISOString(),
+  };
+  projectStore.save(project);
+  return project;
+}
+
 // restart (either by the queue worker or by an explicit resume).
 async function runProjectStage(projectId, stage) {
   const project = projectStore.get(projectId);
@@ -2281,7 +2445,20 @@ async function runProjectStage(projectId, stage) {
   if (!["story", "assets", "render", "automate"].includes(stage)) {
     throw Object.assign(new Error("अनजान project stage: " + stage), { statusCode: 400 });
   }
-  if (project.status === "cancelled") return project;
+  // A cancel is a request to stop the *current* work, not a life sentence. Any
+  // new stage run is the user explicitly asking to continue, so the flag is
+  // cleared here — without this a cancelled project could never be finished.
+  // Work already on disk (clips, chunks, assets) still makes this a resume.
+  if (project.status === "cancelled") {
+    project.status = project.render && project.render.videoPath ? "completed" : "draft";
+    project.progress = {
+      ...(project.progress || {}),
+      stage: "resuming",
+      message: "रोका हुआ काम फिर से शुरू किया जा रहा है…",
+      updatedAt: new Date().toISOString(),
+    };
+    projectStore.save(project);
+  }
   const characters = characterLibrary.listFor(project.ownerId);
   const saveProgress = progressSaver(project);
   if (stage === "story") {
@@ -2303,10 +2480,17 @@ async function runProjectStage(projectId, stage) {
   if (stage === "render") {
     if (!project.story) throw Object.assign(new Error("पहले कहानी बनाएँ।"), { statusCode: 409 });
     projectStore.setStatus(project, "rendering", "MP4 render हो रहा है…");
-    const result = await pipeline.render(project, {
-      store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
-      characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
-    });
+    let result;
+    try {
+      result = await pipeline.render(project, {
+        store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
+        characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
+        isCancelled: cancelledOnDisk(project.id),
+      });
+    } catch (error) {
+      if (error.code === "RENDER_CANCELLED") return markCancelled(project, "Render " + error.cancelledAt + " पर रोका गया।");
+      throw error;
+    }
     project.status = "completed";
     project.error = null;
     project.progress = {
@@ -2344,10 +2528,17 @@ async function runProjectStage(projectId, stage) {
     return projectStore.save(project);
   }
   projectStore.setStatus(project, "rendering", "MP4 render हो रहा है…");
-  const result = await pipeline.render(project, {
-    store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
-    characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
-  });
+  let result;
+  try {
+    result = await pipeline.render(project, {
+      store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
+      characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
+      isCancelled: cancelledOnDisk(project.id),
+    });
+  } catch (error) {
+    if (error.code === "RENDER_CANCELLED") return markCancelled(project, "Render " + error.cancelledAt + " पर रोका गया।");
+    throw error;
+  }
   if (project.status === "cancelled") {
     project.progress = { ...(project.progress || {}), stage: "cancelled", message: "render से पहले रोका गया", updatedAt: new Date().toISOString() };
     return projectStore.save(project);
@@ -2378,7 +2569,17 @@ async function backupFinishedProject(project) {
     return { skipped: true, reason: "STORAGE_NOT_CONFIGURED" };
   }
   try {
-    const result = await storageLib.backupProject(backupStorage, project, projectStore.dirFor(project.id));
+    const projectDir = projectStore.dirFor(project.id);
+    // The record on disk is what a restore reads, so it must describe the
+    // finished video before anything is copied. Saving after the backup left a
+    // stale record (and a stale videoPath) inside the backup.
+    if (project.render && project.render.videoPath) {
+      const onDisk = path.join(projectDir, "final.mp4");
+      if (fs.existsSync(project.render.videoPath) || fs.existsSync(onDisk)) {
+        projectStore.save(project);
+      }
+    }
+    const result = await storageLib.backupProject(backupStorage, project, projectDir);
     project.backup = {
       driver: result.driver, files: result.files.map(file => file.key),
       bytes: result.bytes, at: new Date().toISOString(),
@@ -2552,6 +2753,43 @@ app.get("/api/projects/:id/download", (req, res) => {
   res.setHeader("Content-Type", "video/mp4");
   res.setHeader("Content-Disposition", 'attachment; filename="BABA-AI-' + project.id + '.mp4"');
   return res.sendFile(path.resolve(project.render.videoPath));
+});
+
+// Bring a backed-up project back. This is the other half of backup: without it
+// a redeploy on an ephemeral filesystem still means the video is gone.
+app.post("/api/projects/:id/restore", async (req, res) => {
+  // Deliberately not ownedProject(): a restore is needed precisely when the
+  // project record is gone, so the record cannot be the authorisation check.
+  // The backup manifest carries the owner, and that is what is compared.
+  const id = String(req.params.id || "");
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) return res.status(400).json({ error: "अमान्य project id।" });
+  if (!backupStorage || (backupStorage.name === "local" && !process.env.STORAGE_LOCAL_DIR)) {
+    return res.status(503).json(blocked(
+      "Backup storage configure नहीं है, इसलिए restore BLOCKED है। STORAGE_LOCAL_DIR या STORAGE_S3_* सेट करें।"
+    ));
+  }
+  try {
+    // Read the manifest first: it is the only proof of who owns this backup.
+    const manifest = await storageLib.readManifest(backupStorage, id);
+    if (!ownsRecord(req, manifest)) {
+      return res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
+    }
+    const existing = projectStore.get(id);
+    if (existing && !ownsRecord(req, existing)) {
+      return res.status(403).json({ error: "यह प्रोजेक्ट आपका नहीं है।", code: "FORBIDDEN" });
+    }
+    const result = await storageLib.restoreProject(backupStorage, id, { dataDir: dataRoot });
+    return res.json({
+      restored: result.restored.length,
+      skipped: result.skipped,
+      driver: result.driver,
+      savedAt: result.savedAt,
+      bytes: result.restored.reduce((sum, file) => sum + file.bytes, 0),
+    });
+  } catch (error) {
+    safeLog("Project restore failed", error);
+    return res.status(error.statusCode || 500).json({ error: error.message || "Restore विफल।" });
+  }
 });
 
 app.get("/api/projects/:id/captions", (req, res) => {
@@ -2736,4 +2974,4 @@ if (bootRecovery.requeued.length || bootRecovery.failed.length) {
     bootRecovery.failed.length + " failed");
 }
 
-module.exports = { app, getStatus, googleFetch, uploadFetch, GOOGLE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };
+module.exports = { app, getStatus, ownsRecordForTests: (req, record) => ownsRecord(req, record), googleFetch, uploadFetch, GOOGLE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS, normalizeYoutubeTags, validateScheduleAt, buildVideoStatus, validateAnalyticsRange, shapeAnalyticsReport, isNetworkError, networkErrorDetail, isQuotaError, extractRetryHint, quotaInfo, withTemporaryRetries, generateTextWithQuotaFallback, getPcmDurationSeconds, setAIClientFactoryForTests, resetAIClientFactory };

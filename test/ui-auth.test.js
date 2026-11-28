@@ -23,6 +23,8 @@ try {
 }
 
 const { app } = require("../server");
+// Owner creation needs the bootstrap token; importing the helper installs it.
+const { OWNER_BOOTSTRAP_TOKEN } = require("./helpers");
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -94,8 +96,14 @@ test("the dashboard gates the app behind sign-in and wires CSRF", { timeout: 600
     assert.equal(window.document.getElementById("authGate").hidden, false, "gate must be visible when logged out");
     assert.equal(window.document.getElementById("authBar").hidden, true, "user bar must be hidden when logged out");
 
+    assert.equal(window.document.getElementById("authRegisterBtn").hidden, false,
+      "the bootstrap door is open here, so the page must offer it");
     window.document.getElementById("authUsername").value = "browser_user";
     window.document.getElementById("authPassword").value = "browser-pass-123";
+    // The owner door: the page must ask for the token, and only for it.
+    const tokenField = window.document.getElementById("authBootstrapToken");
+    assert.equal(tokenField.hidden, false, "the bootstrap token field must be offered while no owner exists");
+    tokenField.value = OWNER_BOOTSTRAP_TOKEN;
     window.document.getElementById("authRegisterBtn").click();
     await sleep(1200);
 

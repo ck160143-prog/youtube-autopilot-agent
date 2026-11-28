@@ -18,7 +18,7 @@ process.env.GEMINI_API_KEY = "dummy-test-key-for-research";
 const research = require("../lib/research");
 const story = require("../lib/story");
 const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 let server;
 let base;
@@ -28,7 +28,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "research_user");
+  session = await registerOwner(base, "research_user");
 });
 
 test.after(() => { if (server) server.close(); resetAIClientFactory(); });

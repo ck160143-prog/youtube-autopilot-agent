@@ -16,7 +16,7 @@ const path = require("node:path");
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-analytics-"));
 
 const { app, validateAnalyticsRange, shapeAnalyticsReport } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 const DAY = 24 * 3600 * 1000;
 const NOW = Date.parse("2026-12-10T12:00:00Z");
@@ -29,7 +29,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "analytics_user");
+  session = await registerOwner(base, "analytics_user");
 });
 
 test.after(() => server && server.close());

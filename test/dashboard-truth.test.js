@@ -13,6 +13,8 @@ const path = require("node:path");
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-truth-"));
 
 const REPO = path.join(__dirname, "..");
+// Owner creation needs the bootstrap token; importing the helper installs it.
+const { OWNER_BOOTSTRAP_TOKEN } = require("./helpers");
 const html = fs.readFileSync(path.join(REPO, "index.html"), "utf8");
 
 const { app } = require("../server");
@@ -64,6 +66,12 @@ async function openPage(base) {
 async function signIn(window, username, password, mode) {
   window.document.getElementById("authUsername").value = username;
   window.document.getElementById("authPassword").value = password;
+  if (mode === "register") {
+    // The owner door asks for the bootstrap token; the page shows the field only
+    // while that door is the open one.
+    const tokenField = window.document.getElementById("authBootstrapToken");
+    if (tokenField && !tokenField.hidden) tokenField.value = process.env.OWNER_BOOTSTRAP_TOKEN;
+  }
   const button = window.document.getElementById(mode === "register" ? "authRegisterBtn" : "authLoginBtn");
   button.click();
   const ok = await waitFor(() => window.document.getElementById("authGate").hidden === true, 8000);
@@ -76,9 +84,18 @@ test("static: capability and progress panels carry different, explicit labels", 
   assert.doesNotMatch(html, /वास्तविक स्थिति — /, "the ambiguous old capability label must be gone");
 });
 
-test("static: lip-sync BLOCKED is described as a free-mode limitation, not a bug", () => {
-  assert.match(html, /बग नहीं/, "lip-sync note must say it is not a bug");
-  assert.match(html, /Free mode में/, "lip-sync note must name the free alternative");
+test("static: the lip-sync note follows the installed engine instead of a fixed claim", () => {
+  // The old static note said lip-sync was always BLOCKED, which became false the
+  // moment the WASM engine was installed. The copy is now driven by
+  // /api/capabilities, and the behavioural coverage lives in
+  // test/ui-lipsync-status.test.js.
+  assert.match(html, /caps\.lipSync && caps\.lipSync\.available/,
+    "the note must read the real capability, not a constant");
+  assert.match(html, /P2\.lipSyncAvailable = Boolean/, "the capability must be remembered for the render panel");
+  assert.doesNotMatch(html, /Character animation और lip-sync: ⛔ BLOCKED — यह बग नहीं है/,
+    "the stale unconditional BLOCKED claim must be gone");
+  assert.match(html, /3D character animation अभी उपलब्ध नहीं है/,
+    "copy must still be honest about 3D, which really is unavailable");
 });
 
 test("static: duration copy matches the real scene plan and warns above 1 minute", () => {

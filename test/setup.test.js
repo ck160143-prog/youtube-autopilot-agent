@@ -12,7 +12,7 @@ const path = require("node:path");
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-setup-"));
 
 const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 const { auditSetup, redactSecrets, keyLooksValid, setupGuideFor, cleanSecret, readSecret, keyShape } = require("../lib/setup");
 const ffmpegTools = require("../lib/ffmpeg");
 
@@ -24,7 +24,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "setup_user");
+  session = await registerOwner(base, "setup_user");
 });
 
 test.after(() => server.close());
@@ -389,4 +389,121 @@ test("lib/models reads every models.list shape without inventing IDs", async () 
   assert.deepEqual([...await listModelIds(pager)], ["gemini-d", "gemini-e"]);
   // A broken pager must not hang or throw: it simply reports nothing.
   assert.deepEqual([...await listModelIds(null)], []);
+});
+
+test("an unconfigured backup is reported as a warning, not as healthy", () => {
+  const { auditSetup } = require("../lib/setup");
+  const base = {
+    GEMINI_API_KEY: "not-a-real-key",
+  };
+  const env = Object.assign({}, process.env, base);
+  delete env.STORAGE_S3_ENDPOINT;
+  delete env.STORAGE_S3_BUCKET;
+  delete env.STORAGE_S3_ACCESS_KEY;
+  delete env.STORAGE_S3_SECRET_KEY;
+  delete env.STORAGE_LOCAL_DIR;
+
+  const report = auditSetup({
+    env,
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/none.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const check = report.checks.find(item => item.id === "BACKUP_STORAGE");
+  assert.ok(check, "backup storage must be audited");
+  assert.equal(check.status, "warning");
+  assert.match(check.detail, /redeploy loses/);
+  assert.ok(report.warnings.includes("BACKUP_STORAGE"));
+  assert.ok(!report.missing.includes("BACKUP_STORAGE"), "it must not block rendering");
+});
+
+test("a configured backup reads as ok, and names the driver without leaking it", () => {
+  const { auditSetup } = require("../lib/setup");
+  const env = Object.assign({}, process.env, {
+    GEMINI_API_KEY: "not-a-real-key",
+    STORAGE_S3_ENDPOINT: "https://example.invalid",
+    STORAGE_S3_BUCKET: "media",
+    STORAGE_S3_ACCESS_KEY: "SECRETACCESSKEY",
+    STORAGE_S3_SECRET_KEY: "SECRETVALUE",
+  });
+  const report = auditSetup({
+    env,
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/none.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const check = report.checks.find(item => item.id === "BACKUP_STORAGE");
+  assert.equal(check.status, "ok");
+  assert.match(check.detail, /S3-compatible/);
+  const serialised = JSON.stringify(report);
+  assert.ok(!serialised.includes("SECRETACCESSKEY"), "an access key must never be echoed");
+  assert.ok(!serialised.includes("SECRETVALUE"), "a secret key must never be echoed");
+});
+
+test("the backup warning carries instructions the operator can act on", () => {
+  const { auditSetup } = require("../lib/setup");
+  const env = Object.assign({}, process.env, { GEMINI_API_KEY: "not-a-real-key" });
+  delete env.STORAGE_S3_ENDPOINT; delete env.STORAGE_S3_BUCKET;
+  delete env.STORAGE_S3_ACCESS_KEY; delete env.STORAGE_S3_SECRET_KEY;
+  delete env.STORAGE_LOCAL_DIR;
+  const report = auditSetup({
+    env, ffmpeg: { available: true, version: "9.0" }, fontFile: "/tmp/none.ttf",
+    youtubeReady: true, lipSync: { available: true, source: "wasm" }, dataDir: require("os").tmpdir(),
+  });
+  const guide = report.warningGuide.find(item => item.id === "BACKUP_STORAGE");
+  assert.ok(guide, "a warning without steps is just noise");
+  assert.ok(guide.steps.length >= 3);
+  assert.match(guide.steps.join(" "), /STORAGE_S3_ENDPOINT/);
+  assert.ok(/secret/i.test(guide.steps.join(" ")) || /Secret/.test(guide.steps.join(" ")),
+    "the guide must warn about secret handling");
+});
+
+test("every non-blocking problem reaches warnings[], whichever spelling it uses", () => {
+  const { auditSetup, isWarning, WARNING_STATUS } = require("../lib/setup");
+  // Three separate checks are non-blocking: a malformed key, a missing font and
+  // an unset registration key. Before the fix only the backup check appeared,
+  // because warnings[] filtered the single literal "warning" and these said
+  // "warn" — so the operator was told everything was fine.
+  const report = auditSetup({
+    env: Object.assign({}, process.env, { GEMINI_API_KEY: "short" }),
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/definitely-not-a-font.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const warnIds = report.checks.filter(c => isWarning(c.status)).map(c => c.id);
+  assert.ok(warnIds.includes("GEMINI_API_KEY"), "a malformed key must be reported");
+  assert.ok(warnIds.includes("DEVANAGARI_FONT"), "a missing font must be reported");
+  assert.ok(warnIds.includes("REGISTRATION_KEY"), "a closed registration must be reported");
+  for (const id of warnIds) {
+    assert.ok(report.warnings.includes(id), id + " is a warning but missing from warnings[]");
+  }
+  assert.equal(WARNING_STATUS, "warning", "one canonical spelling must be exported");
+  assert.equal(isWarning("warn"), true, "the legacy spelling must still be understood");
+  assert.equal(isWarning("ok"), false);
+  assert.equal(isWarning("blocked"), false);
+});
+
+test("no warning is left without an explanation", () => {
+  const { auditSetup, isWarning } = require("../lib/setup");
+  const report = auditSetup({
+    env: Object.assign({}, process.env, { GEMINI_API_KEY: "short" }),
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/definitely-not-a-font.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const warnIds = report.checks.filter(c => isWarning(c.status)).map(c => c.id);
+  const guided = report.warningGuide.map(g => g.id);
+  for (const id of warnIds) {
+    assert.ok(guided.includes(id), id + " is a warning with no guide");
+    const guide = report.warningGuide.find(g => g.id === id);
+    assert.ok(guide.steps.length >= 2, id + " guide has no actionable steps");
+  }
 });

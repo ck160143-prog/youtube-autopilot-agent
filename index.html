@@ -116,12 +116,15 @@ input,select,textarea{font-size:16px}
     <p id="authGateMessage" class="status">अपना account चुनें।</p>
     <input id="authUsername" placeholder="username (3–32 अक्षर, a-z 0-9 _)" autocomplete="username">
     <input id="authPassword" type="password" placeholder="password (कम से कम 10 अक्षर)" autocomplete="current-password">
-    <input id="authRegKey" placeholder="registration key (सिर्फ नए account के लिए)" autocomplete="off">
+    <div id="authRegisterFields" hidden>
+      <input id="authRegKey" placeholder="registration key (सिर्फ नए account के लिए)" autocomplete="off">
+      <input id="authBootstrapToken" type="password" placeholder="OWNER_BOOTSTRAP_TOKEN (सिर्फ पहला owner)" autocomplete="off">
+    </div>
     <div class="auth-actions">
       <button id="authLoginBtn">→ साइन इन</button>
-      <button id="authRegisterBtn" class="secondary">नया account बनाएँ</button>
+      <button id="authRegisterBtn" class="secondary" hidden>नया account बनाएँ</button>
     </div>
-    <p class="auth-note">पहला account मालिक (owner) बनता है और पहले से बने प्रोजेक्ट उसी को मिलते हैं। उसके बाद नया account सिर्फ <code>APP_REGISTRATION_KEY</code> से खुलता है।</p>
+    <p class="auth-note" id="authAccessNote">यह निजी (owner-only) instance है — सिर्फ मालिक का account अंदर आ सकता है।</p>
   </div>
 </div>
 <header>
@@ -152,6 +155,8 @@ input,select,textarea{font-size:16px}
 <h2>📺 YouTube Channel</h2>
 <p id="channelStatus" class="status">अभी चैनल कनेक्ट नहीं है।</p>
 <button onclick="connectYouTube()">🔗 YouTube चैनल Connect करें</button><button class="secondary" onclick="refreshYouTubeStatus()">🔄 कनेक्शन स्थिति जाँचें</button>
+<button class="secondary" id="youtubeDisconnectBtn" onclick="disconnectYouTube()" disabled title="पहले status जाँचें">🔓 चैनल Disconnect करें</button>
+<p class="small">Disconnect सिर्फ़ इस browser का YouTube access हटाता है — आपके चैनल पर कोई वीडियो नहीं मिटता और Google के Settings में दिया गया access बाकी रहता है। दोबारा Connect तुरंत हो सकता है।</p>
 <p class="small">वास्तविक चैनल कनेक्शन के लिए Google OAuth और YouTube API सेटअप जरूरी है।</p>
 <button class="secondary" id="analyticsBtn" onclick="loadAnalytics()">📈 Analytics देखें (पिछले 29 दिन)</button>
 <p id="analyticsStatus" class="status" role="status"></p>
@@ -311,12 +316,27 @@ input,select,textarea{font-size:16px}
 </select></div>
 <div><label>रेज़ोल्यूशन</label><select id="p2Quality"><option value="720p">720p</option><option value="1080p">1080p</option></select></div>
 </div>
+<div class="grid">
+<div><label>कैमरा मोशन</label><select id="p2Motion">
+<option value="kenburns-in">धीरे ज़ूम इन (डिफ़ॉल्ट)</option>
+<option value="kenburns-out">धीरे ज़ूम आउट</option>
+<option value="pan">धीरे बहाव (pan)</option>
+<option value="parallax">2.5D गहराई — parallax</option>
+<option value="parallax-reverse">2.5D गहराई — उल्टा</option>
+<option value="none">कोई मोशन नहीं</option>
+</select></div>
+<div><label>आवाज़ की परतें</label>
+<select id="p2Music"><option value="on">संगीत + sound effects (डिफ़ॉल्ट)</option><option value="off">सिर्फ़ हिंदी आवाज़</option></select>
+</div>
+</div>
+<p class="small">2.5D पर parallax सिर्फ़ स्थिर तस्वीर पर गहराई का भ्रम है — असली 3D मॉडल नहीं।</p>
 <label>किरदार (कम से कम एक चुनें)</label>
 <div id="p2Cast" class="small">कोई किरदार सेव नहीं है। पहले ऊपर किरदार बनाएँ।</div>
 <button class="green" id="p2StartBtn" onclick="p2.start()">🚀 बनाएँ और पूरा वीडियो तैयार करें</button>
 <p class="small">यह असली pipeline है: कहानी → हर scene की image → हर scene की हिंदी आवाज़ → FFmpeg से MP4। जो चरण API key के बिना नहीं चलता, वह ऊपर BLOCKED दिखता है।</p>
 <div id="p2ProgressWrap" style="display:none;margin-top:12px">
 <div style="background:#111725;border-radius:8px;overflow:hidden"><div id="p2ProgressBar" style="height:12px;width:0%;background:#18865d;transition:width .4s"></div></div>
+<button class="secondary" id="p2CancelBtn" onclick="p2.cancel()" style="margin-top:8px">⏹ चालू काम रोकें</button>
 </div>
 <div id="p2Status" class="status" aria-live="polite">तैयार।</div>
 <div id="p2ProjectView"></div>
@@ -371,20 +391,51 @@ function youtubeStatusMessage(data) {
   return '🟡 credentials सेट हैं, पर चैनल Connect नहीं है। Connect बटन दबाएँ।';
 }
 
+// Disconnect is the one YouTube action that needs no Google round-trip: it only
+// clears this browser's encrypted session cookie. Security and ownership are
+// therefore handled by the server route (auth + CSRF), not by the client.
+async function disconnectYouTube() {
+  var button = document.getElementById('youtubeDisconnectBtn');
+  var status = document.getElementById('channelStatus');
+  var confirmed = typeof window.confirm === 'function'
+    ? window.confirm('इस browser से YouTube चैनल का access हटाना है? चैनल पर कोई वीडियो नहीं मिटेगा — सिर्फ़ यह connection हटेगा।')
+    : true;
+  if (!confirmed) return;
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'Disconnect हो रहा है…';
+  try {
+    var response = await fetch('/api/youtube/disconnect', { method: 'POST' });
+    var data = await readApiJson(response);
+    if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+    await refreshConnectionStatus();
+  } catch (error) {
+    if (status) status.textContent = '❌ Disconnect विफल: ' + (error.message || 'अज्ञात कारण') + ' — दोबारा कोशिश करें।';
+    // Leave the button usable so the user can retry; the flag comes from status.
+    if (button) button.disabled = false;
+  }
+}
+
 async function refreshConnectionStatus() {
   var top = document.getElementById('channelStatus');
   var setup = document.getElementById('setupYouTubeStatus');
   var stamp = 'आखिरी जाँच: ' + new Date().toLocaleTimeString();
   var message;
+  var data = null;
   try {
     var response = await fetch('/api/youtube/status', { cache: 'no-store' });
-    var data = await readApiJson(response);
+    data = await readApiJson(response);
     message = youtubeStatusMessage(data);
   } catch (_) {
     message = 'कनेक्शन स्थिति नहीं मिल सकी।';
   }
   if (top) top.textContent = message + ' · ' + stamp;
   if (setup) setup.textContent = 'YouTube OAuth — ' + message + ' · ' + stamp;
+  // Offering "disconnect" when nothing is connected would be a dead control.
+  var disconnectBtn = document.getElementById('youtubeDisconnectBtn');
+  if (disconnectBtn) {
+    disconnectBtn.disabled = !(data && data.connected);
+    disconnectBtn.title = data && data.connected ? 'इस browser का YouTube access हटाएँ' : 'कोई चैनल जुड़ा नहीं है';
+  }
 }
 
 async function loadAnalytics() {
@@ -1854,11 +1905,19 @@ try {
     if (!wrap || !bar) return;
     wrap.style.display = 'block';
     bar.style.width = Math.max(0, Math.min(100, Number(percent) || 0)) + '%';
+    // Stopping only makes sense while something is running.
+    var cancel = el('p2CancelBtn');
+    if (cancel) cancel.style.display = Number(percent) >= 100 ? 'none' : 'inline-block';
   }
 
   // Read-only handle on the open project id, so the research panel can work on
   // whichever project the user actually opened (there is one id, not two copies).
   P2.currentProjectId = function () { return currentId; };
+  // Setter needed by the research panel's "open project" flow and by tests:
+  // the open project must be switchable without duplicating the id.
+  P2.selectProject = function (id) { currentId = id ? String(id) : null; return currentId; };
+  // Exposed so the stop control's visibility can be verified directly.
+  P2.setProgress = setProgress;
 
   P2.api = async function (url, options) {
     var response = await fetch(url, options);
@@ -1883,6 +1942,8 @@ try {
     var node = el('p2Capabilities');
     try {
       var caps = await P2.api('/api/capabilities');
+      // Remembered so the render panel can say why animation did or did not run.
+      P2.lipSyncAvailable = Boolean(caps.lipSync && caps.lipSync.available);
       var f = caps.features || {};
       var parts = [
         'कहानी ' + badge(f.story),
@@ -1897,7 +1958,11 @@ try {
       var blockedNote = document.createElement('p');
       blockedNote.className = 'small';
       blockedNote.style.color = '#ffd18a';
-      blockedNote.textContent = 'Character animation और lip-sync: ⛔ BLOCKED — यह बग नहीं है। Free mode में वीडियो generated scene images पर camera motion वाला असली MP4 है, 3D character animation नहीं। Lip-sync के लिए mouth sprites + motion provider चाहिए (optional, बिना भी वीडियो बनता है)।';
+      var lipState = caps.lipSync && caps.lipSync.available
+        ? '✅ उपलब्ध (' + caps.lipSync.source + ') — पर हर दृश्य के लिए उस बोलने वाले किरदार का rig (mouth sprites) भी चाहिए।'
+        : '⛔ BLOCKED — lip-sync engine installed नहीं है। `npm install rhubarb-lip-sync-wasm` या RHUBARB_PATH सेट करें।';
+      blockedNote.textContent = 'Lip-sync: ' + lipState +
+        ' 3D character animation अभी उपलब्ध नहीं है — वीडियो generated scene images पर camera motion वाला असली MP4 है।';
       node.appendChild(blockedNote);
       (caps.blockedReasons || []).forEach(function (reason) {
         var line = document.createElement('p');
@@ -1945,6 +2010,20 @@ try {
         look.textContent = character.look + (character.outfit ? ' · ' + character.outfit : '');
         row.appendChild(look);
       }
+      // Whether this character can actually be animated. The rig is what makes
+      // lip-sync fire at render time, so a character without one is silently a
+      // static picture — that must be visible here, not discovered afterwards.
+      var rig = character.rig || null;
+      var ready = Boolean(rig && rig.animationReady && rig.mouth);
+      var shapes = rig && Array.isArray(rig.shapes) ? rig.shapes : [];
+      var anim = document.createElement('p');
+      anim.className = 'small';
+      anim.setAttribute('data-anim-ready', ready ? 'yes' : 'no');
+      anim.textContent = ready
+        ? '🎭 Lip-sync तैयार — ' + shapes.length + ' mouth shapes (' + shapes.join(', ') + ')'
+        : '⬜ Lip-sync बंद — mouth sprites अपलोड नहीं हैं, यह किरदार स्थिर तस्वीर की तरह दिखेगा।';
+      row.appendChild(anim);
+
       var remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'secondary';
@@ -2056,8 +2135,34 @@ try {
         if (typeof loadResearch === 'function') loadResearch(currentId);
       });
       row.appendChild(open);
+
+      // Restore: only useful when the project's files are gone (a redeploy on an
+      // ephemeral disk). It is offered, not assumed, and the server decides
+      // whether a backup actually exists.
+      if (project.status === 'completed' || project.render) {
+        var restore = document.createElement('button');
+        restore.type = 'button';
+        restore.className = 'secondary';
+        restore.style.marginLeft = '8px';
+        restore.textContent = '♻️ Backup से वापस लाएँ';
+        restore.addEventListener('click', function () { P2.restoreProject(project.id); });
+        row.appendChild(restore);
+      }
       node.appendChild(row);
     });
+  };
+
+  P2.restoreProject = async function (projectId) {
+    try {
+      setStatus('Backup से restore हो रहा है…');
+      var body = await P2.api('/api/projects/' + encodeURIComponent(projectId) + '/restore', { method: 'POST' });
+      setStatus('✅ ' + body.restored + ' फ़ाइलें वापस आ गईं (' + (body.driver || '?') + ', ' +
+        Math.round((body.bytes || 0) / 1024) + ' KB)। अब प्रोजेक्ट खोलें।');
+      await P2.loadProjects();
+      if (currentId === projectId) P2.refreshProject();
+    } catch (error) {
+      setStatus(error.message || 'Restore विफल रहा।', true);
+    }
   };
 
   P2.start = async function () {
@@ -2077,7 +2182,10 @@ try {
           durationMinutes: Number(el('p2Duration').value) || 1,
           style: el('p2Style').value,
           aspect: el('p2Aspect').value,
-          quality: el('p2Quality').value
+          quality: el('p2Quality').value,
+          motion: el('p2Motion') ? el('p2Motion').value : 'kenburns-in',
+          music: el('p2Music') ? el('p2Music').value !== 'off' : true,
+          soundEffects: el('p2Music') ? el('p2Music').value !== 'off' : true
         })
       });
       currentId = created.project.id;
@@ -2089,6 +2197,23 @@ try {
       setStatus((error.blocked ? 'BLOCKED: ' : '') + (error.message || 'शुरू नहीं हुआ।'), true);
     } finally {
       button.disabled = false;
+    }
+  };
+
+  // The API has had /cancel all along; without this the button did not exist,
+  // so a 30-minute render could not be stopped from the dashboard.
+  P2.cancel = async function () {
+    if (!currentId) return;
+    var button = el('p2CancelBtn');
+    if (button) button.disabled = true;
+    try {
+      await P2.api('/api/projects/' + encodeURIComponent(currentId) + '/cancel', { method: 'POST' });
+      setStatus('रोकने का अनुरोध भेजा गया — चालू चरण पूरा होते ही काम रुकेगा।');
+      P2.refreshProject();
+    } catch (error) {
+      setStatus(error.message || 'काम नहीं रुका।', true);
+    } finally {
+      if (button) button.disabled = false;
     }
   };
 
@@ -2121,6 +2246,8 @@ try {
     meta.textContent = 'स्थिति: ' + project.status + ' · ' + (project.durationMinutes || '?') + ' मिनट · ' +
       (project.sceneCount || '?') + ' दृश्य · ' + (project.aspect || '16:9') + ' · ' + (project.quality || '720p');
     node.appendChild(meta);
+
+    node.appendChild(renderStageControls(project));
 
     if (project.error) {
       var errorBox = document.createElement('p');
@@ -2184,6 +2311,21 @@ try {
         ' · music: ' + (project.render.music ? project.render.music.source : 'none') + ' · ' +
         (project.render.layout ? project.render.layout.width + 'x' + project.render.layout.height : '');
       node.appendChild(info);
+
+      // Naachte honth: whether 2D lip-sync actually reached the MP4, and if not,
+      // the reason — otherwise a silent slideshow looks like a bug.
+      var lip = project.render.lipSync || { scenes: 0, cues: 0 };
+      var lipInfo = document.createElement('p');
+      lipInfo.id = 'p2LipSyncInfo';
+      lipInfo.className = 'small';
+      lipInfo.textContent = lip.scenes
+        ? '🎭 Lip-sync लगा: ' + lip.scenes + ' दृश्य, ' + lip.cues + ' मुँह cues' +
+          (lip.shapes && lip.shapes.length ? ' (' + lip.shapes.join(', ') + ')' : '')
+        : '🎭 Lip-sync नहीं लगा — वीडियो सामान्य narrated slideshow है। कारण: ' +
+          (P2.lipSyncAvailable === false
+            ? 'lip-sync engine इस deployment में installed नहीं है।'
+            : 'बोलने वाले किरदार का rig (mouth sprites) सेव नहीं है, या narration में बोलने वाला हिस्सा नहीं मिला।');
+      node.appendChild(lipInfo);
 
       var download = document.createElement('a');
       download.href = '/api/projects/' + encodeURIComponent(project.id) + '/download';
@@ -2292,6 +2434,84 @@ try {
       box.textContent = (error.blocked ? 'BLOCKED: ' : '') + (error.message || 'Thumbnail नहीं बनी।');
     }
   };
+
+  // Re-run a single pipeline stage for the open project. These call the same
+  // routes the one-click flow uses, so there is one implementation of each step.
+  // They exist because a failed assets or render step otherwise leaves the user
+  // with nothing to do but start the whole paid generation again.
+  P2.runStage = async function (stage, label) {
+    if (!currentId) return;
+    if (stage === 'story') {
+      var ok = typeof window.confirm === 'function'
+        ? window.confirm('कहानी दोबारा लिखने पर पुराने दृश्यों की images और आवाज़ हट जाएँगी (अगली बार फिर बनेंगी)। आगे बढ़ें?')
+        : true;
+      if (!ok) return;
+    }
+    setStatus((label || stage) + ' चल रहा है…');
+    try {
+      await P2.api('/api/projects/' + encodeURIComponent(currentId) + '/' + stage, { method: 'POST' });
+      setStatus('✅ ' + (label || stage) + ' शुरू हो गया — प्रगति नीचे दिखेगी।');
+      await P2.refreshProject();
+    } catch (error) {
+      setStatus((error.blocked ? 'BLOCKED: ' : '') + (error.message || 'शुरू नहीं हो सका।'), true);
+    }
+  };
+
+  function renderStageControls(project) {
+    var row = document.createElement('div');
+    row.id = 'p2StageControls';
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin:10px 0';
+    var running = Boolean(RUNNING[project.status]);
+    var stages = [
+      { id: 'story', label: '✍️ सिर्फ़ कहानी फिर लिखें', needs: true },
+      { id: 'assets', label: '🖼️ सिर्फ़ images + आवाज़ बनाएँ', needs: Boolean(project.story) },
+      { id: 'render', label: '🎬 सिर्फ़ MP4 फिर बनाएँ', needs: Boolean(project.story) },
+    ];
+    stages.forEach(function (stage) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = stage.label;
+      button.disabled = running || !stage.needs;
+      if (!stage.needs) button.title = 'पहले कहानी बनाएँ';
+      button.addEventListener('click', function () { P2.runStage(stage.id, stage.label); });
+      row.appendChild(button);
+    });
+    return row;
+  }
+
+  // Reflect the server's real signup state instead of always offering a signup
+  // form. Owner-only access means the button normally does not exist at all.
+  async function refreshAccessState() {
+    var note = el('authAccessNote');
+    var button = el('authRegisterBtn');
+    var fields = el('authRegisterFields');
+    try {
+      var response = await fetch('/api/auth/status');
+      var data = await response.json();
+      var open = Boolean(data && data.registrationOpen);
+      if (button) button.hidden = !open;
+      if (fields) fields.hidden = !open;
+      var bootstrapField = el('authBootstrapToken');
+      if (bootstrapField) bootstrapField.hidden = !(data && data.bootstrap);
+      if (note) {
+        if (data && data.storage && data.storage.durable === false && data.storage.required) {
+          note.textContent = '⛔ यह instance अस्थिर disk पर चल रहा है, इसलिए सुरक्षा के लिए access बंद है। DATA_DIR को स्थिर disk पर सेट करें।';
+        } else if (data && data.bootstrap) {
+          note.textContent = 'पहला owner सिर्फ OWNER_BOOTSTRAP_TOKEN से बनता है — कोई भी अपने-आप owner नहीं बन सकता।';
+        } else if (open) {
+          note.textContent = 'नया account सिर्फ मालिक द्वारा खोला जा सकता है (registration key जरूरी है)।';
+        } else {
+          note.textContent = 'यह निजी (owner-only) instance है — सिर्फ मालिक का account अंदर आ सकता है। नया signup बंद है।';
+        }
+      }
+    } catch (_) {
+      // If the state cannot be read, keep signup hidden: closed is the safe side.
+      if (button) button.hidden = true;
+      if (fields) fields.hidden = true;
+    }
+  }
+  window.babaRefreshAccessState = refreshAccessState;
 
   P2.retryScene = async function (index) {
     if (!currentId) return;
@@ -2448,6 +2668,8 @@ try {
 
   function showGate(message) {
     if (gate()) gate().hidden = false;
+    // Ask the server whether signup is open at all before showing its button.
+    if (typeof window.babaRefreshAccessState === 'function') window.babaRefreshAccessState();
     if (bar()) bar().hidden = true;
     if (message && el('authGateMessage')) {
       el('authGateMessage').textContent = message;
@@ -2516,7 +2738,13 @@ try {
     var registrationKey = (el('authRegKey') && el('authRegKey').value || '').trim();
     if (message) { message.textContent = mode === 'register' ? 'Account बन रहा है…' : 'साइन इन हो रहा है…'; message.className = 'status'; }
     var payload = { username: username, password: password };
-    if (mode === 'register') payload.registrationKey = registrationKey;
+    if (mode === 'register') {
+      payload.registrationKey = registrationKey;
+      // Only used while no owner exists; the server ignores it afterwards.
+      var bootstrapField = el('authBootstrapToken');
+      var bootstrapToken = bootstrapField && bootstrapField.value ? bootstrapField.value.trim() : '';
+      if (bootstrapToken) payload.bootstrapToken = bootstrapToken;
+    }
     try {
       var response = await fetch(mode === 'register' ? '/api/auth/register' : '/api/auth/login', {
         method: 'POST',
@@ -2628,7 +2856,8 @@ try {
     var box = el('setupChecks');
     if (!box) return;
     box.innerHTML = (checks || []).map(function (check) {
-      var icon = check.status === 'ok' ? '✅' : (check.status === 'warn' ? '⚠️' : '⛔');
+      var icon = check.status === 'ok' ? '✅'
+        : (check.status === 'warn' || check.status === 'warning' ? '⚠️' : '⛔');
       return '<p class="small" style="margin:4px 0">' + icon + ' <b>' + escapeHtml(check.label) + '</b> — ' +
         escapeHtml(check.detail) + '</p>';
     }).join('');
@@ -2642,12 +2871,22 @@ try {
       if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
       el('setupCard').hidden = false;
       renderChecks(body.checks);
-      renderGuide(body.setupGuide);
+      // Blocking guides first, then non-blocking ones: an unconfigured backup
+      // does not stop rendering, but it must still be visible with steps.
+      renderGuide((body.setupGuide || []).concat(body.warningGuide || []));
       var geminiCheck = (body.checks || []).filter(function (c) { return c.id === 'GEMINI_API_KEY'; })[0];
+      // Each warning has its own consequence, so the summary uses the check's own
+      // detail instead of one hard-coded sentence about redeploys.
+      var warnDetails = (body.checks || []).filter(function (c) {
+        return c.status === 'warning' || c.status === 'warn';
+      });
+      var warnNote = warnDetails.length
+        ? ' ⚠️ ध्यान दें: ' + warnDetails.map(function (c) { return c.label + ' — ' + c.detail; }).join(' · ')
+        : '';
       text('setupStatus', body.ok
-        ? '✅ ज़रूरी चीज़ें तैयार हैं। Verify setup दबाकर असली जाँच करें।'
+        ? '✅ ज़रूरी चीज़ें तैयार हैं। Verify setup दबाकर असली जाँच करें।' + warnNote
         : '⛔ ' + (body.missing || []).join(', ') + ' set ही नहीं है — नीचे के steps अपनाएँ।' +
-          keyShapeNote(geminiCheck && geminiCheck.shape), !body.ok);
+          keyShapeNote(geminiCheck && geminiCheck.shape) + warnNote, !body.ok);
     } catch (error) {
       text('setupStatus', '❌ ' + (error.message || 'Setup जाँच विफल।'), true);
     }

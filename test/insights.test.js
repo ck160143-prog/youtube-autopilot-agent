@@ -16,7 +16,7 @@ process.env.APP_SESSION_SECRET = "insights-session-secret-0123456789abcdef";
 
 const insights = require("../lib/insights");
 const { app } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 let server;
 let base;
@@ -24,11 +24,14 @@ let session;
 
 // Same encryption the server uses for the YouTube session cookie, so the route
 // sees a genuinely "connected" channel without any real Google account.
-function youtubeCookie(payload) {
+function youtubeCookie(payload, ownerId) {
   const key = crypto.createHash("sha256").update(process.env.APP_SESSION_SECRET).digest();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(payload)), cipher.final()]);
+  // The real route stamps the account that connected the channel; a cookie
+  // without it is refused, so the fixture stamps it too unless asked not to.
+  const bound = ownerId === null ? payload : { ...payload, ownerId: ownerId || session.user.id };
+  const enc = Buffer.concat([cipher.update(JSON.stringify(bound)), cipher.final()]);
   return "baba_youtube_session=" + Buffer.concat([iv, cipher.getAuthTag(), enc]).toString("base64url");
 }
 
@@ -38,7 +41,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "insights_user");
+  session = await registerOwner(base, "insights_user");
 });
 
 test.after(() => server && server.close());
@@ -184,6 +187,24 @@ test("an empty channel gives an honest 'no data' answer, not zeros dressed as ad
     assert.equal(body.enoughData, false);
     assert.deepEqual(body.suggestions, []);
     assert.match(body.verdict, /कोई अनुमान नहीं/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a YouTube cookie that names no account is refused", async () => {
+  // Before the fix, the cookie carried Google tokens only: anyone holding it acted
+  // as the channel. It must now be attributable to the signed-in account.
+  const rows = [];
+  for (let i = 1; i <= 14; i += 1) rows.push(["2026-11-" + String(i).padStart(2, "0"), 200, 40, 50, 2, 8]);
+  const stub = stubGoogle(rows);
+  const unbound = youtubeCookie({ access_token: "fake-token", expires_at: Date.now() + 3600000, scope: SCOPE }, null);
+  try {
+    const response = await fetch(base + "/api/youtube/insights", {
+      headers: Object.assign(authHeaders(session), { Cookie: session.cookie + "; " + unbound }),
+    });
+    assert.equal(response.status, 409, "an unbound cookie must not count as connected");
+    assert.equal((await response.json()).code, "CHANNEL_NOT_CONNECTED");
   } finally {
     stub.restore();
   }

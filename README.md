@@ -228,14 +228,16 @@ never a fake success.
 | `YOUTUBE_CLIENT_ID` / `_SECRET` / `REDIRECT_URI` | for upload | OAuth app |
 | `APP_SESSION_SECRET` | for upload | ≥32 chars, encrypts the OAuth cookie |
 | `APP_ACCESS_KEY` | no | Optional extra API gate |
-| `APP_REGISTRATION_KEY` | no | Required to sign up after the first account |
+| `OWNER_BOOTSTRAP_TOKEN` | for the owner | ≥16 chars, single use. The **only** way the owner account is created; the response returns a rotated token to put back in the environment. Unset = owner creation closed (fail closed) |
+| `OWNER_REQUIRE_PERSISTENT_STORAGE` | recommended | `1` refuses to run on a filesystem that does not survive a redeploy (the free plan), instead of letting a stranger own a wiped instance |
+| `APP_REGISTRATION_KEY` | no | Required to sign up after the first account (members only; never the owner) |
 | `API_RATE_LIMIT_MULTIPLIER` | no | Scales every rate limit (e.g. `0.5` halves them) |
 | `GEMINI_TIMEOUT_MS` | no | Per-call Gemini timeout (default 90000, max 600000) |
 | `RHUBARB_PATH` | no | Native Rhubarb binary (WASM build is the fallback) |
 | `FFMPEG_PATH` | no | Explicit FFmpeg binary |
 | `FFMPEG_PRESET` | no | x264 preset (default `veryfast`) |
 | `CAPTION_FONT_FILE` | no | Devanagari TTF for burned captions/thumbnail |
-| `DATA_DIR` | no | Where projects/characters are stored (default `./data`) |
+| `DATA_DIR` | recommended | Where users, sessions, projects and characters live (default `./data`). Without a durable path, production refuses to create the owner |
 
 Keys live only in the environment. Nothing is written to the frontend.
 
