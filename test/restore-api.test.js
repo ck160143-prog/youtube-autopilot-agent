@@ -11,7 +11,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 const sha = buf => crypto.createHash("sha256").update(buf).digest("hex");
 
@@ -32,7 +32,7 @@ test("a deleted project comes back through POST /restore", async t => {
   await new Promise(resolve => server.once("listening", resolve));
   const base = "http://127.0.0.1:" + server.address().port;
   try {
-    const session = await registerAndLogin(base, "restore_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
+    const session = await registerOwner(base, "restore_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
     const call = (url, options) => fetch(base + url, {
       ...(options || {}), headers: authHeaders(session, (options && options.headers) || {}),
     });
@@ -99,7 +99,7 @@ test("restore is refused for another user's project", async t => {
   await new Promise(resolve => server.once("listening", resolve));
   const base = "http://127.0.0.1:" + server.address().port;
   try {
-    const owner = await registerAndLogin(base, "owner_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
+    const owner = await registerOwner(base, "owner_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
     const other = await registerAndLogin(base, "other_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
     const created = await fetch(base + "/api/projects", {
       method: "POST", headers: authHeaders(owner, { "Content-Type": "application/json" }),

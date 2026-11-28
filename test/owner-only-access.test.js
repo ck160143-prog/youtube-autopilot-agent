@@ -12,11 +12,20 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+// Owner creation requires an explicit bootstrap token; this is the operator's
+// secret for the tests, and it changes per suite so it cannot be replayed.
+const BOOTSTRAP = "owner-only-test-bootstrap-token-987654";
+
 function freshEnv(extra) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "owner-only-"));
   process.env.DATA_DIR = dataDir;
   delete process.env.APP_REGISTRATION_KEY;
   delete process.env.ALLOW_PUBLIC_SIGNUP;
+  // Temp dirs are ephemeral by definition; the fail-closed storage gate is
+  // measured in owner-bootstrap.test.js, so it stays off unless a test asks.
+  delete process.env.OWNER_REQUIRE_PERSISTENT_STORAGE;
+  delete process.env.NODE_ENV;
+  process.env.OWNER_BOOTSTRAP_TOKEN = BOOTSTRAP;
   Object.assign(process.env, extra || {});
   return dataDir;
 }
@@ -36,6 +45,7 @@ async function boot() {
     const response = await post("/api/auth/register", Object.assign({
       username, password: "owner-password-123",
     }, options || {}));
+    // Owner creation needs the token; callers ask for it explicitly.
     let body = {};
     try { body = await response.json(); } catch (_) { body = {}; }
     return {
@@ -66,9 +76,13 @@ test("public signup is closed even when a registration key is configured", async
   freshEnv({ APP_REGISTRATION_KEY: "team-key" });
   const { http, register } = await boot();
   try {
-    const owner = await register("the_owner");
+    const anonymous = await register("the_owner");
+    assert.equal(anonymous.status, 403, "a plain signup must never create the owner");
+    assert.equal(anonymous.body.code, "OWNER_BOOTSTRAP_REQUIRED");
+
+    const owner = await register("the_owner", { bootstrapToken: BOOTSTRAP });
     assert.equal(owner.status, 201);
-    assert.equal(owner.body.user.role, "owner", "the first account is the owner");
+    assert.equal(owner.body.user.role, "owner", "the token creates the owner");
 
     const stranger = await register("stranger", { registrationKey: "team-key" });
     assert.equal(stranger.status, 403, "a configured key must not open signup");
@@ -83,7 +97,7 @@ test("signup opens only when the operator explicitly opens it, and never as owne
   freshEnv({ APP_REGISTRATION_KEY: "team-key", ALLOW_PUBLIC_SIGNUP: "1" });
   const { http, register } = await boot();
   try {
-    assert.equal((await register("owner_one")).body.user.role, "owner");
+    assert.equal((await register("owner_one", { bootstrapToken: BOOTSTRAP })).body.user.role, "owner");
     const noKey = await register("no_key");
     assert.equal(noKey.status, 403, "the key is still required once signup is open");
     const withKey = await register("second_person", { registrationKey: "team-key" });
@@ -98,7 +112,7 @@ test("a non-owner, even signed in, reaches no private route", async () => {
   freshEnv({ APP_REGISTRATION_KEY: "team-key", ALLOW_PUBLIC_SIGNUP: "1" });
   const { http, register, call } = await boot();
   try {
-    const owner = await register("owner_two");
+    const owner = await register("owner_two", { bootstrapToken: BOOTSTRAP });
     const member = await register("member_two", { registrationKey: "team-key" });
     assert.equal(member.body.user.role, "member");
 
@@ -144,7 +158,7 @@ test("a signed-in non-owner can still see their own session and sign out", async
   freshEnv({ APP_REGISTRATION_KEY: "team-key", ALLOW_PUBLIC_SIGNUP: "1" });
   const { http, register, call } = await boot();
   try {
-    await register("owner_three");
+    await register("owner_three", { bootstrapToken: BOOTSTRAP });
     const member = await register("member_three", { registrationKey: "team-key" });
 
     const me = await call(member.session, "/api/auth/me");
@@ -165,7 +179,7 @@ test("anonymous requests reach nothing private", async () => {
   freshEnv();
   const { http, base, register } = await boot();
   try {
-    await register("owner_four");
+    await register("owner_four", { bootstrapToken: BOOTSTRAP });
     for (const url of ["/api/projects", "/api/setup", "/api/capabilities", "/api/characters",
       "/api/youtube/status", "/api/auth/me"]) {
       const response = await fetch(base + url);
@@ -182,11 +196,13 @@ test("the public status endpoint does not advertise signup and reports privacy",
   try {
     const before = await (await fetch(base + "/api/auth/status")).json();
     assert.equal(before.privateAccess, false, "a fresh instance has no owner yet");
-    assert.equal(before.registrationOpen, true, "the bootstrap account must still be creatable");
+    assert.equal(before.bootstrap, true, "the owner can still be created with the token");
+    assert.equal(before.bootstrapTokenConfigured, true);
 
-    await register("owner_five");
+    await register("owner_five", { bootstrapToken: BOOTSTRAP });
     const after = await (await fetch(base + "/api/auth/status")).json();
     assert.equal(after.privateAccess, true);
+    assert.equal(after.bootstrap, false, "once an owner exists, the bootstrap door is shut");
     assert.equal(after.registrationOpen, false, "a configured key must not be advertised as open signup");
     assert.equal(after.user, null);
   } finally {

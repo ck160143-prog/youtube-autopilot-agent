@@ -17,7 +17,7 @@ process.env.APP_REGISTRATION_KEY = "team-key";
 process.env.ALLOW_PUBLIC_SIGNUP = "1";
 
 const { app } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 let server;
 let base;
@@ -28,7 +28,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  owner = await registerAndLogin(base, "alpha_user");
+  owner = await registerOwner(base, "alpha_user");
   member = await registerAndLogin(base, "beta_user", { registrationKey: "team-key" });
 });
 

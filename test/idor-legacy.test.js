@@ -14,6 +14,9 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { ProjectStore } = require("../lib/projects");
+// Importing the helper installs the test bootstrap token and keeps the
+// fail-closed storage gate off (test dirs are ephemeral by definition).
+const { OWNER_BOOTSTRAP_TOKEN } = require("./helpers");
 
 function boot(dataDir) {
   process.env.DATA_DIR = dataDir;
@@ -26,9 +29,14 @@ function boot(dataDir) {
 }
 
 async function register(base, username) {
+  // Every account in this file is the instance owner, which now requires the
+  // explicit bootstrap token.
   const response = await fetch(base + "/api/auth/register", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password: "owner-password-123" }),
+    body: JSON.stringify({
+      username, password: "owner-password-123",
+      bootstrapToken: process.env.OWNER_BOOTSTRAP_TOKEN || OWNER_BOOTSTRAP_TOKEN,
+    }),
   });
   const body = await response.json();
   const cookie = String(response.headers.get("set-cookie") || "").split(";")[0];
@@ -59,7 +67,8 @@ test("an ownerless project belongs to the owner, not to whoever asks", async () 
   const legacy = legacyProject(dataDir, "pLegacyProj01");
   const { http, base } = await boot(dataDir);
   try {
-    // The owner registers; startup/registration adoption must claim the record.
+    // The record is claimed by the bootstrap request that creates the owner —
+    // not by startup, and not by any later account.
     const owner = await register(base, "the_owner");
     assert.equal(owner.user.role, "owner");
 

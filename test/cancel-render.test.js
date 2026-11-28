@@ -16,7 +16,7 @@ const os = require("os");
 const path = require("path");
 
 const ffmpegTools = require("../lib/ffmpeg");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 // A fake Gemini that really answers, so the pipeline runs for real. Ten scenes
 // keep the render long enough to cancel in the middle of it.
@@ -68,7 +68,7 @@ async function setup() {
   const http = server.app.listen(0, "127.0.0.1");
   await new Promise(resolve => http.once("listening", resolve));
   const base = "http://127.0.0.1:" + http.address().port;
-  const session = await registerAndLogin(base, "cancel_user");
+  const session = await registerOwner(base, "cancel_user");
   const call = (url, options) => fetch(base + url, {
     ...(options || {}), headers: authHeaders(session, (options && options.headers) || {}),
   });

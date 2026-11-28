@@ -16,7 +16,7 @@ const REPO = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(REPO, "index.html"), "utf8");
 
 const { app } = require("../server");
-const { registerAndLogin } = require("./helpers");
+const { registerAndLogin, OWNER_BOOTSTRAP_TOKEN } = require("./helpers");
 
 let JSDOM;
 let VirtualConsole;
@@ -96,6 +96,10 @@ test("the dashboard renders the setup audit from the real API", { timeout: 60000
     // Sign in so /api/setup is reachable.
     window.document.getElementById("authUsername").value = "mobile_user";
     window.document.getElementById("authPassword").value = "mobile-pass-123";
+    // Creating the owner requires the bootstrap token, which the page asks for
+    // while that door is open.
+    const tokenField = window.document.getElementById("authBootstrapToken");
+    if (tokenField) tokenField.value = OWNER_BOOTSTRAP_TOKEN;
     window.document.getElementById("authRegisterBtn").click();
     await sleep(1500);
 

@@ -23,6 +23,9 @@
 | `YOUTUBE_CLIENT_SECRET` | OAuth | वही |
 | `YOUTUBE_REDIRECT_URI` | OAuth callback | वही (Google Console में **यही** URL होना चाहिए) |
 | `APP_SESSION_SECRET` (≥32 अक्षर) | OAuth token cookie AES-GCM | connect बंद |
+| `OWNER_BOOTSTRAP_TOKEN` (≥16 अक्षर) | owner बनाने का **एकमात्र** रास्ता, एक बार | कोई owner नहीं बन सकता; instance fail-closed (503) रहेगा |
+| `DATA_DIR` (attached disk, e.g. `/var/data`) | users/sessions/projects स्थिर रहें | free disk ephemeral → production में owner बनना बंद |
+| `OWNER_REQUIRE_PERSISTENT_STORAGE=1` | अस्थिर disk पर fail-closed | (सुझाव) इसके बिना भी production में स्थिरता जाँची जाती है |
 | `APP_REGISTRATION_KEY` | पहले account के बाद नए account | दूसरा user नहीं बनेगा |
 
 वैकल्पिक: `GEMINI_*_MODEL`, `GOOGLE_TIMEOUT_MS` (default 20000), `UPLOAD_TIMEOUT_MS` (default 900000), `FFMPEG_PRESET`, `DATA_DIR`, `DEFAULT_YOUTUBE_CATEGORY_ID`.

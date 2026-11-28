@@ -118,6 +118,7 @@ input,select,textarea{font-size:16px}
     <input id="authPassword" type="password" placeholder="password (कम से कम 10 अक्षर)" autocomplete="current-password">
     <div id="authRegisterFields" hidden>
       <input id="authRegKey" placeholder="registration key (सिर्फ नए account के लिए)" autocomplete="off">
+      <input id="authBootstrapToken" type="password" placeholder="OWNER_BOOTSTRAP_TOKEN (सिर्फ पहला owner)" autocomplete="off">
     </div>
     <div class="auth-actions">
       <button id="authLoginBtn">→ साइन इन</button>
@@ -2491,12 +2492,18 @@ try {
       var open = Boolean(data && data.registrationOpen);
       if (button) button.hidden = !open;
       if (fields) fields.hidden = !open;
+      var bootstrapField = el('authBootstrapToken');
+      if (bootstrapField) bootstrapField.hidden = !(data && data.bootstrap);
       if (note) {
-        note.textContent = data && data.bootstrap
-          ? 'पहला account मालिक (owner) बनेगा। साइन इन करने के बाद यह instance निजी हो जाएगा।'
-          : (open
-            ? 'नया account सिर्फ मालिक द्वारा खोला जा सकता है (registration key जरूरी है)।'
-            : 'यह निजी (owner-only) instance है — सिर्फ मालिक का account अंदर आ सकता है। नया signup बंद है।');
+        if (data && data.storage && data.storage.durable === false && data.storage.required) {
+          note.textContent = '⛔ यह instance अस्थिर disk पर चल रहा है, इसलिए सुरक्षा के लिए access बंद है। DATA_DIR को स्थिर disk पर सेट करें।';
+        } else if (data && data.bootstrap) {
+          note.textContent = 'पहला owner सिर्फ OWNER_BOOTSTRAP_TOKEN से बनता है — कोई भी अपने-आप owner नहीं बन सकता।';
+        } else if (open) {
+          note.textContent = 'नया account सिर्फ मालिक द्वारा खोला जा सकता है (registration key जरूरी है)।';
+        } else {
+          note.textContent = 'यह निजी (owner-only) instance है — सिर्फ मालिक का account अंदर आ सकता है। नया signup बंद है।';
+        }
       }
     } catch (_) {
       // If the state cannot be read, keep signup hidden: closed is the safe side.
@@ -2731,7 +2738,13 @@ try {
     var registrationKey = (el('authRegKey') && el('authRegKey').value || '').trim();
     if (message) { message.textContent = mode === 'register' ? 'Account बन रहा है…' : 'साइन इन हो रहा है…'; message.className = 'status'; }
     var payload = { username: username, password: password };
-    if (mode === 'register') payload.registrationKey = registrationKey;
+    if (mode === 'register') {
+      payload.registrationKey = registrationKey;
+      // Only used while no owner exists; the server ignores it afterwards.
+      var bootstrapField = el('authBootstrapToken');
+      var bootstrapToken = bootstrapField && bootstrapField.value ? bootstrapField.value.trim() : '';
+      if (bootstrapToken) payload.bootstrapToken = bootstrapToken;
+    }
     try {
       var response = await fetch(mode === 'register' ? '/api/auth/register' : '/api/auth/login', {
         method: 'POST',

@@ -18,7 +18,7 @@ process.env.GEMINI_API_KEY = "dummy-key-for-options";
 const { createProject } = require("../lib/projects");
 const pipeline = require("../lib/pipeline");
 const { app } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 let server;
 let base;
@@ -28,7 +28,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "options_user");
+  session = await registerOwner(base, "options_user");
 });
 
 test.after(() => server && server.close());

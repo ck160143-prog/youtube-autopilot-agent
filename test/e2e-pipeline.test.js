@@ -18,7 +18,7 @@ process.env.GEMINI_API_KEY = "test-key-not-real";
 process.env.FFMPEG_PRESET = "ultrafast";
 
 const { app, setAIClientFactoryForTests, resetAIClientFactory } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 const ffmpegTools = require("../lib/ffmpeg");
 const lipsync = require("../lib/lipsync");
 // Honest skip: with no FFmpeg binary the render-based tests cannot run, and a
@@ -82,7 +82,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "e2e_user");
+  session = await registerOwner(base, "e2e_user");
   if (!ffmpegTools.ffmpegAvailableSync()) return;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-e2e-sprites-"));

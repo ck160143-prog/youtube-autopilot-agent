@@ -9,6 +9,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+// Importing the helper installs the test bootstrap token; owner creation needs it.
+const { OWNER_BOOTSTRAP_TOKEN } = require("./helpers");
+
 async function boot(env) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-"));
   process.env.DATA_DIR = dataDir;
@@ -28,7 +31,7 @@ test("the session cookie is HttpOnly, SameSite and not readable by scripts", asy
   try {
     const response = await fetch(base + "/api/auth/register", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "cookie_owner", password: "owner-password-123" }),
+      body: JSON.stringify({ username: "cookie_owner", password: "owner-password-123", bootstrapToken: OWNER_BOOTSTRAP_TOKEN }),
     });
     assert.equal(response.status, 201);
     const cookie = String(response.headers.get("set-cookie") || "");
@@ -48,7 +51,7 @@ test("a state-changing request without the CSRF token is refused", async () => {
   try {
     const response = await fetch(base + "/api/auth/register", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "csrf_owner", password: "owner-password-123" }),
+      body: JSON.stringify({ username: "csrf_owner", password: "owner-password-123", bootstrapToken: OWNER_BOOTSTRAP_TOKEN }),
     });
     const body = await response.json();
     const cookie = String(response.headers.get("set-cookie") || "").split(";")[0];
@@ -96,7 +99,7 @@ test("password guessing is throttled", async () => {
   try {
     await fetch(base + "/api/auth/register", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "brute_owner", password: "owner-password-123" }),
+      body: JSON.stringify({ username: "brute_owner", password: "owner-password-123", bootstrapToken: OWNER_BOOTSTRAP_TOKEN }),
     });
     const codes = [];
     for (let i = 0; i < 40; i++) {
@@ -121,7 +124,7 @@ test("an unknown user and a wrong password look the same", async () => {
   try {
     await fetch(base + "/api/auth/register", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "enum_owner", password: "owner-password-123" }),
+      body: JSON.stringify({ username: "enum_owner", password: "owner-password-123", bootstrapToken: OWNER_BOOTSTRAP_TOKEN }),
     });
     const unknown = await fetch(base + "/api/auth/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -144,7 +147,7 @@ test("logging out really revokes the session server-side", async () => {
   try {
     const response = await fetch(base + "/api/auth/register", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "logout_owner", password: "owner-password-123" }),
+      body: JSON.stringify({ username: "logout_owner", password: "owner-password-123", bootstrapToken: OWNER_BOOTSTRAP_TOKEN }),
     });
     const body = await response.json();
     const cookie = String(response.headers.get("set-cookie") || "").split(";")[0];

@@ -60,36 +60,58 @@ app.use("/api", (req, res, next) => {
   // be the owner. Every private route sits behind this one gate, so a second
   // account (or a compromised member account) reaches nothing, not even the
   // setup or capabilities endpoints.
+  //
+  // Before that, the instance itself must be in a state where an owner can mean
+  // something: an owner has to exist, and identity has to survive a restart.
+  // Otherwise the answer is a refusal — never "let the caller in and see".
+  const blocked = authStore.accessBlock();
+  if (blocked) {
+    return res.status(503).json({ error: blocked.message, code: blocked.code });
+  }
   return requireOwner(req, res, next);
 });
 
 app.get("/api/auth/status", (req, res) => {
   const signup = authStore.signupState();
+  const storage = authStore.storage();
+  const blocked = authStore.accessBlock();
   return res.json({
     authenticated: Boolean(req.user),
-    // Registration is open only for the bootstrap owner or when an operator
-    // explicitly opened signup; a configured key no longer implies signup.
+    // Signup is never open by accident: the owner needs the bootstrap token, and
+    // later accounts need an explicitly opened door.
     registrationOpen: signup.registrationOpen,
-    bootstrap: signup.bootstrap,
-    // Whether this instance is actually private yet: it is not, until an owner
-    // exists. The dashboard shows this so a fresh deployment is not mistaken
-    // for a locked one.
+    // Bootstrap is possible only while there is no owner, a usable token is
+    // configured, and identity would actually persist.
+    bootstrap: authStore.canBootstrap(),
     privateAccess: authStore.hasOwner(),
+    // What the operator needs to know, without leaking the token or any secret.
+    bootstrapTokenConfigured: authStore.bootstrapTokenUsable(),
+    storage: {
+      durable: storage.durable,
+      required: storage.required,
+      // The path itself is not exposed: it can name a host layout.
+      reason: storage.durable ? null : storage.reason,
+    },
+    access: blocked ? { blocked: true, code: blocked.code, message: blocked.message } : { blocked: false },
     user: req.user || null,
   });
 });
 
 app.post("/api/auth/register", (req, res) => {
   try {
-    const { username, password, registrationKey } = req.body || {};
-    const user = authStore.register({ username, password, registrationKey });
+    const { username, password, registrationKey, bootstrapToken } = req.body || {};
+    const user = authStore.register({ username, password, registrationKey, bootstrapToken });
     if (user.role === "owner") {
-      // The first account adopts everything created before authentication
-      // existed. Same helper as startup so the two paths cannot diverge.
-      adoptLegacyRecords();
+      // Legacy adoption happens only here: for an account just created by
+      // proving the bootstrap token. Never for a later account, and never
+      // automatically at startup — a stranger who finds a wiped instance must
+      // not inherit the previous owner's projects.
+      adoptLegacyRecords(user.id);
     }
     const session = authStore.createSession(user.id);
     res.setHeader("Set-Cookie", cookieHeader(session.id));
+    // nextBootstrapToken is meant to be written into the environment, replacing
+    // the one just used, so a wiped instance cannot be claimed with the old one.
     return res.status(201).json({ user, csrfToken: session.csrfToken });
   } catch (error) {
     // The code travels with the message so the dashboard can distinguish "signup
@@ -956,8 +978,25 @@ function decryptSession(req) {
     return JSON.parse(Buffer.concat([decipher.update(packed.subarray(28)), decipher.final()]).toString("utf8"));
   } catch (_) { return {}; }
 }
-function setYoutubeSession(res, payload) {
-  res.setHeader("Set-Cookie", "baba_youtube_session=" + encryptSession(payload) + "; " + cookieOptions());
+// The YouTube token is tied to the account that connected it. Before this, the
+// cookie carried only Google tokens: it decrypted for anybody who held it, and it
+// was written even when APP_SESSION_SECRET was missing (an empty key on a public
+// callback route). Now the payload names its owner, and a cookie that does not
+// name the current account is not used.
+function setYoutubeSession(res, req, payload) {
+  const owner = payload.ownerId || (req && req.user && req.user.id) || null;
+  res.setHeader("Set-Cookie",
+    "baba_youtube_session=" + encryptSession({ ...payload, ownerId: owner }) + "; " + cookieOptions());
+}
+
+function youtubeSessionFor(req) {
+  const session = decryptSession(req);
+  if (!session || !Object.keys(session).length) return {};
+  const current = req && req.user ? req.user.id : null;
+  // An unbound legacy cookie is refused: it cannot be attributed to an account,
+  // so accepting it would be exactly the cross-account hole this closes.
+  if (!session.ownerId || session.ownerId !== current) return {};
+  return session;
 }
 function clearYoutubeSession(res) {
   res.setHeader("Set-Cookie", "baba_youtube_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" +
@@ -967,7 +1006,7 @@ function youtubeNotConfigured(res) {
   return res.status(503).json({ error: "YouTube OAuth configure नहीं है। Render Environment में YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI और कम-से-कम 32 अक्षरों का APP_SESSION_SECRET सेट करें।" });
 }
 async function getYoutubeAccessToken(req, res) {
-  const session = decryptSession(req);
+  const session = youtubeSessionFor(req);
   if (!session.refresh_token && !session.access_token) {
     res.status(401).json({ error: "पहले YouTube चैनल Connect करें।" });
     return null;
@@ -995,12 +1034,12 @@ async function getYoutubeAccessToken(req, res) {
   }
   const next = { ...session, access_token: tokenData.access_token,
     expires_at: Date.now() + (Number(tokenData.expires_in) || 3600) * 1000 };
-  setYoutubeSession(res, next);
+  setYoutubeSession(res, req, next);
   return next.access_token;
 }
 app.get("/api/youtube/status", async (req, res) => {
   if (!youtubeConfigReady()) return res.json({ configured: false, connected: false });
-  const session = decryptSession(req);
+  const session = youtubeSessionFor(req);
   if (!session.access_token && !session.refresh_token) return res.json({ configured: true, connected: false });
   const token = await getYoutubeAccessToken(req, res);
   if (!token) return;
@@ -1016,7 +1055,7 @@ app.get("/api/youtube/status", async (req, res) => {
 app.get("/api/youtube/connect", (req, res) => {
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
   const state = crypto.randomBytes(24).toString("hex");
-  setYoutubeSession(res, { oauth_state: state });
+  setYoutubeSession(res, req, { oauth_state: state });
   const params = new URLSearchParams({
     client_id: process.env.YOUTUBE_CLIENT_ID,
     redirect_uri: process.env.YOUTUBE_REDIRECT_URI,
@@ -1030,6 +1069,12 @@ app.get("/api/youtube/connect", (req, res) => {
 });
 app.get("/api/youtube/callback", async (req, res) => {
   if (!youtubeConfigReady()) return youtubeNotConfigured(res);
+  // youtubeConfigReady() already requires a 32+ character APP_SESSION_SECRET; this
+  // is the explicit second check, because the callback is public and writes a
+  // credential cookie. Without a real key the cookie could be forged by anyone.
+  if (!process.env.APP_SESSION_SECRET || process.env.APP_SESSION_SECRET.length < 32) {
+    return youtubeNotConfigured(res);
+  }
   const oldSession = decryptSession(req);
   if (!req.query.code || !req.query.state || req.query.state !== oldSession.oauth_state) {
     clearYoutubeSession(res);
@@ -1062,7 +1107,7 @@ app.get("/api/youtube/callback", async (req, res) => {
       clearYoutubeSession(res);
       return res.status(502).send("Google login सफल हुआ, लेकिन YouTube चैनल सत्यापित नहीं हो सका। YouTube Data API v3 और खाते की अनुमति जाँचें, फिर Connect दोबारा करें।");
     }
-    setYoutubeSession(res, { scope: String(tokens.scope || ""), access_token: tokens.access_token,
+    setYoutubeSession(res, req, { scope: String(tokens.scope || ""), access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || oldSession.refresh_token,
       expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
       channel: { id: channel.id, title: channel.snippet?.title || "" } });
@@ -1077,7 +1122,7 @@ app.get("/api/youtube/callback", async (req, res) => {
 // Analytics -> advice. Separate endpoint so the raw numbers stay untouched and
 // the advice always comes from the same rows the analytics endpoint returned.
 app.get("/api/youtube/insights", async (req, res) => {
-  const linked = decryptSession(req);
+  const linked = youtubeSessionFor(req);
   if (!linked || !linked.access_token) {
     return res.status(409).json({ error: "पहले YouTube चैनल Connect करें।", code: "CHANNEL_NOT_CONNECTED" });
   }
@@ -1135,7 +1180,7 @@ app.get("/api/youtube/insights", async (req, res) => {
 });
 
 app.get("/api/youtube/analytics", async (req, res) => {
-  const linked = decryptSession(req);
+  const linked = youtubeSessionFor(req);
   if (!linked || !linked.access_token) {
     return res.status(409).json({
       error: "पहले YouTube चैनल Connect करें।",
@@ -1681,21 +1726,28 @@ const projectStore = new ProjectStore({ root: path.join(dataRoot, "projects") })
 const recoveredProjects = projectStore.recoverInterrupted();
 if (recoveredProjects) console.log("Resumed " + recoveredProjects + " interrupted project(s) from disk");
 
-// Records written before authentication existed have no owner. They used to be
-// visible to every account; now that access is fail-closed they would be visible
-// to nobody and the owner would silently lose their own work. Stamp them with the
-// owner's id as soon as an owner exists — at startup for an existing instance,
-// and in the register route for the bootstrap account.
-function adoptLegacyRecords() {
-  const ownerId = authStore.ownerId();
-  if (!ownerId) return;
+// Records written before authentication existed have no owner. Access is
+// fail-closed, so they would be visible to nobody and the real owner would lose
+// their own work — but handing them out automatically is worse: after a redeploy
+// that wipes users.json, "automatic adoption" would give the previous owner's
+// projects to whoever creates the next owner account.
+//
+// So adoption happens exactly once, for an account that has just proved it holds
+// the bootstrap token, and only for records that predate ownership. It never runs
+// at startup and never for an ordinary account.
+function adoptLegacyRecords(verifiedOwnerId) {
+  const ownerId = verifiedOwnerId || null;
+  if (!ownerId) return { projects: 0, characters: 0 };
+  // Belt and braces: the id must really belong to the owner account.
+  const owner = authStore.getUser(ownerId);
+  if (!owner || owner.role !== "owner") return { projects: 0, characters: 0 };
   const projects = projectStore.adoptOwner(ownerId);
   const characters = characterLibrary.adoptOwner(ownerId);
   if (projects || characters) {
-    console.log("Adopted " + projects + " project(s) and " + characters + " character(s) into the owner account");
+    console.log("Adopted " + projects + " project(s) and " + characters + " character(s) into the bootstrapped owner account");
   }
+  return { projects, characters };
 }
-adoptLegacyRecords();
 
 const storyEngine = require("./lib/story");
 const timelineEngine = require("./lib/timeline");

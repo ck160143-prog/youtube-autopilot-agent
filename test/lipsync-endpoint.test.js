@@ -10,7 +10,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 const lipsync = require("../lib/lipsync");
 const ff = require("../lib/ffmpeg");
 
@@ -23,7 +23,7 @@ async function boot() {
   const server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   const base = "http://127.0.0.1:" + server.address().port;
-  const session = await registerAndLogin(base, "lip_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
+  const session = await registerOwner(base, "lip_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
   const call = (url, options) => fetch(base + url, {
     ...(options || {}), headers: authHeaders(session, (options && options.headers) || {}),
   });

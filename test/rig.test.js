@@ -12,7 +12,7 @@ const path = require("node:path");
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-rig-"));
 
 const { app } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 const { CharacterLibrary, validateRig } = require("../lib/characters");
 const ffmpegTools = require("../lib/ffmpeg");
 const { MOUTH_SHAPES } = require("../lib/characters");
@@ -33,7 +33,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "rig_user");
+  session = await registerOwner(base, "rig_user");
 
   const created = await fetch(base + "/api/characters", {
     method: "POST", headers: authHeaders(session),

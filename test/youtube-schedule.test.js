@@ -16,7 +16,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-sched-"));
 process.env.API_RATE_LIMIT_MULTIPLIER = "10";
 
 const { app, validateScheduleAt, buildVideoStatus } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, registerOwner, authHeaders } = require("./helpers");
 
 let server;
 let base;
@@ -27,7 +27,7 @@ test.before(async () => {
   server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + server.address().port;
-  session = await registerAndLogin(base, "sched_user");
+  session = await registerOwner(base, "sched_user");
 
   const realFetch = global.fetch;
   global.fetch = async (input, options) => {

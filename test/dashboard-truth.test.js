@@ -13,6 +13,8 @@ const path = require("node:path");
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-truth-"));
 
 const REPO = path.join(__dirname, "..");
+// Owner creation needs the bootstrap token; importing the helper installs it.
+const { OWNER_BOOTSTRAP_TOKEN } = require("./helpers");
 const html = fs.readFileSync(path.join(REPO, "index.html"), "utf8");
 
 const { app } = require("../server");
@@ -64,6 +66,12 @@ async function openPage(base) {
 async function signIn(window, username, password, mode) {
   window.document.getElementById("authUsername").value = username;
   window.document.getElementById("authPassword").value = password;
+  if (mode === "register") {
+    // The owner door asks for the bootstrap token; the page shows the field only
+    // while that door is the open one.
+    const tokenField = window.document.getElementById("authBootstrapToken");
+    if (tokenField && !tokenField.hidden) tokenField.value = process.env.OWNER_BOOTSTRAP_TOKEN;
+  }
   const button = window.document.getElementById(mode === "register" ? "authRegisterBtn" : "authLoginBtn");
   button.click();
   const ok = await waitFor(() => window.document.getElementById("authGate").hidden === true, 8000);

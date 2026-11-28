@@ -15,7 +15,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "baba-charid-"));
 process.env.APP_REGISTRATION_KEY = "team-key";
 
 const { app } = require("../server");
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 const { makeId } = require("../lib/characters");
 
 let server;
@@ -28,7 +28,7 @@ test.before(async () => {
   base = "http://127.0.0.1:" + server.address().port;
   // One owner account, shared by the tests: ids are scoped per owner, so a
   // second account proves nothing here and is closed by owner-only access.
-  owner = await registerAndLogin(base, "char_owner");
+  owner = await registerOwner(base, "char_owner");
 });
 
 test.after(() => server && server.close());

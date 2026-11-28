@@ -43,7 +43,28 @@ services:
         sync: false
       - key: YOUTUBE_REDIRECT_URI
         sync: false
+      # At least 32 characters. Signs session cookies and encrypts the YouTube
+      # token cookie. The YouTube callback refuses to run without it instead of
+      # writing a cookie under an empty key.
       - key: APP_SESSION_SECRET
+        sync: false
+      # ---- Owner bootstrap ------------------------------------------------
+      # The ONLY way the owner account is created. Nobody becomes owner by being
+      # the first visitor, and no code path creates one automatically.
+      #   * set a random value of at least 16 characters (weak values are refused)
+      #   * register the owner once, in the dashboard, pasting the same value
+      #   * the response returns `nextBootstrapToken` - replace this variable
+      #     with it, so the spent token can never be replayed
+      #   * after an owner exists the token is refused even if it is still set
+      # Unset means the owner cannot be created at all (fail closed), which is
+      # the safe state for an instance that will never be claimed.
+      - key: OWNER_BOOTSTRAP_TOKEN
+        sync: false
+      # Refuse to run without durable identity. Set to 1 on any deployment whose
+      # filesystem does not survive a redeploy: the free plan included. The app
+      # then answers 503 instead of letting a stranger own a wiped instance.
+      # Use it together with DATA_DIR pointing at an attached disk.
+      - key: OWNER_REQUIRE_PERSISTENT_STORAGE
         sync: false
       # YouTube category for uploads. 22 = People & Blogs, which is where a Hindi
       # kids' cartoon channel belongs. The code defaults to "22" when unset, so
@@ -82,9 +103,13 @@ services:
       # Optional knobs, unset by default:
       #   FFMPEG_PRESET=ultrafast  -> faster encodes on a 512 MB free instance
       #   FFMPEG_PATH=/path/ffmpeg -> use a specific binary instead of the bundled one
-      #   DATA_DIR=/var/data       -> only when a Render Disk is attached; the
-      #                               free filesystem is ephemeral, so projects
-      #                               and renders are lost on every redeploy.
+      #   DATA_DIR=/var/data       -> where users, sessions and projects live.
+      #                               REQUIRED for a durable owner: without it the
+      #                               app treats the free filesystem as ephemeral
+      #                               and refuses to create the owner in
+      #                               production. Attach a Render Disk here.
+      #   OWNER_BOOTSTRAP_TOKEN    -> listed above; one-time owner creation.
+      #   OWNER_REQUIRE_PERSISTENT_STORAGE=1 -> listed above; fail closed.
       #   APP_SESSION_SECRET       -> already listed above; rotating it signs
       #                               every user out, which is the point.
       #   RHUBARB_PATH             -> optional native Rhubarb binary for lip-sync;

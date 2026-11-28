@@ -11,7 +11,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { registerAndLogin, authHeaders } = require("./helpers");
+const { registerAndLogin, authHeaders, registerOwner } = require("./helpers");
 
 async function boot() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-disconnect-"));
@@ -32,7 +32,13 @@ test("disconnect requires a signed-in user", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-csrf-token": "anything" },
     });
-    assert.equal(res.status, 401, "an anonymous disconnect must be refused");
+    // With no owner yet the instance is fail-closed and answers 503; once an
+    // owner exists the same anonymous request is a plain 401. Both are refusals,
+    // and which one you get must never be a success.
+    assert.ok([401, 503].includes(res.status), "an anonymous disconnect must be refused, got " + res.status);
+    if (res.status === 503) {
+      assert.equal((await res.json()).code, "OWNER_NOT_CONFIGURED");
+    }
   } finally {
     server.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
@@ -42,7 +48,7 @@ test("disconnect requires a signed-in user", async () => {
 test("disconnect requires the CSRF token", async () => {
   const { server, base, dataDir } = await boot();
   try {
-    const session = await registerAndLogin(base, "yt_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
+    const session = await registerOwner(base, "yt_user", { registrationKey: process.env.APP_REGISTRATION_KEY });
     const res = await fetch(base + "/api/youtube/disconnect", {
       method: "POST",
       headers: { Cookie: session.cookie, "Content-Type": "application/json" },
@@ -57,7 +63,7 @@ test("disconnect requires the CSRF token", async () => {
 test("a valid disconnect expires the YouTube cookie", async () => {
   const { server, base, dataDir } = await boot();
   try {
-    const session = await registerAndLogin(base, "yt_user2", { registrationKey: process.env.APP_REGISTRATION_KEY });
+    const session = await registerOwner(base, "yt_user2", { registrationKey: process.env.APP_REGISTRATION_KEY });
     const res = await fetch(base + "/api/youtube/disconnect", {
       method: "POST", headers: authHeaders(session),
     });
