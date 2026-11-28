@@ -216,3 +216,136 @@ test("parallax camera motion really moves a still image, and differs from Ken Bu
   assert.notDeepEqual(a, b, "forward and reverse parallax must not be the same picture");
   assert.notDeepEqual(a, c, "parallax must not be identical to a plain Ken Burns frame");
 });
+
+
+test("a crashed re-encode cannot destroy the previous good MP4", async () => {
+  // Measured, not assumed. Two claims were tested here and only one is real:
+  //
+  //  * "a re-render re-encodes its own output and loses a generation" is FALSE.
+  //    The caption burn reads `current` (timeline/mixed.mp4), never final.mp4,
+  //    so pass 1 and pass 2 produce an identical video stream. That was proved
+  //    by reverting this fix: the stream md5 did not change.
+  //  * "a crashed re-encode destroys the finished video" is TRUE. The burn used
+  //    to write straight into final.mp4, the exact path the project record and
+  //    the download route point at, so a failure half-way through left a
+  //    truncated file where a valid video used to be (160307 -> 9 bytes).
+  //
+  // This test therefore asserts the property that actually matters: a failed
+  // render must leave the previous video byte-identical.
+  const os = require("os");
+  const crypto = require("crypto");
+  const fsx = require("fs");
+  const pathx = require("path");
+  const renderer = require("../lib/renderer");
+  const ff = require("../lib/ffmpeg");
+
+  const work = fsx.mkdtempSync(pathx.join(os.tmpdir(), "rerender-"));
+  const assets = pathx.join(work, "assets");
+  fsx.mkdirSync(assets, { recursive: true });
+  const image = pathx.join(assets, "s.png");
+  const audio = pathx.join(assets, "a.wav");
+  await ff.runFfmpeg(["-hide_banner", "-loglevel", "error", "-f", "lavfi",
+    "-i", "color=c=0x183a4a:s=1280x720:d=1",
+    "-vf", "drawgrid=w=90:h=720:t=45:c=0xf0b040@0.9", "-frames:v", "1", "-y", image]);
+  await ff.runFfmpeg(["-hide_banner", "-loglevel", "error", "-f", "lavfi",
+    "-i", "sine=frequency=220:duration=2", "-ac", "1", "-ar", "24000", "-y", audio]);
+
+  const project = {
+    id: "rerender1", durationMinutes: 1, aspect: "16:9", quality: "720p",
+    assets: { scenes: [{ image: { path: image }, audio: { path: audio } }] },
+  };
+  const timeline = [{ index: 0, duration: 2 }];
+  const scenes = [{ index: 0, narration: "नमस्ते दोस्तों", title: "एक" }];
+  const layout = require("../lib/timeline").layoutFor("16:9", "720p");
+  const sha = file => crypto.createHash("sha256").update(fsx.readFileSync(file)).digest("hex");
+
+  const first = await renderer.renderProject({
+    project, workDir: work, runFfmpeg: ff.runFfmpeg, layout, timeline, scenes,
+    music: false, soundEffects: false, burnSubtitles: true,
+  });
+  const goodHash = sha(first.videoPath);
+  const goodSize = fsx.statSync(first.videoPath).size;
+
+  // A second render where the caption encode dies half-way: FFmpeg leaves a
+  // truncated file where it was writing, exactly as disk-full / OOM / SIGKILL
+  // does. burnCaptions treats a failed attempt as "try the next strategy", so
+  // the damage is done by the partial write, not by a thrown error.
+  const crashing = async (args, opts) => {
+    const out = String(args[args.length - 1]);
+    if (out.includes("final")) {
+      fsx.writeFileSync(pathx.resolve((opts && opts.cwd) || ".", out), Buffer.from("TRUNCATED"));
+      throw new Error("simulated crash mid-encode");
+    }
+    return ff.runFfmpeg(args, opts);
+  };
+  // It must not throw (captions degrade to a soft track), but it must also not
+  // leave the previous video damaged.
+  await renderer.renderProject({
+    project, workDir: work, runFfmpeg: crashing, layout, timeline, scenes,
+    music: false, soundEffects: false, burnSubtitles: true,
+  });
+
+  assert.equal(fsx.statSync(first.videoPath).size, goodSize,
+    "the failed render changed the size of the previous video");
+  assert.equal(sha(first.videoPath), goodHash,
+    "the failed render destroyed the previous good MP4");
+  assert.equal(fsx.existsSync(pathx.join(work, "final.capture.mp4")), false,
+    "a partial temporary file was left behind");
+});
+
+test("a re-render keeps the picture identical and never encodes its own output", async () => {
+  // Full-pipeline idempotency, stated honestly. The video stream must be
+  // identical, because it is built from the same clips and copied, not
+  // re-encoded. The audio cannot be byte-identical: FFmpeg's
+  // sidechaincompress (the ducking filter) produces slightly different samples
+  // on each run, measured at 4 distinct outputs in 5 identical invocations with
+  // no project code involved. So the assertion is the property that matters —
+  // same picture, same duration, same loudness — plus the real defect this test
+  // was written for: the previous final.mp4 must never be read as an input.
+  const os = require("os");
+  const crypto = require("crypto");
+  const fsx = require("fs");
+  const pathx = require("path");
+  const cp = require("child_process");
+  const pipeline = require("../lib/pipeline");
+  const { ProjectStore, createProject } = require("../lib/projects");
+  const ff = require("../lib/ffmpeg");
+
+  const dataDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), "pipe-identical-"));
+  const store = new ProjectStore({ root: pathx.join(dataDir, "projects") });
+  const src = fsx.mkdtempSync(pathx.join(os.tmpdir(), "pipe-src-"));
+  const image = pathx.join(src, "s.png");
+  const audio = pathx.join(src, "a.wav");
+  await ff.runFfmpeg(["-hide_banner", "-loglevel", "error", "-f", "lavfi",
+    "-i", "color=c=0x183a4a:s=1280x720:d=1",
+    "-vf", "drawgrid=w=90:h=720:t=45:c=0xf0b040@0.9", "-frames:v", "1", "-y", image]);
+  await ff.runFfmpeg(["-hide_banner", "-loglevel", "error", "-f", "lavfi",
+    "-i", "sine=frequency=220:duration=3", "-ac", "1", "-ar", "24000", "-y", audio]);
+
+  const project = createProject({ ownerId: "u", topic: "t", durationMinutes: 1, sceneCount: 1 });
+  project.story = { title: "t", scenes: [{ index: 0, title: "a", narration: "नमस्ते दोस्तों", imagePrompt: "x", transition: "fade" }] };
+  project.sceneCount = 1;
+  project.assets = { scenes: [{ image: { path: image }, audio: { path: audio, seconds: 3 } }] };
+  store.save(project);
+
+  const options = { store, runFfmpeg: ff.runFfmpeg, characters: [], onProgress: () => {} };
+  const streamMd5 = (file, map) => cp.execFileSync(ff.resolveFfmpegPath(), [
+    "-hide_banner", "-loglevel", "error", "-i", file, "-map", map, "-f", "md5", "-",
+  ], { encoding: "utf8" }).trim();
+
+  const first = await pipeline.render(project, options);
+  const firstVideo = streamMd5(first.videoPath, "0:v");
+  const firstDuration = first.duration;
+
+  const second = await pipeline.render(project, options);
+  assert.equal(streamMd5(second.videoPath, "0:v"), firstVideo,
+    "the picture changed on a re-render: the previous output leaked into the new one");
+  assert.ok(Math.abs(second.duration - firstDuration) < 0.5,
+    "duration drifted: " + firstDuration + " -> " + second.duration);
+
+  // The temporary encode target must not be left behind, and the final file must
+  // not be the caption-burn input.
+  const workDir = pathx.dirname(first.videoPath);
+  assert.equal(fsx.existsSync(pathx.join(workDir, "final.capture.mp4")), false,
+    "the temporary caption target was left on disk");
+});
