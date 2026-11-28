@@ -2293,6 +2293,31 @@ function progressSaver(current) {
 
 // A stage is a pure function of the project on disk: finished scenes are
 // skipped and missing ones rebuilt, so the same task can be replayed after a
+// Reads cancellation from disk, the only place that is authoritative: the cancel
+// route writes project.status = "cancelled" there, while the in-memory copy that
+// started the job still says "rendering".
+function cancelledOnDisk(projectId) {
+  return () => {
+    const fresh = projectStore.get(projectId);
+    return Boolean(fresh && fresh.status === "cancelled");
+  };
+}
+
+// A cancelled render is not a failure and not a success: it stops, keeps every
+// finished clip so a later render resumes, and leaves the record honest.
+function markCancelled(project, message) {
+  project.status = "cancelled";
+  project.error = null;
+  project.progress = {
+    ...(project.progress || {}),
+    stage: "cancelled",
+    message: message || "उपयोगकर्ता ने रोका — अधूरा काम सुरक्षित है, दोबारा चलाने पर वहीं से आगे बढ़ेगा।",
+    updatedAt: new Date().toISOString(),
+  };
+  projectStore.save(project);
+  return project;
+}
+
 // restart (either by the queue worker or by an explicit resume).
 async function runProjectStage(projectId, stage) {
   const project = projectStore.get(projectId);
@@ -2300,7 +2325,20 @@ async function runProjectStage(projectId, stage) {
   if (!["story", "assets", "render", "automate"].includes(stage)) {
     throw Object.assign(new Error("अनजान project stage: " + stage), { statusCode: 400 });
   }
-  if (project.status === "cancelled") return project;
+  // A cancel is a request to stop the *current* work, not a life sentence. Any
+  // new stage run is the user explicitly asking to continue, so the flag is
+  // cleared here — without this a cancelled project could never be finished.
+  // Work already on disk (clips, chunks, assets) still makes this a resume.
+  if (project.status === "cancelled") {
+    project.status = project.render && project.render.videoPath ? "completed" : "draft";
+    project.progress = {
+      ...(project.progress || {}),
+      stage: "resuming",
+      message: "रोका हुआ काम फिर से शुरू किया जा रहा है…",
+      updatedAt: new Date().toISOString(),
+    };
+    projectStore.save(project);
+  }
   const characters = characterLibrary.listFor(project.ownerId);
   const saveProgress = progressSaver(project);
   if (stage === "story") {
@@ -2322,10 +2360,17 @@ async function runProjectStage(projectId, stage) {
   if (stage === "render") {
     if (!project.story) throw Object.assign(new Error("पहले कहानी बनाएँ।"), { statusCode: 409 });
     projectStore.setStatus(project, "rendering", "MP4 render हो रहा है…");
-    const result = await pipeline.render(project, {
-      store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
-      characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
-    });
+    let result;
+    try {
+      result = await pipeline.render(project, {
+        store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
+        characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
+        isCancelled: cancelledOnDisk(project.id),
+      });
+    } catch (error) {
+      if (error.code === "RENDER_CANCELLED") return markCancelled(project, "Render " + error.cancelledAt + " पर रोका गया।");
+      throw error;
+    }
     project.status = "completed";
     project.error = null;
     project.progress = {
@@ -2363,10 +2408,17 @@ async function runProjectStage(projectId, stage) {
     return projectStore.save(project);
   }
   projectStore.setStatus(project, "rendering", "MP4 render हो रहा है…");
-  const result = await pipeline.render(project, {
-    store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
-    characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
-  });
+  let result;
+  try {
+    result = await pipeline.render(project, {
+      store: projectStore, runFfmpeg: ffmpegTools.runFfmpeg, captionFont: process.env.CAPTION_FONT,
+      characters: characterLibrary.listFor(project.ownerId), onProgress: saveProgress,
+      isCancelled: cancelledOnDisk(project.id),
+    });
+  } catch (error) {
+    if (error.code === "RENDER_CANCELLED") return markCancelled(project, "Render " + error.cancelledAt + " पर रोका गया।");
+    throw error;
+  }
   if (project.status === "cancelled") {
     project.progress = { ...(project.progress || {}), stage: "cancelled", message: "render से पहले रोका गया", updatedAt: new Date().toISOString() };
     return projectStore.save(project);

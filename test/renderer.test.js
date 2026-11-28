@@ -349,3 +349,64 @@ test("a re-render keeps the picture identical and never encodes its own output",
   assert.equal(fsx.existsSync(pathx.join(workDir, "final.capture.mp4")), false,
     "the temporary caption target was left on disk");
 });
+
+// Cancelling used to do nothing at all: the render ran to the end, the project
+// was written "completed" and the video was backed up — measured, 24 seconds
+// after the cancel returned HTTP 200. The renderer now stops at the next safe
+// point (between scenes, between chunks, before the audio mix) and says so with
+// a typed error that the server turns into an honest "cancelled" state.
+test("a cancelled render stops at a checkpoint and keeps finished work", { timeout: 240000 }, async () => {
+  if (!(await ffmpegTools.ffmpegAvailable())) {
+    return test.skip("FFmpeg binary not available (set FFMPEG_PATH)");
+  }
+  process.env.FFMPEG_PRESET = "ultrafast";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baba-cancel-"));
+  const assets = await makeAssets(dir, 4);
+  const scenes = [1, 2, 3, 4].map(index => ({
+    index, title: "दृश्य " + index, narration: "रोका गया दृश्य " + index, dialogue: [],
+  }));
+  const entries = timeline.planTimeline(scenes, { durations: { 1: 2, 2: 2, 3: 2, 4: 2 } });
+  const project = { id: "cancel-test", assets };
+
+  // Cancel once the second scene has been rendered: the first one must survive.
+  let asked = 0;
+  let clipsWhenCancelled = 0;
+  const events = [];
+  await assert.rejects(
+    () => renderer.renderProject({
+      project,
+      workDir: path.join(dir, "render"),
+      runFfmpeg: ffmpegTools.runFfmpeg,
+      layout: timeline.layoutFor("16:9", "720p"),
+      timeline: entries,
+      scenes,
+      perChunk: 2,
+      music: true,
+      burnSubtitles: true,
+      onProgress: event => events.push(event),
+      isCancelled: () => {
+        asked++;
+        const sceneClips = fs.existsSync(path.join(dir, "render", "clips"))
+          ? fs.readdirSync(path.join(dir, "render", "clips")).filter(n => /^scene-\d+\.mp4$/.test(n)).length
+          : 0;
+        if (sceneClips >= 2) {
+          if (!clipsWhenCancelled) clipsWhenCancelled = sceneClips;
+          return true;
+        }
+        return false;
+      },
+    }),
+    error => {
+      assert.equal(error.code, "RENDER_CANCELLED", "the error must be typed, not a generic failure: " + error.message);
+      assert.match(error.message, /रोका गया/);
+      return true;
+    },
+  );
+
+  assert.ok(asked >= 2, "the checkpoint must actually be consulted: " + asked);
+  assert.ok(clipsWhenCancelled >= 2, "two scenes were rendered before stopping: " + clipsWhenCancelled);
+  const clips = fs.readdirSync(path.join(dir, "render", "clips")).filter(n => /^scene-\d+\.mp4$/.test(n));
+  assert.ok(clips.length >= 2, "finished clips must be kept for a resume: " + clips.join(","));
+  assert.ok(clips.length < 4, "the render must not have finished every scene: " + clips.length);
+  assert.ok(!fs.existsSync(path.join(dir, "render", "final.mp4")), "a cancelled render must not produce a finished MP4");
+});
