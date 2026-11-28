@@ -390,3 +390,74 @@ test("lib/models reads every models.list shape without inventing IDs", async () 
   // A broken pager must not hang or throw: it simply reports nothing.
   assert.deepEqual([...await listModelIds(null)], []);
 });
+
+test("an unconfigured backup is reported as a warning, not as healthy", () => {
+  const { auditSetup } = require("../lib/setup");
+  const base = {
+    GEMINI_API_KEY: "not-a-real-key",
+  };
+  const env = Object.assign({}, process.env, base);
+  delete env.STORAGE_S3_ENDPOINT;
+  delete env.STORAGE_S3_BUCKET;
+  delete env.STORAGE_S3_ACCESS_KEY;
+  delete env.STORAGE_S3_SECRET_KEY;
+  delete env.STORAGE_LOCAL_DIR;
+
+  const report = auditSetup({
+    env,
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/none.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const check = report.checks.find(item => item.id === "BACKUP_STORAGE");
+  assert.ok(check, "backup storage must be audited");
+  assert.equal(check.status, "warning");
+  assert.match(check.detail, /redeploy loses/);
+  assert.ok(report.warnings.includes("BACKUP_STORAGE"));
+  assert.ok(!report.missing.includes("BACKUP_STORAGE"), "it must not block rendering");
+});
+
+test("a configured backup reads as ok, and names the driver without leaking it", () => {
+  const { auditSetup } = require("../lib/setup");
+  const env = Object.assign({}, process.env, {
+    GEMINI_API_KEY: "not-a-real-key",
+    STORAGE_S3_ENDPOINT: "https://example.invalid",
+    STORAGE_S3_BUCKET: "media",
+    STORAGE_S3_ACCESS_KEY: "SECRETACCESSKEY",
+    STORAGE_S3_SECRET_KEY: "SECRETVALUE",
+  });
+  const report = auditSetup({
+    env,
+    ffmpeg: { available: true, version: "9.0" },
+    fontFile: "/tmp/none.ttf",
+    youtubeReady: true,
+    lipSync: { available: true, source: "wasm" },
+    dataDir: require("os").tmpdir(),
+  });
+  const check = report.checks.find(item => item.id === "BACKUP_STORAGE");
+  assert.equal(check.status, "ok");
+  assert.match(check.detail, /S3-compatible/);
+  const serialised = JSON.stringify(report);
+  assert.ok(!serialised.includes("SECRETACCESSKEY"), "an access key must never be echoed");
+  assert.ok(!serialised.includes("SECRETVALUE"), "a secret key must never be echoed");
+});
+
+test("the backup warning carries instructions the operator can act on", () => {
+  const { auditSetup } = require("../lib/setup");
+  const env = Object.assign({}, process.env, { GEMINI_API_KEY: "not-a-real-key" });
+  delete env.STORAGE_S3_ENDPOINT; delete env.STORAGE_S3_BUCKET;
+  delete env.STORAGE_S3_ACCESS_KEY; delete env.STORAGE_S3_SECRET_KEY;
+  delete env.STORAGE_LOCAL_DIR;
+  const report = auditSetup({
+    env, ffmpeg: { available: true, version: "9.0" }, fontFile: "/tmp/none.ttf",
+    youtubeReady: true, lipSync: { available: true, source: "wasm" }, dataDir: require("os").tmpdir(),
+  });
+  const guide = report.warningGuide.find(item => item.id === "BACKUP_STORAGE");
+  assert.ok(guide, "a warning without steps is just noise");
+  assert.ok(guide.steps.length >= 3);
+  assert.match(guide.steps.join(" "), /STORAGE_S3_ENDPOINT/);
+  assert.ok(/secret/i.test(guide.steps.join(" ")) || /Secret/.test(guide.steps.join(" ")),
+    "the guide must warn about secret handling");
+});
