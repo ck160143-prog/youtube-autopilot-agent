@@ -37,6 +37,7 @@ const MANIFEST = [
   "lib/projects.js",
   "lib/ratelimit.js",
   "lib/research.js",
+  "lib/storage.js",
   "lib/setup.js",
   "lib/renderer.js",
   "lib/story.js",
