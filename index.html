@@ -152,6 +152,8 @@ input,select,textarea{font-size:16px}
 <h2>📺 YouTube Channel</h2>
 <p id="channelStatus" class="status">अभी चैनल कनेक्ट नहीं है।</p>
 <button onclick="connectYouTube()">🔗 YouTube चैनल Connect करें</button><button class="secondary" onclick="refreshYouTubeStatus()">🔄 कनेक्शन स्थिति जाँचें</button>
+<button class="secondary" id="youtubeDisconnectBtn" onclick="disconnectYouTube()" disabled title="पहले status जाँचें">🔓 चैनल Disconnect करें</button>
+<p class="small">Disconnect सिर्फ़ इस browser का YouTube access हटाता है — आपके चैनल पर कोई वीडियो नहीं मिटता और Google के Settings में दिया गया access बाकी रहता है। दोबारा Connect तुरंत हो सकता है।</p>
 <p class="small">वास्तविक चैनल कनेक्शन के लिए Google OAuth और YouTube API सेटअप जरूरी है।</p>
 <button class="secondary" id="analyticsBtn" onclick="loadAnalytics()">📈 Analytics देखें (पिछले 29 दिन)</button>
 <p id="analyticsStatus" class="status" role="status"></p>
@@ -386,20 +388,51 @@ function youtubeStatusMessage(data) {
   return '🟡 credentials सेट हैं, पर चैनल Connect नहीं है। Connect बटन दबाएँ।';
 }
 
+// Disconnect is the one YouTube action that needs no Google round-trip: it only
+// clears this browser's encrypted session cookie. Security and ownership are
+// therefore handled by the server route (auth + CSRF), not by the client.
+async function disconnectYouTube() {
+  var button = document.getElementById('youtubeDisconnectBtn');
+  var status = document.getElementById('channelStatus');
+  var confirmed = typeof window.confirm === 'function'
+    ? window.confirm('इस browser से YouTube चैनल का access हटाना है? चैनल पर कोई वीडियो नहीं मिटेगा — सिर्फ़ यह connection हटेगा।')
+    : true;
+  if (!confirmed) return;
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'Disconnect हो रहा है…';
+  try {
+    var response = await fetch('/api/youtube/disconnect', { method: 'POST' });
+    var data = await readApiJson(response);
+    if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+    await refreshConnectionStatus();
+  } catch (error) {
+    if (status) status.textContent = '❌ Disconnect विफल: ' + (error.message || 'अज्ञात कारण') + ' — दोबारा कोशिश करें।';
+    // Leave the button usable so the user can retry; the flag comes from status.
+    if (button) button.disabled = false;
+  }
+}
+
 async function refreshConnectionStatus() {
   var top = document.getElementById('channelStatus');
   var setup = document.getElementById('setupYouTubeStatus');
   var stamp = 'आखिरी जाँच: ' + new Date().toLocaleTimeString();
   var message;
+  var data = null;
   try {
     var response = await fetch('/api/youtube/status', { cache: 'no-store' });
-    var data = await readApiJson(response);
+    data = await readApiJson(response);
     message = youtubeStatusMessage(data);
   } catch (_) {
     message = 'कनेक्शन स्थिति नहीं मिल सकी।';
   }
   if (top) top.textContent = message + ' · ' + stamp;
   if (setup) setup.textContent = 'YouTube OAuth — ' + message + ' · ' + stamp;
+  // Offering "disconnect" when nothing is connected would be a dead control.
+  var disconnectBtn = document.getElementById('youtubeDisconnectBtn');
+  if (disconnectBtn) {
+    disconnectBtn.disabled = !(data && data.connected);
+    disconnectBtn.title = data && data.connected ? 'इस browser का YouTube access हटाएँ' : 'कोई चैनल जुड़ा नहीं है';
+  }
 }
 
 async function loadAnalytics() {
